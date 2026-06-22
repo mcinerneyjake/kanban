@@ -1,4 +1,5 @@
 import type { Ticket } from '../../shared/constants.js'
+import Card from './Card.jsx'
 
 type Props = {
   tickets: Ticket[]
@@ -22,18 +23,7 @@ export default function ArchiveLane({ tickets, show, onToggle, onOpen }: Props) 
             <span className="archive-empty">No archived tickets yet.</span>
           ) : (
             tickets.map((t) => (
-              <div
-                key={t.id}
-                className={`card archive-card prio-${t.priority}`}
-                onClick={() => onOpen(t)}
-              >
-                <div className="card-title">{t.title}</div>
-                <div className="card-meta">
-                  <span className={`badge prio prio-${t.priority}`}>{t.priority}</span>
-                  <span className="badge">{t.type}</span>
-                  {t.project && <span className="badge">{t.project}</span>}
-                </div>
-              </div>
+              <Card key={t.id} ticket={t} onOpen={onOpen} />
             ))
           )}
         </div>

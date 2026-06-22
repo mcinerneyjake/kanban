@@ -6,14 +6,16 @@ const plural = (n: number, word: string) => `${n} ${word}${n !== 1 ? 's' : ''}`
 
 type Props = {
   ticket: Ticket
-  columnId: Ticket['status']
-  depth: number
-  childCount: number
-  onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onOpen: (ticket: Ticket) => void
+  columnId?: Ticket['status']
+  depth?: number
+  childCount?: number
+  onDrop?: (id: string, status: Ticket['status'], beforeId: string | null) => void
 }
 
-export default function Card({ ticket, columnId, depth, childCount, onDrop, onOpen }: Props) {
+export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, onDrop }: Props) {
+  const draggable = !!(columnId && onDrop)
+
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     e.dataTransfer.setData('text/ticket-id', ticket.id)
     e.dataTransfer.effectAllowed = 'move'
@@ -24,16 +26,16 @@ export default function Card({ ticket, columnId, depth, childCount, onDrop, onOp
     e.preventDefault()
     e.stopPropagation()
     const id = e.dataTransfer.getData('text/ticket-id')
-    if (id) onDrop(id, columnId, ticket.id)
+    if (id && onDrop && columnId) onDrop(id, columnId, ticket.id)
   }
 
   return (
     <div
       className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}`}
-      draggable
-      onDragStart={onDragStart}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={onCardDrop}
+      draggable={draggable}
+      onDragStart={draggable ? onDragStart : undefined}
+      onDragOver={draggable ? (e) => e.preventDefault() : undefined}
+      onDrop={draggable ? onCardDrop : undefined}
       onClick={() => onOpen(ticket)}
     >
       <div className="card-title">{ticket.title}</div>

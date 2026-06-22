@@ -530,12 +530,11 @@ body {
   gap: 8px;
 }
 
-.archive-card {
+.archive-cards .card {
   width: 200px;
   opacity: 0.75;
-  cursor: pointer;
 }
-.archive-card:hover { opacity: 1; }
+.archive-cards .card:hover { opacity: 1; }
 
 .archive-empty {
   font-size: 13px;
