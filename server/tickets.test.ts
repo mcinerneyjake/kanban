@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError } from './tickets.js'
+import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js'
 
 let tmpDir: string
 
@@ -198,5 +198,64 @@ describe('listTickets', () => {
     await writeRaw('tkt-mmm', makeRaw('B', 20))
     const tickets = await listTickets()
     expect(tickets.map((t) => t.order)).toEqual([10, 20, 30])
+  })
+})
+
+// Helpers for archiveStaleTickets tests.
+// "stale" = updated >3 days ago; "fresh" = updated just now.
+const STALE_DATE = "'2026-01-01T00:00:00.000Z'"
+const freshDate = () => `'${new Date().toISOString()}'`
+
+describe('archiveStaleTickets', () => {
+  it('returns 0 and changes nothing on an empty board', async () => {
+    const count = await archiveStaleTickets()
+    expect(count).toBe(0)
+    expect(await listTickets()).toHaveLength(0)
+  })
+
+  it('archives a done ticket whose updated timestamp is older than 3 days', async () => {
+    await writeRaw('tkt-stale', makeRaw('Stale done', 1, { status: 'done', updated: STALE_DATE }))
+    const count = await archiveStaleTickets()
+    expect(count).toBe(1)
+    const t = await getTicket('tkt-stale')
+    expect(t.status).toBe('archived')
+  })
+
+  it('does not archive a done ticket updated within the last 3 days', async () => {
+    await writeRaw('tkt-fresh', makeRaw('Fresh done', 1, { status: 'done', updated: freshDate() }))
+    const count = await archiveStaleTickets()
+    expect(count).toBe(0)
+    const t = await getTicket('tkt-fresh')
+    expect(t.status).toBe('done')
+  })
+
+  it('does not archive non-done tickets regardless of age', async () => {
+    for (const [id, status] of [
+      ['tkt-bl', 'backlog'],
+      ['tkt-td', 'todo'],
+      ['tkt-ip', 'in-progress'],
+      ['tkt-qa', 'qa'],
+    ]) {
+      await writeRaw(id, makeRaw(status, 1, { status, updated: STALE_DATE }))
+    }
+    const count = await archiveStaleTickets()
+    expect(count).toBe(0)
+    const tickets = await listTickets()
+    expect(tickets.every((t) => t.status !== 'archived')).toBe(true)
+  })
+
+  it('only archives the stale done tickets in a mixed board', async () => {
+    await writeRaw('tkt-stale1', makeRaw('Stale 1', 1, { status: 'done', updated: STALE_DATE }))
+    await writeRaw('tkt-stale2', makeRaw('Stale 2', 2, { status: 'done', updated: STALE_DATE }))
+    await writeRaw('tkt-recent', makeRaw('Recent done', 3, { status: 'done', updated: freshDate() }))
+    await writeRaw('tkt-active', makeRaw('In progress', 4, { status: 'in-progress', updated: STALE_DATE }))
+
+    const count = await archiveStaleTickets()
+    expect(count).toBe(2)
+
+    expect((await getTicket('tkt-stale1')).status).toBe('archived')
+    expect((await getTicket('tkt-stale2')).status).toBe('archived')
+    expect((await getTicket('tkt-recent')).status).toBe('done')
+    expect((await getTicket('tkt-active')).status).toBe('in-progress')
   })
 })

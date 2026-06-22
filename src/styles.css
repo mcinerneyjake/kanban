@@ -486,3 +486,58 @@ body {
   text-transform: capitalize;
   white-space: nowrap;
 }
+
+/* --- Archive lane -------------------------------------------------------- */
+.archive-lane {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.archive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 10px;
+}
+.archive-toggle:hover { color: var(--text); }
+
+.archive-toggle-chevron {
+  font-size: 11px;
+  width: 14px;
+  text-align: center;
+}
+
+.archive-count {
+  background: var(--col-count-bg);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.archive-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.archive-card {
+  width: 200px;
+  opacity: 0.75;
+  cursor: pointer;
+}
+.archive-card:hover { opacity: 1; }
+
+.archive-empty {
+  font-size: 13px;
+  color: var(--muted);
+}

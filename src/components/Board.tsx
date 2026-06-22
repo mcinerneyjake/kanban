@@ -1,4 +1,4 @@
-import { STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
+import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
 import Column from './Column.jsx'
 import type { SortBy } from './FilterBar.jsx'
 
@@ -84,7 +84,7 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
 
   return (
     <div className="board">
-      {STATUSES.map((col) => {
+      {BOARD_STATUSES.map((col) => {
         const { ordered, depths } = displayColumn(col.id)
         return (
           <Column

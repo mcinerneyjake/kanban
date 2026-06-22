@@ -204,6 +204,22 @@ export async function listProjects(): Promise<string[]> {
     .sort()
 }
 
+const ARCHIVE_AGE_MS = 3 * 24 * 60 * 60 * 1000
+
+export async function archiveStaleTickets(): Promise<number> {
+  const tickets = await listTickets()
+  const now = Date.now()
+  let count = 0
+  for (const ticket of tickets) {
+    if (ticket.status !== 'done') continue
+    if (now - new Date(ticket.updated).getTime() < ARCHIVE_AGE_MS) continue
+    await updateTicket(ticket.id, { status: 'archived' })
+    count++
+  }
+  console.log(`[archive] Archived ${count} stale ticket(s)`)
+  return count
+}
+
 export async function deleteTicket(id: string): Promise<void> {
   const file = ticketPath(id) // validate id before the try (see getTicket)
   try {

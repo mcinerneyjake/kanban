@@ -5,6 +5,7 @@ import {
   createTicket,
   updateTicket,
   deleteTicket,
+  archiveStaleTickets,
   HttpError,
 } from './tickets.js'
 
@@ -46,6 +47,33 @@ app.delete('/api/tickets/:id', wrap(async (req, res) => {
   await deleteTicket(req.params['id'] as string)
   res.status(204).end()
 }))
+
+app.post('/api/archive', wrap(async (_req, res) => {
+  const count = await archiveStaleTickets()
+  res.json({ archived: count })
+}))
+
+// Schedule archiving every Sunday at 6 PM local time.
+function msUntilNextSundayEvening(): number {
+  const now = new Date()
+  const target = new Date(now)
+  const daysUntilSunday = ((7 - now.getDay()) % 7) || 7
+  target.setDate(now.getDate() + daysUntilSunday)
+  target.setHours(18, 0, 0, 0)
+  return target.getTime() - now.getTime()
+}
+
+function scheduleWeeklyArchive() {
+  const delay = msUntilNextSundayEvening()
+  const days = Math.round(delay / 864e5)
+  console.log(`[archive] Next run in ~${days} day(s)`)
+  setTimeout(async () => {
+    try { await archiveStaleTickets() } catch (e) { console.error('[archive] error', e) }
+    scheduleWeeklyArchive()
+  }, delay)
+}
+
+scheduleWeeklyArchive()
 
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`))

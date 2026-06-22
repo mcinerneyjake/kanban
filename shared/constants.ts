@@ -2,12 +2,19 @@
 // server (validation) and the React app (form options). Keeping them here
 // avoids the classic drift where the UI offers a value the API rejects.
 
-export const STATUSES = [
+// The five columns rendered on the main board.
+export const BOARD_STATUSES = [
   { id: 'backlog', label: 'Backlog' },
   { id: 'todo', label: 'Todo' },
   { id: 'in-progress', label: 'In Progress' },
   { id: 'qa', label: 'QA' },
   { id: 'done', label: 'Done' },
+] as const
+
+// All valid statuses — includes archived, used for API validation and the modal dropdown.
+export const STATUSES = [
+  ...BOARD_STATUSES,
+  { id: 'archived', label: 'Archived' },
 ] as const
 
 export const STATUS_IDS = STATUSES.map((s) => s.id)

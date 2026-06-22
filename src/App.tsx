@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { api } from './api.js'
 import Board from './components/Board.jsx'
+import ArchiveLane from './components/ArchiveLane.jsx'
 import TicketModal from './components/TicketModal.jsx'
 import FilterBar, { defaultFilter, type FilterState } from './components/FilterBar.jsx'
 import { useTheme } from './useTheme.js'
@@ -15,6 +16,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null)
   const [filter, setFilter] = useState<FilterState>(defaultFilter)
+  const [showArchive, setShowArchive] = useState(false)
 
   const [projects, setProjects] = useState<string[]>([])
 
@@ -23,8 +25,10 @@ export default function App() {
     api.projects().then(setProjects).catch(() => {})
   }, [])
 
+  const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets])
+
   const filteredTickets = useMemo(() => {
-    let result = tickets
+    let result = tickets.filter((t) => t.status !== 'archived')
     if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type))
     if (filter.priority) result = result.filter((t) => t.priority === filter.priority)
     if (filter.project) result = result.filter((t) => t.project === filter.project)
@@ -95,6 +99,7 @@ export default function App() {
 
       <FilterBar filter={filter} projects={projects} onChange={setFilter} />
       <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onOpen={setEditing} />
+      <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
 
       {editing && (
         <TicketModal
