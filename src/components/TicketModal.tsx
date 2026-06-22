@@ -43,6 +43,7 @@ export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOp
       ...f,
       project,
       blockers: f.blockers.filter((id) => allTickets.find((t) => t.id === id)?.project === project),
+      parent: allTickets.find((t) => t.id === f.parent)?.project === project ? f.parent : null,
     }))
   }
 
@@ -63,7 +64,7 @@ export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOp
   const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : []
   const childIds = new Set(children.map((t) => t.id))
   const parentOptions = allTickets.filter(
-    (t) => t.id !== ticket?.id && !childIds.has(t.id),
+    (t) => t.id !== ticket?.id && !childIds.has(t.id) && t.project === form.project,
   )
   const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
