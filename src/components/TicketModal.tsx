@@ -37,8 +37,14 @@ export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOp
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }))
 
-  const setProject = (e: React.ChangeEvent<HTMLSelectElement>) =>
-    setForm((f) => ({ ...f, project: e.target.value || null }))
+  const setProject = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const project = e.target.value || null
+    setForm((f) => ({
+      ...f,
+      project,
+      blockers: f.blockers.filter((id) => allTickets.find((t) => t.id === id)?.project === project),
+    }))
+  }
 
   const setParent = (e: React.ChangeEvent<HTMLSelectElement>) =>
     setForm((f) => ({ ...f, parent: e.target.value || null }))
@@ -62,7 +68,7 @@ export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOp
   const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
   const availableBlockers = allTickets.filter(
-    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id),
+    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.project === form.project,
   )
   const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter(Boolean) as Ticket[]
 
