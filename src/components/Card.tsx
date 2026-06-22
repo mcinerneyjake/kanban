@@ -1,8 +1,17 @@
+import { useState } from 'react'
 import type { Ticket, TicketType } from '../../shared/constants.js'
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' }
 
 const plural = (n: number, word: string) => `${n} ${word}${n !== 1 ? 's' : ''}`
+
+type DropMode = 'before' | 'child' | null
+
+// Module-level: tracks the source column of the card currently being dragged.
+// Drag operations are single-touch so module scope is safe; this lets dragover
+// handlers know whether a re-parent zone is applicable without reading
+// dataTransfer (whose values are security-locked to drop handlers only).
+let _dragSrcStatus = ''
 
 type Props = {
   ticket: Ticket
@@ -12,15 +21,29 @@ type Props = {
   childCount?: number
   isCollapsed?: boolean
   onDrop?: (id: string, status: Ticket['status'], beforeId: string | null) => void
+  onReparent?: (id: string, newParentId: string) => void
   onToggleCollapse?: (id: string) => void
 }
 
-export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onToggleCollapse }: Props) {
+export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop)
+  const [dropMode, setDropMode] = useState<DropMode>(null)
 
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
+    _dragSrcStatus = columnId ?? ''
     e.dataTransfer.setData('text/ticket-id', ticket.id)
+    e.dataTransfer.setData('text/ticket-status', columnId ?? '')
     e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const onCardDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const inChildZone = (e.clientY - rect.top) / rect.height >= 0.35
+    // Re-parent zone only makes sense within the same column.
+    const sameColumn = _dragSrcStatus === columnId
+    const mode: DropMode = inChildZone && sameColumn ? 'child' : 'before'
+    setDropMode(mode)
   }
 
   // stopPropagation so the parent Column's "append" drop doesn't also fire.
@@ -28,15 +51,29 @@ export default function Card({ ticket, onOpen, columnId, depth = 0, childCount =
     e.preventDefault()
     e.stopPropagation()
     const id = e.dataTransfer.getData('text/ticket-id')
-    if (id && onDrop && columnId) onDrop(id, columnId, ticket.id)
+    const srcStatus = e.dataTransfer.getData('text/ticket-status')
+    if (!id || id === ticket.id) { setDropMode(null); return }
+    // Only re-parent when both cards are in the same column; cross-column drops
+    // always move the ticket to the target column (insert before the hovered card).
+    if (dropMode === 'child' && srcStatus === columnId) {
+      onReparent?.(id, ticket.id)
+    } else {
+      if (onDrop && columnId) onDrop(id, columnId, ticket.id)
+    }
+    setDropMode(null)
   }
+
+  const dropClass = dropMode === 'before' ? ' card--drop-before'
+    : dropMode === 'child' ? ' card--drop-child'
+    : ''
 
   return (
     <div
-      className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}`}
+      className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}${dropClass}`}
       draggable={draggable}
       onDragStart={draggable ? onDragStart : undefined}
-      onDragOver={draggable ? (e) => e.preventDefault() : undefined}
+      onDragOver={draggable ? onCardDragOver : undefined}
+      onDragLeave={draggable ? () => setDropMode(null) : undefined}
       onDrop={draggable ? onCardDrop : undefined}
       onClick={() => onOpen(ticket)}
     >

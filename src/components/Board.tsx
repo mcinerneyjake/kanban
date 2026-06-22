@@ -11,10 +11,11 @@ type Props = {
   sort: SortBy
   childCounts: Record<string, number>
   onMove: (id: string, status: Ticket['status'], order: number) => void
+  onReparent: (id: string, newParentId: string) => void
   onOpen: (ticket: Ticket) => void
 }
 
-export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Props) {
+export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>())
 
   const toggleCollapse = (id: string) =>
@@ -93,6 +94,7 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
             childCounts={childCounts}
             collapsed={collapsed}
             onDrop={handleDrop}
+            onReparent={onReparent}
             onOpen={onOpen}
             onToggleCollapse={toggleCollapse}
           />

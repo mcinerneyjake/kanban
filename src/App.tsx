@@ -73,6 +73,27 @@ export default function App() {
     } catch (e) { setError((e as Error).message) }
   }
 
+  const handleReparent = async (id: string, newParentId: string) => {
+    if (id === newParentId) return
+    // Guard against cycles: reject if newParentId is a descendant of id.
+    const descendants = new Set<string>()
+    const queue = [id]
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const t of tickets) {
+        if (t.parent === cur && !descendants.has(t.id)) {
+          descendants.add(t.id)
+          queue.push(t.id)
+        }
+      }
+    }
+    if (descendants.has(newParentId)) return
+    try {
+      await api.update(id, { parent: newParentId })
+      load()
+    } catch (e) { setError((e as Error).message) }
+  }
+
   // Optimistic move: patch local state first, persist, reload on failure.
   const handleMove = async (id: string, status: Ticket['status'], order: number) => {
     setTickets((prev) =>
@@ -105,11 +126,12 @@ export default function App() {
           {error} — click to dismiss
         </div>
       )}
-      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onOpen={setEditing} />
+      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={setEditing} />
       <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
 
       {editing && (
         <TicketModal
+          key={editing === 'new' ? 'new' : editing.id}
           ticket={editing === 'new' ? null : editing}
           allTickets={tickets}
           projects={projects}

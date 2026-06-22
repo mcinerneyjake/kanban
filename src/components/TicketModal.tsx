@@ -96,9 +96,14 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
   const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>()
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project
   const parentOptions = allTickets.filter(
-    (t) => t.id !== ticket?.id && !descendantIds.has(t.id) && t.status !== 'done' && t.status !== 'archived' && sameProject(t),
+    (t) =>
+      t.id !== ticket?.id &&
+      !descendantIds.has(t.id) &&
+      t.status !== 'archived' &&
+      sameProject(t) &&
+      // Always include the current parent so it's visible and clearable, even if done.
+      (t.status !== 'done' || t.id === form.parent),
   )
-  const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
   const availableBlockers = allTickets.filter(
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && t.status !== 'archived' && sameProject(t),
@@ -186,16 +191,6 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
                   </button>
                 ))}
               </div>
-            </div>
-          )}
-
-          {/* Parent breadcrumb — shown when this ticket has a parent */}
-          {parentTicket && (
-            <div className="parent-crumb">
-              <span className="parent-crumb-label">Parent:</span>
-              <button type="button" className="parent-crumb-link" onClick={() => onOpen(parentTicket)}>
-                {parentTicket.title}
-              </button>
             </div>
           )}
 
