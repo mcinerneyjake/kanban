@@ -20,6 +20,7 @@ export default function App() {
 
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message))
+    api.projects().then(setProjects).catch(() => {})
   }, [])
 
   const filteredTickets = useMemo(() => {
@@ -41,7 +42,6 @@ export default function App() {
 
   useEffect(() => {
     load()
-    api.projects().then(setProjects).catch(() => {})
   }, [load])
 
   const handleSave = async (data: Partial<Ticket>) => {
