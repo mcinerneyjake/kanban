@@ -81,7 +81,7 @@ export default function TicketModal({ ticket, onSave, onDelete, onClose }: Props
             <label className="solo">
               Project
               <select value={form.project ?? ''} onChange={setProject}>
-                <option value="">— None —</option>
+                <option value="">None</option>
                 {projects.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </label>
