@@ -8,6 +8,7 @@
     "server": "tsx watch server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "review": "node scripts/review.mjs",
     "lint": "eslint src server shared mcp",
     "typecheck": "tsc --noEmit",
     "build": "vite build",

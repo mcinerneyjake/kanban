@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Runs `claude -p /code-review` with stream-json output and renders a live
-// spinner so the terminal shows what's happening instead of hanging silently.
+// Run with: npm run review
+// Invokes /code-review via the claude CLI and renders a live spinner so the
+// terminal shows what's happening instead of hanging silently.
 
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
@@ -28,7 +29,7 @@ function spinStop() {
   if (!spinTimer) return
   clearInterval(spinTimer)
   spinTimer = null
-  process.stderr.write('\r\x1b[2K') // erase the spinner line
+  process.stderr.write('\r\x1b[2K')
 }
 
 // ── stream handling ───────────────────────────────────────────────────────────
@@ -76,6 +77,16 @@ function handleEvent(ev) {
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
+
+if (!process.env.PATH?.includes('claude') && !process.env.CLAUDE_CLI) {
+  try {
+    const { execSync } = await import('node:child_process')
+    execSync('command -v claude', { stdio: 'ignore' })
+  } catch {
+    console.error('claude CLI not found — install Claude Code to use npm run review')
+    process.exit(1)
+  }
+}
 
 const proc = spawn('claude', [
   '-p', '/code-review',

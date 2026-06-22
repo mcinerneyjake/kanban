@@ -1,8 +1,0 @@
-#!/bin/sh
-
-if ! command -v claude >/dev/null 2>&1; then
-  echo "claude CLI not found — skipping code review"
-  exit 0
-fi
-
-node "$(dirname "$0")/review.mjs"
