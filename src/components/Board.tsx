@@ -1,6 +1,7 @@
 import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
 import Column from './Column.jsx'
 import type { SortBy } from './FilterBar.jsx'
+import { computeDropOrder } from '../lib/orderMath.js'
 
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
 
@@ -67,19 +68,7 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
   const handleDrop = (id: string, status: Ticket['status'], beforeId: string | null) => {
     if (beforeId === id) return // dropped onto itself: no-op
     const column = inColumn(status).filter((t) => t.id !== id)
-
-    let order: number
-    if (!beforeId) {
-      const last = column[column.length - 1]
-      order = last ? last.order + 1 : 1
-    } else {
-      const idx = column.findIndex((t) => t.id === beforeId)
-      const next = column[idx]
-      const prev = column[idx - 1]
-      const lo = prev ? prev.order : next.order - 1
-      order = (lo + next.order) / 2
-    }
-    onMove(id, status, order)
+    onMove(id, status, computeDropOrder(column, beforeId))
   }
 
   return (

@@ -24,7 +24,18 @@ This project has a kanban MCP server. When asked to work on a ticket:
 1. Call `list_tickets` to find it by title match
 2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call)
 3. Implement the work described in the ticket's `body`
-4. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+4. **Write tests** for any new server-side logic introduced (see Testing rule below)
+5. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+
+## Testing
+
+After every feature or bug-fix ticket, write pertinent tests in `server/tickets.test.ts` (or a new `*.test.ts` file if the logic lives elsewhere). Tests are written with Vitest and follow the existing patterns in `server/tickets.test.ts`:
+
+- Use `TICKETS_DIR_OVERRIDE` to redirect file I/O to a temp directory — never touch the real `tickets/` folder
+- Use `makeRaw` / `writeRaw` helpers to seed fixture files directly, avoiding round-trips through `createTicket`
+- Cover: the happy path, edge cases (empty input, boundary values), and rejection cases (invalid input, missing resources)
+- Skip tests for pure UI concerns (React components, CSS) — focus on the service layer and any new API routes
+- Run `npm test` and confirm all tests pass before marking the ticket done
 
 When asked to create a ticket, use `create_ticket`. When asked what's on the board or what's left to do, call `list_tickets`.
 
