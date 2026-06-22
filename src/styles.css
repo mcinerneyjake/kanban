@@ -311,6 +311,7 @@ body {
   width: 560px;
   max-width: 92vw;
   max-height: 90vh;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 20px;
   box-shadow: 0 8px 24px rgba(9, 30, 66, 0.35);
@@ -407,6 +408,7 @@ body {
   background: var(--card-bg);
   color: var(--primary);
   cursor: pointer;
+  max-width: 220px;
 }
 
 .blocker-tags {
