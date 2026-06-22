@@ -3,7 +3,7 @@ import { api } from './api.js'
 import Board from './components/Board.jsx'
 import ArchiveLane from './components/ArchiveLane.jsx'
 import TicketModal from './components/TicketModal.jsx'
-import FilterBar, { defaultFilter, type FilterState } from './components/FilterBar.jsx'
+import FilterPopover, { defaultFilter, type FilterState } from './components/FilterPopover.jsx'
 import { useTheme } from './useTheme.js'
 import type { Ticket } from '../shared/constants.js'
 
@@ -32,6 +32,14 @@ export default function App() {
     if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type))
     if (filter.priority) result = result.filter((t) => t.priority === filter.priority)
     if (filter.project) result = result.filter((t) => t.project === filter.project)
+    if (filter.dateFrom || filter.dateTo) {
+      result = result.filter((t) => {
+        const d = t[filter.dateField].slice(0, 10)
+        if (filter.dateFrom && d < filter.dateFrom) return false
+        if (filter.dateTo && d > filter.dateTo) return false
+        return true
+      })
+    }
     return result
   }, [tickets, filter])
 
@@ -85,6 +93,7 @@ export default function App() {
           <button className="theme-toggle" onClick={toggle} title="Toggle theme">
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
+          <FilterPopover filter={filter} projects={projects} onChange={setFilter} />
           <button className="btn primary" onClick={() => setEditing('new')}>
             + New ticket
           </button>
@@ -96,8 +105,6 @@ export default function App() {
           {error} — click to dismiss
         </div>
       )}
-
-      <FilterBar filter={filter} projects={projects} onChange={setFilter} />
       <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onOpen={setEditing} />
       <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
 

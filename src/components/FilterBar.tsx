@@ -1,12 +1,16 @@
 import { TYPES, PRIORITIES, type TicketType, type Priority } from '../../shared/constants.js'
 
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
+export type DateField = 'created' | 'updated'
 
 export type FilterState = {
   types: TicketType[]
   priority: Priority | ''
   project: string
   sort: SortBy
+  dateField: DateField
+  dateFrom: string
+  dateTo: string
 }
 
 export const defaultFilter: FilterState = {
@@ -14,6 +18,9 @@ export const defaultFilter: FilterState = {
   priority: '',
   project: '',
   sort: 'order',
+  dateField: 'created',
+  dateFrom: '',
+  dateTo: '',
 }
 
 type Props = {
@@ -35,7 +42,9 @@ export default function FilterBar({ filter, projects, onChange }: Props) {
     filter.types.length > 0 ||
     filter.priority !== '' ||
     filter.project !== '' ||
-    filter.sort !== 'order'
+    filter.sort !== 'order' ||
+    filter.dateFrom !== '' ||
+    filter.dateTo !== ''
 
   return (
     <div className="filter-bar">
@@ -49,6 +58,32 @@ export default function FilterBar({ filter, projects, onChange }: Props) {
             {t}
           </button>
         ))}
+      </div>
+
+      <div className="filter-group">
+        <select
+          value={filter.dateField}
+          onChange={(e) => onChange({ ...filter, dateField: e.target.value as DateField })}
+          className="filter-select"
+        >
+          <option value="created">Created</option>
+          <option value="updated">Updated</option>
+        </select>
+        <input
+          type="date"
+          value={filter.dateFrom}
+          onChange={(e) => onChange({ ...filter, dateFrom: e.target.value })}
+          className="filter-select filter-date"
+          title="From date"
+        />
+        <span className="filter-date-sep">–</span>
+        <input
+          type="date"
+          value={filter.dateTo}
+          onChange={(e) => onChange({ ...filter, dateTo: e.target.value })}
+          className="filter-select filter-date"
+          title="To date"
+        />
       </div>
 
       <div className="filter-group">
