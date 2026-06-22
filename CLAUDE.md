@@ -28,6 +28,17 @@ This project has a kanban MCP server. When asked to work on a ticket:
 
 When asked to create a ticket, use `create_ticket`. When asked what's on the board or what's left to do, call `list_tickets`.
 
+### Ticket creation flow
+
+Before calling `create_ticket`, always use `AskUserQuestion` to collect the following fields in a single prompt (4 questions):
+
+1. **Type** — single-select, options: `bug`, `feature`, `task`, `chore`
+2. **Priority** — single-select, options: `low`, `medium`, `high`, `urgent`
+3. **Status** — single-select, options: `backlog`, `todo`, `in-progress`, `qa`, `done` (default `backlog`)
+4. **Project** — single-select, options: `None` plus any project names visible in the current board context; the user can pick "Other" to type a custom name
+
+Then call `create_ticket` with the title (from the user's original request) and all four fields. Do not call `create_ticket` before collecting these selections.
+
 ## Project structure
 
 - `server/tickets.ts` — service layer (CRUD on markdown files, single source of truth)

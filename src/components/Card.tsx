@@ -5,11 +5,12 @@ const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', tas
 type Props = {
   ticket: Ticket
   columnId: Ticket['status']
+  childCount: number
   onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onOpen: (ticket: Ticket) => void
 }
 
-export default function Card({ ticket, columnId, onDrop, onOpen }: Props) {
+export default function Card({ ticket, columnId, childCount, onDrop, onOpen }: Props) {
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     e.dataTransfer.setData('text/ticket-id', ticket.id)
     e.dataTransfer.effectAllowed = 'move'
@@ -40,6 +41,16 @@ export default function Card({ ticket, columnId, onDrop, onOpen }: Props) {
         <span className={`badge prio prio-${ticket.priority}`}>
           {ticket.priority}
         </span>
+        {childCount > 0 && (
+          <span className="badge subtasks" title={`${childCount} sub-ticket${childCount > 1 ? 's' : ''}`}>
+            ▸ {childCount}
+          </span>
+        )}
+        {ticket.blockers.length > 0 && (
+          <span className="badge blocked" title={`Blocked by ${ticket.blockers.length} ticket${ticket.blockers.length > 1 ? 's' : ''}`}>
+            ⛔ {ticket.blockers.length}
+          </span>
+        )}
       </div>
     </div>
   )

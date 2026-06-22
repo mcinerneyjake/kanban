@@ -25,7 +25,7 @@ export class HttpError extends Error {
   }
 }
 
-type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project'>>
+type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent'>>
 
 async function ensureDir() {
   await fs.mkdir(TICKETS_DIR, { recursive: true })
@@ -58,6 +58,10 @@ function normalize(id: string, data: Record<string, unknown>, body: string): Tic
     updated: asString(data.updated),
     body: (body || '').trim(),
     project: typeof data.project === 'string' && data.project ? data.project : null,
+    blockers: Array.isArray(data.blockers)
+      ? (data.blockers as unknown[]).filter((v): v is string => typeof v === 'string')
+      : [],
+    parent: typeof data.parent === 'string' && data.parent ? data.parent : null,
   }
 }
 
@@ -73,6 +77,8 @@ function serialize(ticket: Ticket): string {
     updated: ticket.updated,
   }
   if (ticket.project) data.project = ticket.project
+  if (ticket.blockers.length > 0) data.blockers = ticket.blockers
+  if (ticket.parent) data.parent = ticket.parent
   return matter.stringify(`\n${ticket.body}\n`, data)
 }
 
@@ -153,6 +159,9 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
       order: maxOrder + 1,
       created: now,
       updated: now,
+      blockers: input.blockers ?? [],
+      project: input.project ?? null,
+      parent: input.parent ?? null,
     },
     input.body ?? '',
   )
@@ -165,7 +174,7 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   const existing = await getTicket(id)
   const merged: Ticket = {
     ...existing,
-    ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body', 'project']),
+    ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body', 'project', 'blockers', 'parent']),
     id,
     created: existing.created,
     updated: new Date().toISOString(),

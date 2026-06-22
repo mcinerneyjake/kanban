@@ -28,6 +28,15 @@ export default function App() {
     return result
   }, [tickets, filter])
 
+  // Keyed by parent id → count of children, computed from all tickets (not filtered)
+  const childCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const t of tickets) {
+      if (t.parent) counts[t.parent] = (counts[t.parent] ?? 0) + 1
+    }
+    return counts
+  }, [tickets])
+
   useEffect(() => { load() }, [load])
 
   const handleSave = async (data: Partial<Ticket>) => {
@@ -80,13 +89,15 @@ export default function App() {
       )}
 
       <FilterBar filter={filter} onChange={setFilter} />
-      <Board tickets={filteredTickets} sort={filter.sort} onMove={handleMove} onOpen={setEditing} />
+      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onOpen={setEditing} />
 
       {editing && (
         <TicketModal
           ticket={editing === 'new' ? null : editing}
+          allTickets={tickets}
           onSave={handleSave}
           onDelete={handleDelete}
+          onOpen={setEditing}
           onClose={() => setEditing(null)}
         />
       )}

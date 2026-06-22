@@ -328,3 +328,160 @@ body {
 
 .modal-actions { display: flex; align-items: center; gap: 8px; }
 .modal-actions .spacer { flex: 1; }
+
+/* --- Blockers ---------------------------------------------------------- */
+.blockers-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.blockers-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.blocker-add-select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: var(--card-bg);
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.blocker-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.blocker-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--badge-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.blocker-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.blocker-remove:hover { color: var(--danger); }
+
+.blockers-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.badge.blocked {
+  background: #fff0ee;
+  color: var(--danger);
+}
+[data-theme="dark"] .badge.blocked {
+  background: #3d1a18;
+  color: var(--danger);
+}
+
+.badge.subtasks {
+  background: var(--badge-bg);
+  color: var(--muted);
+}
+
+/* --- Parent crumb -------------------------------------------------------- */
+.parent-crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.parent-crumb-label { font-weight: 500; }
+.parent-crumb-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  text-align: left;
+}
+.parent-crumb-link:hover { text-decoration: underline; }
+
+/* --- Sub-tickets --------------------------------------------------------- */
+.subtasks-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subtasks-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.subtasks-count {
+  background: var(--col-count-bg);
+  border-radius: 10px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.subtask-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--badge-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  width: 100%;
+}
+.subtask-item:hover { border-color: var(--primary); }
+
+.subtask-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.subtask-dot.prio-low    { background: var(--prio-low); }
+.subtask-dot.prio-medium { background: var(--prio-medium); }
+.subtask-dot.prio-high   { background: var(--prio-high); }
+.subtask-dot.prio-urgent { background: var(--prio-urgent); }
+
+.subtask-title { flex: 1; }
+
+.subtask-status {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: capitalize;
+  white-space: nowrap;
+}

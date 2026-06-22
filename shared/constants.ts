@@ -31,4 +31,6 @@ export type Ticket = {
   updated: string
   body: string
   project: string | null
+  blockers: string[]
+  parent: string | null
 }

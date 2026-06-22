@@ -6,13 +6,14 @@ type Status = { id: Ticket['status']; label: string }
 type Props = {
   column: Status
   tickets: Ticket[]
+  childCounts: Record<string, number>
   onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onOpen: (ticket: Ticket) => void
 }
 
 // A drop target. Dropping on the column's empty space appends; dropping on a
 // card (handled in Card) inserts above that card.
-export default function Column({ column, tickets, onDrop, onOpen }: Props) {
+export default function Column({ column, tickets, childCounts, onDrop, onOpen }: Props) {
   const onColumnDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     const id = e.dataTransfer.getData('text/ticket-id')
@@ -35,6 +36,7 @@ export default function Column({ column, tickets, onDrop, onOpen }: Props) {
             key={t.id}
             ticket={t}
             columnId={column.id}
+            childCount={childCounts[t.id] ?? 0}
             onDrop={onDrop}
             onOpen={onOpen}
           />

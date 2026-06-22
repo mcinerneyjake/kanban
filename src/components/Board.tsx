@@ -7,6 +7,7 @@ const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low
 type Props = {
   tickets: Ticket[]
   sort: SortBy
+  childCounts: Record<string, number>
   onMove: (id: string, status: Ticket['status'], order: number) => void
   onOpen: (ticket: Ticket) => void
 }
@@ -14,7 +15,7 @@ type Props = {
 // Owns the drop math. Cards carry a fractional `order`; inserting between two
 // cards just takes the midpoint of their orders, so a move rewrites exactly
 // ONE ticket file instead of renumbering the whole column.
-export default function Board({ tickets, sort, onMove, onOpen }: Props) {
+export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Props) {
   // Always order-based — used for drag-drop insertion math.
   const inColumn = (status: Ticket['status']) =>
     tickets
@@ -59,6 +60,7 @@ export default function Board({ tickets, sort, onMove, onOpen }: Props) {
           key={col.id}
           column={col}
           tickets={displayColumn(col.id)}
+          childCounts={childCounts}
           onDrop={handleDrop}
           onOpen={onOpen}
         />
