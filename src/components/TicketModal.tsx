@@ -40,7 +40,12 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     body: ticket?.body ?? '',
     project: ticket?.project ?? null,
     blockers: ticket?.blockers ?? [],
-    parent: ticket?.parent ?? null,
+    parent: (() => {
+      const id = ticket?.parent ?? null
+      if (!id) return null
+      const p = allTickets.find((t) => t.id === id)
+      return p && p.status !== 'archived' ? id : null
+    })(),
   })
   const [preview, setPreview] = useState(false)
 
