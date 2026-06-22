@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import express, { Request, Response, NextFunction } from 'express'
 import {
   listTickets,
@@ -54,10 +55,12 @@ app.post('/api/archive', wrap(async (_req, res) => {
 }))
 
 // Schedule archiving every Sunday at 6 PM local time.
-function msUntilNextSundayEvening(): number {
-  const now = new Date()
+// Exported for testing — pass a specific `now` to avoid real-clock dependency.
+export function msUntilNextSundayEvening(now = new Date()): number {
   const target = new Date(now)
-  const daysUntilSunday = ((7 - now.getDay()) % 7) || 7
+  const day = now.getDay()
+  // If it's Sunday and 6 PM hasn't passed yet, fire today; otherwise next Sunday.
+  const daysUntilSunday = day === 0 && now.getHours() < 18 ? 0 : (7 - day) % 7 || 7
   target.setDate(now.getDate() + daysUntilSunday)
   target.setHours(18, 0, 0, 0)
   return target.getTime() - now.getTime()
@@ -73,7 +76,9 @@ function scheduleWeeklyArchive() {
   }, delay)
 }
 
-scheduleWeeklyArchive()
-
-const PORT = process.env.PORT || 3001
-app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`))
+// Only bind port and start the scheduler when run directly, not when imported in tests.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  scheduleWeeklyArchive()
+  const PORT = process.env.PORT || 3001
+  app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`))
+}
