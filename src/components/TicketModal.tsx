@@ -82,12 +82,12 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
   const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>()
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project
   const parentOptions = allTickets.filter(
-    (t) => t.id !== ticket?.id && !descendantIds.has(t.id) && sameProject(t),
+    (t) => t.id !== ticket?.id && !descendantIds.has(t.id) && t.status !== 'done' && sameProject(t),
   )
   const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
   const availableBlockers = allTickets.filter(
-    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && sameProject(t),
+    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && sameProject(t),
   )
   const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter(Boolean) as Ticket[]
 
