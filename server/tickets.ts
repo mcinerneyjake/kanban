@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import matter from 'gray-matter'
-import { STATUS_IDS, TYPES, PRIORITIES, type Ticket, type StatusId, type TicketType, type Priority } from '../shared/constants.js'
+import { STATUS_IDS, TYPES, PRIORITIES, type Ticket } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Service layer: the ONLY module that touches the filesystem. Routes call
