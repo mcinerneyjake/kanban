@@ -36,18 +36,28 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
     })()
 
     const columnIds = new Set(base.map((t) => t.id))
+
+    // Build parent→children map in one pass (children inherit sorted order).
+    const childrenOf = new Map<string, Ticket[]>()
+    for (const t of sorted) {
+      if (t.parent && columnIds.has(t.parent)) {
+        const siblings = childrenOf.get(t.parent) ?? []
+        siblings.push(t)
+        childrenOf.set(t.parent, siblings)
+      }
+    }
+
     const roots = sorted.filter((t) => !t.parent || !columnIds.has(t.parent))
     const depths: Record<string, number> = {}
     const ordered: Ticket[] = []
 
-    for (const root of roots) {
-      depths[root.id] = 0
-      ordered.push(root)
-      for (const child of sorted.filter((t) => t.parent === root.id)) {
-        depths[child.id] = 1
-        ordered.push(child)
-      }
+    // DFS walk so each subtree is contiguous in the output (parent → children → grandchildren).
+    const walk = (t: Ticket, depth: number) => {
+      depths[t.id] = depth
+      ordered.push(t)
+      for (const child of childrenOf.get(t.id) ?? []) walk(child, depth + 1)
     }
+    for (const root of roots) walk(root, 0)
 
     return { ordered, depths }
   }
