@@ -244,6 +244,27 @@ describe('archiveStaleTickets', () => {
     expect(tickets.every((t) => t.status !== 'archived')).toBe(true)
   })
 
+  it('does not archive a done ticket with a missing updated field (NaN guard)', async () => {
+    // Write a ticket without an `updated` key — normalize() produces '' via asString(),
+    // which makes new Date('').getTime() return NaN. The guard must treat NaN as "unknown
+    // age" and skip archiving rather than archiving immediately.
+    const raw = [
+      '---',
+      'title: No updated field',
+      'type: task',
+      'priority: medium',
+      'status: done',
+      'order: 1',
+      "created: '2026-01-01T00:00:00.000Z'",
+      '---',
+      '',
+    ].join('\n')
+    await writeRaw('tkt-noupdated', raw)
+    const count = await archiveStaleTickets()
+    expect(count).toBe(0)
+    expect((await getTicket('tkt-noupdated')).status).toBe('done')
+  })
+
   it('only archives the stale done tickets in a mixed board', async () => {
     await writeRaw('tkt-stale1', makeRaw('Stale 1', 1, { status: 'done', updated: STALE_DATE }))
     await writeRaw('tkt-stale2', makeRaw('Stale 2', 2, { status: 'done', updated: STALE_DATE }))

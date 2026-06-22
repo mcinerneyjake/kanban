@@ -212,7 +212,8 @@ export async function archiveStaleTickets(): Promise<number> {
   let count = 0
   for (const ticket of tickets) {
     if (ticket.status !== 'done') continue
-    if (now - new Date(ticket.updated).getTime() < ARCHIVE_AGE_MS) continue
+    const updatedAt = new Date(ticket.updated).getTime()
+    if (isNaN(updatedAt) || now - updatedAt < ARCHIVE_AGE_MS) continue
     await updateTicket(ticket.id, { status: 'archived' })
     count++
   }
