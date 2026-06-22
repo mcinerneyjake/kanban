@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { marked } from 'marked'
-import { STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
+import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
 
@@ -125,7 +125,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
             <label>
               Status
               <select value={form.status} onChange={set('status')}>
-                {STATUSES.map((s) => (
+                {(form.status === 'archived' ? STATUSES : BOARD_STATUSES).map((s) => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
               </select>
