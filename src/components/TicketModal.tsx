@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { marked } from 'marked'
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
 
@@ -51,6 +51,12 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     })(),
   })
   const [preview, setPreview] = useState(false)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
 
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }))

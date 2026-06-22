@@ -12,6 +12,7 @@
     "lint": "eslint src server shared mcp",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "prepare": "husky"
   },
