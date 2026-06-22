@@ -24,18 +24,31 @@ This project has a kanban MCP server. When asked to work on a ticket:
 1. Call `list_tickets` to find it by title match
 2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call)
 3. Implement the work described in the ticket's `body`
-4. **Write tests** for any new server-side logic introduced (see Testing rule below)
-5. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
+5. Run `npm test` and confirm all tests pass
+6. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+
+The implementation summary **must** include a test line — either:
+- `Tests: N added — <brief description of what they cover>`
+- `Tests: none — <reason, e.g. "pure UI change" or "no new logic">`
 
 ## Testing
 
-After every feature or bug-fix ticket, write pertinent tests in `server/tickets.test.ts` (or a new `*.test.ts` file if the logic lives elsewhere). Tests are written with Vitest and follow the existing patterns in `server/tickets.test.ts`:
+After every feature or bug-fix ticket, evaluate which layers were touched and write tests accordingly:
 
+| Layer touched | Test file | Framework |
+|---|---|---|
+| `server/tickets.ts` (service) | `server/tickets.test.ts` | Vitest |
+| `server/index.ts` (API routes) | `server/index.test.ts` | Vitest |
+| `src/lib/` (shared utilities) | `src/lib/*.test.ts` next to the file | Vitest |
+| React components / CSS only | skip | — |
+
+Vitest patterns to follow:
 - Use `TICKETS_DIR_OVERRIDE` to redirect file I/O to a temp directory — never touch the real `tickets/` folder
 - Use `makeRaw` / `writeRaw` helpers to seed fixture files directly, avoiding round-trips through `createTicket`
 - Cover: the happy path, edge cases (empty input, boundary values), and rejection cases (invalid input, missing resources)
-- Skip tests for pure UI concerns (React components, CSS) — focus on the service layer and any new API routes
-- Run `npm test` and confirm all tests pass before marking the ticket done
+
+**Skip tests only when the change is pure UI** (React components, CSS, no logic). All other changes — service functions, API routes, utility modules — require at least a happy-path test. State the skip reason explicitly in the implementation summary.
 
 When asked to create a ticket, use `create_ticket`. When asked what's on the board or what's left to do, call `list_tickets`.
 
