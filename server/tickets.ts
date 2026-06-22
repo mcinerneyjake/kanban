@@ -11,7 +11,11 @@ import { STATUS_IDS, TYPES, PRIORITIES, type Ticket, type StatusId, type TicketT
 // ---------------------------------------------------------------------------
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const TICKETS_DIR = path.join(__dirname, '..', 'tickets')
+
+// Tests can redirect file I/O to a temp directory via this env var.
+function getTicketsDir() {
+  return process.env.TICKETS_DIR_OVERRIDE ?? path.join(__dirname, '..', 'tickets')
+}
 
 // Generated ids only ever match this; we re-check on every path build so a
 // crafted :id param can never escape TICKETS_DIR (path-traversal guard).
@@ -28,12 +32,12 @@ export class HttpError extends Error {
 type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent'>>
 
 async function ensureDir() {
-  await fs.mkdir(TICKETS_DIR, { recursive: true })
+  await fs.mkdir(getTicketsDir(), { recursive: true })
 }
 
 function ticketPath(id: string): string {
   if (!ID_RE.test(id)) throw new HttpError(400, `Invalid ticket id: ${id}`)
-  return path.join(TICKETS_DIR, `${id}.md`)
+  return path.join(getTicketsDir(), `${id}.md`)
 }
 
 function validEnum<T extends string>(arr: readonly T[], val: unknown, fallback: T): T {
@@ -121,11 +125,11 @@ function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K
 
 export async function listTickets(): Promise<Ticket[]> {
   await ensureDir()
-  const files = await fs.readdir(TICKETS_DIR)
+  const files = await fs.readdir(getTicketsDir())
   const tickets: Ticket[] = []
   for (const file of files) {
     if (!file.endsWith('.md')) continue
-    const raw = await fs.readFile(path.join(TICKETS_DIR, file), 'utf8')
+    const raw = await fs.readFile(path.join(getTicketsDir(), file), 'utf8')
     const { data, content } = matter(raw)
     tickets.push(normalize(file.slice(0, -3), data as Record<string, unknown>, content))
   }
