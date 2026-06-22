@@ -66,14 +66,20 @@ export function msUntilNextSundayEvening(now = new Date()): number {
   return target.getTime() - now.getTime()
 }
 
+let archiveTimer: ReturnType<typeof setTimeout> | null = null
+
 function scheduleWeeklyArchive() {
   const delay = msUntilNextSundayEvening()
   const days = Math.round(delay / 864e5)
   console.log(`[archive] Next run in ~${days} day(s)`)
-  setTimeout(async () => {
+  archiveTimer = setTimeout(async () => {
     try { await archiveStaleTickets() } catch (e) { console.error('[archive] error', e) }
     scheduleWeeklyArchive()
   }, delay)
+}
+
+export function stopArchiveScheduler() {
+  if (archiveTimer) { clearTimeout(archiveTimer); archiveTimer = null }
 }
 
 // Only bind port and start the scheduler when run directly, not when imported in tests.

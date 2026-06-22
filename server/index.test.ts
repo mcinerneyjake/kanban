@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { msUntilNextSundayEvening } from './index.js'
+import { msUntilNextSundayEvening, stopArchiveScheduler } from './index.js'
 
 // Build a Date for a given day-of-week and hour (local time).
 // day: 0=Sun, 1=Mon, ... 6=Sat
@@ -58,5 +58,17 @@ describe('msUntilNextSundayEvening', () => {
         expect(msUntilNextSundayEvening(at(day, hour))).toBeGreaterThan(0)
       }
     }
+  })
+})
+
+describe('stopArchiveScheduler', () => {
+  it('is exported and callable with no timer running without throwing', () => {
+    // The scheduler is never started in tests (entry-point guard), so archiveTimer
+    // is null. Calling stop should be a safe no-op.
+    expect(() => stopArchiveScheduler()).not.toThrow()
+  })
+
+  it('is idempotent — calling twice does not throw', () => {
+    expect(() => { stopArchiveScheduler(); stopArchiveScheduler() }).not.toThrow()
   })
 })
