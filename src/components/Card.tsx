@@ -10,10 +10,12 @@ type Props = {
   columnId?: Ticket['status']
   depth?: number
   childCount?: number
+  isCollapsed?: boolean
   onDrop?: (id: string, status: Ticket['status'], beforeId: string | null) => void
+  onToggleCollapse?: (id: string) => void
 }
 
-export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, onDrop }: Props) {
+export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop)
 
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
@@ -47,8 +49,12 @@ export default function Card({ ticket, onOpen, columnId, depth = 0, childCount =
           {ticket.priority}
         </span>
         {childCount > 0 && (
-          <span className="badge subtasks" title={plural(childCount, 'sub-ticket')}>
-            ▸ {childCount}
+          <span
+            className="badge subtasks"
+            title={isCollapsed ? `Show ${plural(childCount, 'sub-ticket')}` : `Hide ${plural(childCount, 'sub-ticket')}`}
+            onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(ticket.id) }}
+          >
+            {isCollapsed ? '▸' : '▾'} {childCount}
           </span>
         )}
         {ticket.blockers.length > 0 && (

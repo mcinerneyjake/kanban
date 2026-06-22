@@ -455,6 +455,12 @@ body {
 .badge.subtasks {
   background: var(--badge-bg);
   color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.badge.subtasks:hover {
+  background: var(--primary);
+  color: #fff;
 }
 
 /* --- Parent crumb -------------------------------------------------------- */

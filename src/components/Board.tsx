@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
 import Column from './Column.jsx'
 import type { SortBy } from './FilterBar.jsx'
@@ -14,6 +15,15 @@ type Props = {
 }
 
 export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Props) {
+  const [collapsed, setCollapsed] = useState(new Set<string>())
+
+  const toggleCollapse = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   // Always order-based — used for drag-drop insertion math.
   const inColumn = (status: Ticket['status']) =>
     tickets
@@ -53,7 +63,9 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
     const walk = (t: Ticket, depth: number) => {
       depths[t.id] = depth
       ordered.push(t)
-      for (const child of childrenOf.get(t.id) ?? []) walk(child, depth + 1)
+      if (!collapsed.has(t.id)) {
+        for (const child of childrenOf.get(t.id) ?? []) walk(child, depth + 1)
+      }
     }
     for (const root of roots) walk(root, 0)
 
@@ -79,8 +91,10 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
             tickets={ordered}
             depths={depths}
             childCounts={childCounts}
+            collapsed={collapsed}
             onDrop={handleDrop}
             onOpen={onOpen}
+            onToggleCollapse={toggleCollapse}
           />
         )
       })}

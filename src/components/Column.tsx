@@ -8,13 +8,15 @@ type Props = {
   tickets: Ticket[]
   depths: Record<string, number>
   childCounts: Record<string, number>
+  collapsed: Set<string>
   onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onOpen: (ticket: Ticket) => void
+  onToggleCollapse: (id: string) => void
 }
 
 // A drop target. Dropping on the column's empty space appends; dropping on a
 // card (handled in Card) inserts above that card.
-export default function Column({ column, tickets, depths, childCounts, onDrop, onOpen }: Props) {
+export default function Column({ column, tickets, depths, childCounts, collapsed, onDrop, onOpen, onToggleCollapse }: Props) {
   const onColumnDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     const id = e.dataTransfer.getData('text/ticket-id')
@@ -39,8 +41,10 @@ export default function Column({ column, tickets, depths, childCounts, onDrop, o
             columnId={column.id}
             depth={depths[t.id] ?? 0}
             childCount={childCounts[t.id] ?? 0}
+            isCollapsed={collapsed.has(t.id)}
             onDrop={onDrop}
             onOpen={onOpen}
+            onToggleCollapse={onToggleCollapse}
           />
         ))}
       </div>
