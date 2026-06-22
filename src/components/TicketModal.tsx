@@ -39,7 +39,10 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     status: ticket?.status ?? 'backlog',
     body: ticket?.body ?? '',
     project: ticket?.project ?? null,
-    blockers: ticket?.blockers ?? [],
+    blockers: (ticket?.blockers ?? []).filter((id) => {
+      const t = allTickets.find((bt) => bt.id === id)
+      return t && t.status !== 'archived'
+    }),
     parent: (() => {
       const id = ticket?.parent ?? null
       if (!id) return null
