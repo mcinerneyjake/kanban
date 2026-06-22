@@ -15,7 +15,7 @@ const TICKETS_DIR = path.join(__dirname, '..', 'tickets')
 
 // Generated ids only ever match this; we re-check on every path build so a
 // crafted :id param can never escape TICKETS_DIR (path-traversal guard).
-const ID_RE = /^[a-z0-9-]+$/
+const ID_RE = /^[a-zA-Z0-9-]+$/
 
 export class HttpError extends Error {
   status: number
