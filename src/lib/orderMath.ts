@@ -12,6 +12,11 @@ export function computeDropOrder(column: Ticket[], beforeId: string | null): num
     return last ? last.order + 1 : 1
   }
   const idx = column.findIndex((t) => t.id === beforeId)
+  if (idx === -1) {
+    // Target card moved away (race condition) — fall back to append.
+    const last = column[column.length - 1]
+    return last ? last.order + 1 : 1
+  }
   const next = column[idx]
   const prev = column[idx - 1]
   const lo = prev ? prev.order : next.order - 1

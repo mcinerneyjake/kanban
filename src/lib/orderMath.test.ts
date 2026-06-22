@@ -48,6 +48,17 @@ describe('computeDropOrder — insert between two cards', () => {
   })
 })
 
+describe('computeDropOrder — stale beforeId (race condition guard)', () => {
+  it('falls back to append when beforeId is not found in column', () => {
+    const col = [card('a', 3), card('b', 7)]
+    expect(computeDropOrder(col, 'ghost')).toBe(8) // last.order + 1
+  })
+
+  it('returns 1 when beforeId is missing and column is empty', () => {
+    expect(computeDropOrder([], 'ghost')).toBe(1)
+  })
+})
+
 describe('computeDropOrder — float precision edge case', () => {
   it('result is strictly between two very close orders (documents known fragility)', () => {
     const lo = 1.0
