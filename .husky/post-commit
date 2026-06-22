@@ -5,8 +5,4 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 0
 fi
 
-echo ""
-echo "Running /code-review… (Ctrl-C to skip)"
-echo ""
-
-claude -p "/code-review" --permission-mode auto --no-session-persistence
+node "$(dirname "$0")/review.mjs"
