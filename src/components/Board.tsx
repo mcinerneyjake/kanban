@@ -13,9 +13,6 @@ type Props = {
   onOpen: (ticket: Ticket) => void
 }
 
-// Owns the drop math. Cards carry a fractional `order`; inserting between two
-// cards just takes the midpoint of their orders, so a move rewrites exactly
-// ONE ticket file instead of renumbering the whole column.
 export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Props) {
   // Always order-based — used for drag-drop insertion math.
   const inColumn = (status: Ticket['status']) =>
