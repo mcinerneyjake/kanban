@@ -2,12 +2,14 @@ import { useEffect, useState, useCallback } from 'react'
 import { api } from './api.js'
 import Board from './components/Board.jsx'
 import TicketModal from './components/TicketModal.jsx'
+import { useTheme } from './useTheme.js'
 import type { Ticket } from '../shared/constants.js'
 
 // Single source of UI state. Tickets are reloaded from the server after every
 // mutation (the files are the source of truth), except drag-moves which apply
 // optimistically for snappy reordering.
 export default function App() {
+  const { theme, toggle } = useTheme()
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null)
@@ -51,9 +53,14 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <h1>Kanban</h1>
-        <button className="btn primary" onClick={() => setEditing('new')}>
-          + New ticket
-        </button>
+        <div className="topbar-actions">
+          <button className="theme-toggle" onClick={toggle} title="Toggle theme">
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+          <button className="btn primary" onClick={() => setEditing('new')}>
+            + New ticket
+          </button>
+        </div>
       </header>
 
       {error && (

@@ -29,4 +29,5 @@ export type Ticket = {
   created: string
   updated: string
   body: string
+  project: string | null
 }

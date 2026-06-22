@@ -22,4 +22,5 @@ export const api = {
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),
   remove: (id: string): Promise<null> => fetch(`/api/tickets/${id}`, { method: 'DELETE' }).then((res) => json<null>(res)),
+  projects: (): Promise<string[]> => fetch('/api/projects').then((res) => json<string[]>(res)),
 }

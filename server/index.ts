@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express'
 import {
   listTickets,
+  listProjects,
   createTicket,
   updateTicket,
   deleteTicket,
@@ -24,6 +25,10 @@ const wrap = (fn: AsyncHandler) => (req: Request, res: Response, _next: NextFunc
     res.status(status).json({ error: message })
   })
 }
+
+app.get('/api/projects', wrap(async (_req, res) => {
+  res.json(await listProjects())
+}))
 
 app.get('/api/tickets', wrap(async (_req, res) => {
   res.json(await listTickets())

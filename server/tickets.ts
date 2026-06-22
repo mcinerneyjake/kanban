@@ -25,7 +25,7 @@ export class HttpError extends Error {
   }
 }
 
-type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body'>>
+type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project'>>
 
 async function ensureDir() {
   await fs.mkdir(TICKETS_DIR, { recursive: true })
@@ -57,12 +57,13 @@ function normalize(id: string, data: Record<string, unknown>, body: string): Tic
     created: asString(data.created),
     updated: asString(data.updated),
     body: (body || '').trim(),
+    project: typeof data.project === 'string' && data.project ? data.project : null,
   }
 }
 
 // Explicit key order -> deterministic, diff-friendly frontmatter.
 function serialize(ticket: Ticket): string {
-  const data = {
+  const data: Record<string, unknown> = {
     title: ticket.title,
     type: ticket.type,
     priority: ticket.priority,
@@ -71,6 +72,7 @@ function serialize(ticket: Ticket): string {
     created: ticket.created,
     updated: ticket.updated,
   }
+  if (ticket.project) data.project = ticket.project
   return matter.stringify(`\n${ticket.body}\n`, data)
 }
 
@@ -163,7 +165,7 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   const existing = await getTicket(id)
   const merged: Ticket = {
     ...existing,
-    ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body']),
+    ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body', 'project']),
     id,
     created: existing.created,
     updated: new Date().toISOString(),
@@ -171,6 +173,16 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   if (!merged.title.trim()) throw new HttpError(400, 'Title is required')
   await writeTicket(merged)
   return merged
+}
+
+const PROJECTS_DIR = path.join(__dirname, '..', '..')
+
+export async function listProjects(): Promise<string[]> {
+  const entries = await fs.readdir(PROJECTS_DIR, { withFileTypes: true })
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => e.name)
+    .sort()
 }
 
 export async function deleteTicket(id: string): Promise<void> {

@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { marked } from 'marked'
 import { STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
+import { api } from '../api.js'
 
-type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>
+type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project'>
 
 type Props = {
   ticket: Ticket | null
@@ -20,11 +21,20 @@ export default function TicketModal({ ticket, onSave, onDelete, onClose }: Props
     priority: ticket?.priority ?? 'medium',
     status: ticket?.status ?? 'backlog',
     body: ticket?.body ?? '',
+    project: ticket?.project ?? null,
   })
   const [preview, setPreview] = useState(false)
+  const [projects, setProjects] = useState<string[]>([])
+
+  useEffect(() => {
+    api.projects().then(setProjects).catch(() => {})
+  }, [])
 
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }))
+
+  const setProject = (e: React.ChangeEvent<HTMLSelectElement>) =>
+    setForm((f) => ({ ...f, project: e.target.value || null }))
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -63,6 +73,16 @@ export default function TicketModal({ ticket, onSave, onDelete, onClose }: Props
                 {STATUSES.map((s) => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="row">
+            <label className="solo">
+              Project
+              <select value={form.project ?? ''} onChange={setProject}>
+                <option value="">— None —</option>
+                {projects.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </label>
           </div>
