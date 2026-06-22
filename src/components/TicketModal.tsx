@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { marked } from 'marked'
 import { STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
-import { api } from '../api.js'
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
 
 type Props = {
   ticket: Ticket | null
   allTickets: Ticket[]
+  projects: string[]
   onSave: (data: FormState) => void
   onDelete: (id: string) => void
   onOpen: (ticket: Ticket) => void
@@ -16,7 +16,7 @@ type Props = {
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
-export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOpen, onClose }: Props) {
+export default function TicketModal({ ticket, allTickets, projects, onSave, onDelete, onOpen, onClose }: Props) {
   const [form, setForm] = useState<FormState>({
     title: ticket?.title ?? '',
     type: ticket?.type ?? 'task',
@@ -28,11 +28,6 @@ export default function TicketModal({ ticket, allTickets, onSave, onDelete, onOp
     parent: ticket?.parent ?? null,
   })
   const [preview, setPreview] = useState(false)
-  const [projects, setProjects] = useState<string[]>([])
-
-  useEffect(() => {
-    api.projects().then(setProjects).catch(() => {})
-  }, [])
 
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }))

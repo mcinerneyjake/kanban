@@ -36,6 +36,10 @@ function ticketPath(id: string): string {
   return path.join(TICKETS_DIR, `${id}.md`)
 }
 
+function validEnum<T extends string>(arr: readonly T[], val: unknown, fallback: T): T {
+  return (arr as readonly string[]).includes(val as string) ? val as T : fallback
+}
+
 // gray-matter/js-yaml will happily turn an unquoted ISO date back into a JS
 // Date on read. We always want strings, so coerce defensively.
 function asString(v: unknown): string {
@@ -50,9 +54,9 @@ function normalize(id: string, data: Record<string, unknown>, body: string): Tic
   return {
     id,
     title: asString(data.title),
-    type: (TYPES as readonly string[]).includes(data.type as string) ? data.type as TicketType : 'task',
-    priority: (PRIORITIES as readonly string[]).includes(data.priority as string) ? data.priority as Priority : 'medium',
-    status: (STATUS_IDS as readonly string[]).includes(data.status as string) ? data.status as StatusId : 'backlog',
+    type: validEnum(TYPES, data.type, 'task'),
+    priority: validEnum(PRIORITIES, data.priority, 'medium'),
+    status: validEnum(STATUS_IDS, data.status, 'backlog'),
     order: typeof data.order === 'number' ? data.order : 0,
     created: asString(data.created),
     updated: asString(data.updated),

@@ -16,6 +16,8 @@ export default function App() {
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null)
   const [filter, setFilter] = useState<FilterState>(defaultFilter)
 
+  const [projects, setProjects] = useState<string[]>([])
+
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message))
   }, [])
@@ -37,7 +39,10 @@ export default function App() {
     return counts
   }, [tickets])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    api.projects().then(setProjects).catch(() => {})
+  }, [load])
 
   const handleSave = async (data: Partial<Ticket>) => {
     try {
@@ -88,13 +93,14 @@ export default function App() {
         </div>
       )}
 
-      <FilterBar filter={filter} onChange={setFilter} />
+      <FilterBar filter={filter} projects={projects} onChange={setFilter} />
       <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onOpen={setEditing} />
 
       {editing && (
         <TicketModal
           ticket={editing === 'new' ? null : editing}
           allTickets={tickets}
+          projects={projects}
           onSave={handleSave}
           onDelete={handleDelete}
           onOpen={setEditing}

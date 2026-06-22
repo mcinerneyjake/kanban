@@ -2,15 +2,18 @@ import type { Ticket, TicketType } from '../../shared/constants.js'
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' }
 
+const plural = (n: number, word: string) => `${n} ${word}${n !== 1 ? 's' : ''}`
+
 type Props = {
   ticket: Ticket
   columnId: Ticket['status']
+  depth: number
   childCount: number
   onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onOpen: (ticket: Ticket) => void
 }
 
-export default function Card({ ticket, columnId, childCount, onDrop, onOpen }: Props) {
+export default function Card({ ticket, columnId, depth, childCount, onDrop, onOpen }: Props) {
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     e.dataTransfer.setData('text/ticket-id', ticket.id)
     e.dataTransfer.effectAllowed = 'move'
@@ -26,7 +29,7 @@ export default function Card({ ticket, columnId, childCount, onDrop, onOpen }: P
 
   return (
     <div
-      className={`card prio-${ticket.priority}`}
+      className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}`}
       draggable
       onDragStart={onDragStart}
       onDragOver={(e) => e.preventDefault()}
@@ -42,12 +45,12 @@ export default function Card({ ticket, columnId, childCount, onDrop, onOpen }: P
           {ticket.priority}
         </span>
         {childCount > 0 && (
-          <span className="badge subtasks" title={`${childCount} sub-ticket${childCount > 1 ? 's' : ''}`}>
+          <span className="badge subtasks" title={plural(childCount, 'sub-ticket')}>
             ▸ {childCount}
           </span>
         )}
         {ticket.blockers.length > 0 && (
-          <span className="badge blocked" title={`Blocked by ${ticket.blockers.length} ticket${ticket.blockers.length > 1 ? 's' : ''}`}>
+          <span className="badge blocked" title={`Blocked by ${plural(ticket.blockers.length, 'ticket')}`}>
             ⛔ {ticket.blockers.length}
           </span>
         )}

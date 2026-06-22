@@ -23,14 +23,33 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
       .sort((a, b) => a.order - b.order)
 
   // Applied only for display; drag math always uses inColumn.
-  const displayColumn = (status: Ticket['status']): Ticket[] => {
+  // Children are grouped directly under their parent when both share the same column.
+  const displayColumn = (status: Ticket['status']): { ordered: Ticket[]; depths: Record<string, number> } => {
     const base = inColumn(status)
-    switch (sort) {
-      case 'priority': return [...base].sort((a, b) => PRIO_RANK[a.priority] - PRIO_RANK[b.priority])
-      case 'created':  return [...base].sort((a, b) => b.created.localeCompare(a.created))
-      case 'title':    return [...base].sort((a, b) => a.title.localeCompare(b.title))
-      default:         return base
+    const sorted = (() => {
+      switch (sort) {
+        case 'priority': return [...base].sort((a, b) => PRIO_RANK[a.priority] - PRIO_RANK[b.priority])
+        case 'created':  return [...base].sort((a, b) => b.created.localeCompare(a.created))
+        case 'title':    return [...base].sort((a, b) => a.title.localeCompare(b.title))
+        default:         return base
+      }
+    })()
+
+    const columnIds = new Set(base.map((t) => t.id))
+    const roots = sorted.filter((t) => !t.parent || !columnIds.has(t.parent))
+    const depths: Record<string, number> = {}
+    const ordered: Ticket[] = []
+
+    for (const root of roots) {
+      depths[root.id] = 0
+      ordered.push(root)
+      for (const child of sorted.filter((t) => t.parent === root.id)) {
+        depths[child.id] = 1
+        ordered.push(child)
+      }
     }
+
+    return { ordered, depths }
   }
 
   // beforeId === null  -> append to end of column
@@ -55,16 +74,20 @@ export default function Board({ tickets, sort, childCounts, onMove, onOpen }: Pr
 
   return (
     <div className="board">
-      {STATUSES.map((col) => (
-        <Column
-          key={col.id}
-          column={col}
-          tickets={displayColumn(col.id)}
-          childCounts={childCounts}
-          onDrop={handleDrop}
-          onOpen={onOpen}
-        />
-      ))}
+      {STATUSES.map((col) => {
+        const { ordered, depths } = displayColumn(col.id)
+        return (
+          <Column
+            key={col.id}
+            column={col}
+            tickets={ordered}
+            depths={depths}
+            childCounts={childCounts}
+            onDrop={handleDrop}
+            onOpen={onOpen}
+          />
+        )
+      })}
     </div>
   )
 }

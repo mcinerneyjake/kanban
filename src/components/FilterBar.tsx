@@ -1,6 +1,4 @@
-import { useEffect, useState } from 'react'
 import { TYPES, PRIORITIES, type TicketType, type Priority } from '../../shared/constants.js'
-import { api } from '../api.js'
 
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
 
@@ -20,15 +18,11 @@ export const defaultFilter: FilterState = {
 
 type Props = {
   filter: FilterState
+  projects: string[]
   onChange: (f: FilterState) => void
 }
 
-export default function FilterBar({ filter, onChange }: Props) {
-  const [projects, setProjects] = useState<string[]>([])
-
-  useEffect(() => {
-    api.projects().then(setProjects).catch(() => {})
-  }, [])
+export default function FilterBar({ filter, projects, onChange }: Props) {
 
   const toggleType = (t: TicketType) => {
     const next = filter.types.includes(t)

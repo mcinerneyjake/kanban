@@ -10,6 +10,8 @@ const json = async <T>(res: Response): Promise<T> => {
   return res.status === 204 ? null as T : res.json() as Promise<T>
 }
 
+const get = <T>(url: string): Promise<T> => fetch(url).then((res) => json<T>(res))
+
 const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
   fetch(url, {
     method,
@@ -18,9 +20,9 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
   }).then((res) => json<T>(res))
 
 export const api = {
-  list: (): Promise<Ticket[]> => fetch('/api/tickets').then((res) => json<Ticket[]>(res)),
+  list: (): Promise<Ticket[]> => get('/api/tickets'),
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),
-  remove: (id: string): Promise<null> => fetch(`/api/tickets/${id}`, { method: 'DELETE' }).then((res) => json<null>(res)),
-  projects: (): Promise<string[]> => fetch('/api/projects').then((res) => json<string[]>(res)),
+  remove: (id: string): Promise<null> => send(`/api/tickets/${id}`, 'DELETE'),
+  projects: (): Promise<string[]> => get('/api/projects'),
 }
