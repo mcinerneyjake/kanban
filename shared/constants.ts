@@ -6,6 +6,7 @@ export const STATUSES = [
   { id: 'backlog', label: 'Backlog' },
   { id: 'todo', label: 'Todo' },
   { id: 'in-progress', label: 'In Progress' },
+  { id: 'qa', label: 'QA' },
   { id: 'done', label: 'Done' },
 ] as const
 

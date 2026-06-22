@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { api } from './api.js'
 import Board from './components/Board.jsx'
 import TicketModal from './components/TicketModal.jsx'
+import FilterBar, { defaultFilter, type FilterState } from './components/FilterBar.jsx'
 import { useTheme } from './useTheme.js'
 import type { Ticket } from '../shared/constants.js'
 
@@ -13,10 +14,19 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null)
+  const [filter, setFilter] = useState<FilterState>(defaultFilter)
 
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message))
   }, [])
+
+  const filteredTickets = useMemo(() => {
+    let result = tickets
+    if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type))
+    if (filter.priority) result = result.filter((t) => t.priority === filter.priority)
+    if (filter.project) result = result.filter((t) => t.project === filter.project)
+    return result
+  }, [tickets, filter])
 
   useEffect(() => { load() }, [load])
 
@@ -69,7 +79,8 @@ export default function App() {
         </div>
       )}
 
-      <Board tickets={tickets} onMove={handleMove} onOpen={setEditing} />
+      <FilterBar filter={filter} onChange={setFilter} />
+      <Board tickets={filteredTickets} sort={filter.sort} onMove={handleMove} onOpen={setEditing} />
 
       {editing && (
         <TicketModal

@@ -85,10 +85,72 @@ body {
   font-size: 14px;
 }
 
+/* --- Filter bar -------------------------------------------------------- */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-pill {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--btn-bg);
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.filter-pill:hover:not(.active) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.filter-pill.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.filter-select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+
+.filter-clear {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.filter-clear:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* --- Board ------------------------------------------------------------- */
 .board {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -193,6 +255,8 @@ body {
   border-radius: 8px;
   width: 560px;
   max-width: 92vw;
+  max-height: 90vh;
+  overflow-y: auto;
   padding: 20px;
   box-shadow: 0 8px 24px rgba(9, 30, 66, 0.35);
 }
@@ -254,6 +318,8 @@ body {
   border-radius: 4px;
   padding: 10px 14px;
   min-height: 120px;
+  max-height: 220px;
+  overflow-y: auto;
   font-size: 14px;
   line-height: 1.5;
   background: var(--preview-bg);

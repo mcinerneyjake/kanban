@@ -34,10 +34,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           id: { type: 'string', description: 'Ticket ID' },
           title: { type: 'string' },
-          status: { type: 'string', enum: ['backlog', 'todo', 'in-progress', 'done'] },
+          status: { type: 'string', enum: ['backlog', 'todo', 'in-progress', 'qa', 'done'] },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
           type: { type: 'string', enum: ['bug', 'feature', 'task', 'chore'] },
           body: { type: 'string', description: 'Full markdown description of the ticket' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'start_ticket',
+      description: 'Mark a ticket in-progress and return its full details including body. Use this when the user picks a ticket to work on — it sets the status and loads everything needed to begin implementation in one call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Ticket ID' },
         },
         required: ['id'],
       },
@@ -86,6 +97,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'update_ticket': {
         const { id, ...patch } = args as { id: string } & Record<string, unknown>
         result = await updateTicket(id, patch)
+        break
+      }
+      case 'start_ticket': {
+        const id = (args as { id: string }).id
+        result = await updateTicket(id, { status: 'in-progress' })
         break
       }
       case 'create_ticket':
