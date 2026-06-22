@@ -44,6 +44,11 @@ function validEnum<T extends string>(arr: readonly T[], val: unknown, fallback: 
   return (arr as readonly string[]).includes(val as string) ? val as T : fallback
 }
 
+function assertEnum<T extends string>(arr: readonly T[], val: T | undefined | null, field: string) {
+  if (val != null && !(arr as readonly string[]).includes(val as string))
+    throw new HttpError(400, `Invalid ${field}: ${val}`)
+}
+
 // gray-matter/js-yaml will happily turn an unquoted ISO date back into a JS
 // Date on read. We always want strings, so coerce defensively.
 function asString(v: unknown): string {
@@ -101,12 +106,9 @@ async function writeTicket(ticket: Ticket) {
 }
 
 function validateEnums(patch: TicketPatch) {
-  if (patch.type != null && !(TYPES as readonly string[]).includes(patch.type))
-    throw new HttpError(400, `Invalid type: ${patch.type}`)
-  if (patch.priority != null && !(PRIORITIES as readonly string[]).includes(patch.priority))
-    throw new HttpError(400, `Invalid priority: ${patch.priority}`)
-  if (patch.status != null && !(STATUS_IDS as readonly string[]).includes(patch.status))
-    throw new HttpError(400, `Invalid status: ${patch.status}`)
+  assertEnum(TYPES, patch.type, 'type')
+  assertEnum(PRIORITIES, patch.priority, 'priority')
+  assertEnum(STATUS_IDS, patch.status, 'status')
 }
 
 function newId(): string {
