@@ -37,8 +37,14 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     setForm((f) => ({
       ...f,
       project,
-      blockers: f.blockers.filter((id) => allTickets.find((t) => t.id === id)?.project === project),
-      parent: allTickets.find((t) => t.id === f.parent)?.project === project ? f.parent : null,
+      // When a specific project is chosen, clear selections that don't belong to it.
+      // When clearing back to None, leave existing selections intact.
+      blockers: project === null
+        ? f.blockers
+        : f.blockers.filter((id) => allTickets.find((t) => t.id === id)?.project === project),
+      parent: project === null
+        ? f.parent
+        : (allTickets.find((t) => t.id === f.parent)?.project === project ? f.parent : null),
     }))
   }
 
@@ -58,13 +64,14 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
   // Exclude self and current children from parent options (prevent immediate cycles)
   const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : []
   const childIds = new Set(children.map((t) => t.id))
+  const sameProject = (t: Ticket) => form.project === null || t.project === form.project
   const parentOptions = allTickets.filter(
-    (t) => t.id !== ticket?.id && !childIds.has(t.id) && t.project === form.project,
+    (t) => t.id !== ticket?.id && !childIds.has(t.id) && sameProject(t),
   )
   const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
   const availableBlockers = allTickets.filter(
-    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.project === form.project,
+    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && sameProject(t),
   )
   const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter(Boolean) as Ticket[]
 
