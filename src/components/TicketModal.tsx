@@ -14,6 +14,21 @@ type Props = {
   onClose: () => void
 }
 
+function getDescendantIds(id: string, all: Ticket[]): Set<string> {
+  const ids = new Set<string>()
+  const queue = [id]
+  while (queue.length) {
+    const cur = queue.shift()!
+    for (const t of all) {
+      if (t.parent === cur && !ids.has(t.id)) {
+        ids.add(t.id)
+        queue.push(t.id)
+      }
+    }
+  }
+  return ids
+}
+
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
 export default function TicketModal({ ticket, allTickets, projects, onSave, onDelete, onOpen, onClose }: Props) {
@@ -61,12 +76,13 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
   const removeBlocker = (id: string) =>
     setForm((f) => ({ ...f, blockers: f.blockers.filter((b) => b !== id) }))
 
-  // Exclude self and current children from parent options (prevent immediate cycles)
+  // children: direct children only, used for the sub-tickets display section
+  // descendantIds: full subtree — excludes all descendants from parent options to prevent cycles
   const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : []
-  const childIds = new Set(children.map((t) => t.id))
+  const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>()
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project
   const parentOptions = allTickets.filter(
-    (t) => t.id !== ticket?.id && !childIds.has(t.id) && sameProject(t),
+    (t) => t.id !== ticket?.id && !descendantIds.has(t.id) && sameProject(t),
   )
   const parentTicket = parentOptions.find((t) => t.id === form.parent) ?? null
 
