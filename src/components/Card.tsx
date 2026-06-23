@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { Ticket, TicketType } from '../../shared/constants.js'
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' }
@@ -25,7 +25,7 @@ type Props = {
   onToggleCollapse?: (id: string) => void
 }
 
-export default function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
+function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop)
   const [dropMode, setDropMode] = useState<DropMode>(null)
 
@@ -108,3 +108,5 @@ export default function Card({ ticket, onOpen, columnId, depth = 0, childCount =
     </div>
   )
 }
+
+export default memo(Card)

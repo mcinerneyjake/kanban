@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
 import Column from './Column.jsx'
 import type { SortBy } from './FilterPopover.jsx'
@@ -18,13 +18,13 @@ type Props = {
 export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>())
 
-  const toggleCollapse = (id: string) =>
+  const toggleCollapse = useCallback((id: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
-    })
+    }), [])
   // Always order-based — used for drag-drop insertion math.
   const inColumn = (status: Ticket['status']) =>
     tickets

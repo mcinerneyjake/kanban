@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { api } from './api.js'
 import Board from './components/Board.jsx'
 import ArchiveLane from './components/ArchiveLane.jsx'
@@ -52,36 +52,49 @@ export default function App() {
     return counts
   }, [tickets])
 
+  // ticketsRef lets handleReparent read the current ticket list for cycle
+  // detection without listing tickets as a dependency — keeping the callback
+  // stable so Card's memo is not busted on every board mutation. Synced in an
+  // effect (not during render) to satisfy the react-hooks/refs lint rule; the
+  // effect always commits before the browser paints so the ref is current by
+  // the time any user interaction fires.
+  const ticketsRef = useRef(tickets)
+  useEffect(() => { ticketsRef.current = tickets }, [tickets])
+
   useEffect(() => {
     load()
   }, [load])
 
-  const handleSave = async (data: Partial<Ticket>) => {
+  // editing is listed as a dep here because handleSave is only passed to
+  // TicketModal, which already remounts (via key) whenever editing changes —
+  // so re-creating this callback on editing change causes no extra renders.
+  const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
       if (editing === 'new') await api.create(data)
       else if (editing) await api.update(editing.id, data)
       setEditing(null)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-  }
+  }, [editing, load])
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = useCallback(async (id: string) => {
     try {
       await api.remove(id)
       setEditing(null)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-  }
+  }, [load])
 
-  const handleReparent = async (id: string, newParentId: string) => {
+  const handleReparent = useCallback(async (id: string, newParentId: string) => {
     if (id === newParentId) return
     // Guard against cycles: reject if newParentId is a descendant of id.
+    const current = ticketsRef.current
     const descendants = new Set<string>()
     const queue = [id]
     while (queue.length) {
       const cur = queue.shift()
       if (cur === undefined) break
-      for (const t of tickets) {
+      for (const t of current) {
         if (t.parent === cur && !descendants.has(t.id)) {
           descendants.add(t.id)
           queue.push(t.id)
@@ -89,7 +102,7 @@ export default function App() {
       }
     }
     if (descendants.has(newParentId)) return
-    const snapshot = tickets
+    const snapshot = current
     setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)))
     try {
       await api.update(id, { parent: newParentId })
@@ -97,10 +110,10 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e))
       setTickets(snapshot)
     }
-  }
+  }, [])
 
   // Optimistic move: patch local state first, persist, reload on failure.
-  const handleMove = async (id: string, status: Ticket['status'], order: number) => {
+  const handleMove = useCallback(async (id: string, status: Ticket['status'], order: number) => {
     setTickets((prev) =>
       prev.map((t) => (t.id === id ? { ...t, status, order } : t)))
     try {
@@ -109,7 +122,7 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e))
       load()
     }
-  }
+  }, [load])
 
   return (
     <div className="app">
