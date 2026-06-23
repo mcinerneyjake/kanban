@@ -18,12 +18,19 @@ export default function App() {
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
   const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const params = encode(filter);
     const search = params.toString();
     history.replaceState(null, '', search ? `?${search}` : location.pathname);
   }, [filter]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearchTerm(searchInput.trim()), 200);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message));
@@ -51,8 +58,14 @@ export default function App() {
         return true;
       });
     }
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      result = result.filter(
+        (t) => t.title.toLowerCase().includes(term) || t.body.toLowerCase().includes(term),
+      );
+    }
     return result;
-  }, [tickets, filter]);
+  }, [tickets, filter, searchTerm]);
 
   // Keyed by parent id → count of children, computed from all tickets (not filtered)
   const childCounts = useMemo(() => {
@@ -151,6 +164,13 @@ export default function App() {
           <button className="theme-toggle" onClick={toggle} title="Toggle theme">
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
+          <input
+            className="search-input"
+            type="search"
+            placeholder="Search tickets…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
           <FilterPopover filter={filter} projects={projects} onChange={setFilter} />
           <button className="btn primary" onClick={() => setEditing('new')}>
             + New ticket
@@ -163,6 +183,7 @@ export default function App() {
           {error} — click to dismiss
         </div>
       )}
+
       <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={setEditing} onArchiveAll={handleArchiveAll} />
       <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
 

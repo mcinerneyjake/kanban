@@ -61,6 +61,17 @@ body {
 }
 .topbar h1 { font-size: 22px; margin: 0; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
+.search-input {
+  width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.search-input:focus { outline: none; border-color: var(--primary); width: 280px; transition: width 0.2s; }
+
 
 .theme-toggle {
   border: 1px solid var(--border);

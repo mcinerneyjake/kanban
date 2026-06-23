@@ -255,6 +255,14 @@ export async function archiveStaleTickets(): Promise<number> {
   return stale.length;
 }
 
+export async function searchTickets(q: string): Promise<Ticket[]> {
+  const term = q.toLowerCase();
+  const tickets = await listTickets();
+  return tickets.filter(
+    (t) => t.title.toLowerCase().includes(term) || t.body.toLowerCase().includes(term),
+  );
+}
+
 export async function deleteTicket(id: string): Promise<void> {
   const file = ticketPath(id); // validate id before the try (see getTicket)
   try {

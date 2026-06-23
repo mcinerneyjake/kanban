@@ -3,6 +3,7 @@ import path from 'node:path';
 import express, { Request, Response, NextFunction } from 'express';
 import {
   listTickets,
+  searchTickets,
   listProjects,
   getTicket,
   createTicket,
@@ -34,8 +35,9 @@ app.get('/api/projects', wrap(async (_req, res) => {
   res.json(await listProjects());
 }));
 
-app.get('/api/tickets', wrap(async (_req, res) => {
-  res.json(await listTickets());
+app.get('/api/tickets', wrap(async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  res.json(q ? await searchTickets(q) : await listTickets());
 }));
 
 app.get('/api/tickets/:id', wrap(async (req, res) => {

@@ -248,3 +248,64 @@ describe('stopArchiveScheduler', () => {
     }
   });
 });
+
+describe('GET /api/tickets?q= (search)', () => {
+  async function seedWithBody(id: string, title: string, body: string) {
+    const content = [
+      '---',
+      `title: '${title}'`,
+      'type: task',
+      'priority: medium',
+      'status: backlog',
+      'order: 1',
+      "created: '2026-01-01T00:00:00.000Z'",
+      "updated: '2026-01-01T00:00:00.000Z'",
+      '---',
+      '',
+      body,
+    ].join('\n');
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+  }
+
+  it('returns all tickets when q is absent', async () => {
+    await seedTicket('abc111111111', 'First');
+    await seedTicket('abc222222222', 'Second');
+    const res = await request(app).get('/api/tickets');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+  });
+
+  it('returns only matching tickets when q is set', async () => {
+    await seedTicket('abc333333333', 'Fix login bug');
+    await seedTicket('abc444444444', 'Add dashboard');
+    const res = await request(app).get('/api/tickets?q=login');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].title).toBe('Fix login bug');
+  });
+
+  it('search is case-insensitive', async () => {
+    await seedTicket('abc555555555', 'Fix Login Bug');
+    const res = await request(app).get('/api/tickets?q=LOGIN');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+  });
+
+  it('matches tickets by body content', async () => {
+    await seedWithBody('abc666666666', 'Unrelated title', 'The password reset flow is broken');
+    await seedWithBody('abc777777777', 'Another ticket', 'Nothing relevant');
+    const res = await request(app).get('/api/tickets?q=password');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe('abc666666666');
+  });
+
+  it('returns empty array when nothing matches', async () => {
+    await seedTicket('abc888888888', 'Some ticket');
+    const res = await request(app).get('/api/tickets?q=xyzzy-no-match');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(0);
+  });
+});

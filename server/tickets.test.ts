@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
+import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, searchTickets, HttpError } from './tickets.js';
 
 let tmpDir: string;
 
@@ -332,3 +332,43 @@ describe('archiveStaleTickets', () => {
   });
 });
 
+
+describe('searchTickets', () => {
+  it('returns tickets whose title matches (case-insensitive)', async () => {
+    await writeRaw('tkt-s1', makeRaw('Fix Login Bug', 1));
+    await writeRaw('tkt-s2', makeRaw('Add Dashboard', 2));
+    const results = await searchTickets('login');
+    expect(results.map((t) => t.id)).toContain('tkt-s1');
+    expect(results.map((t) => t.id)).not.toContain('tkt-s2');
+  });
+
+  it('returns tickets whose body matches (case-insensitive)', async () => {
+    await writeRaw('tkt-s3', makeRaw('Refactor auth', 1) + 'The password reset flow is broken\n');
+    await writeRaw('tkt-s4', makeRaw('Update docs', 2) + 'Nothing relevant here\n');
+    const results = await searchTickets('PASSWORD');
+    expect(results.map((t) => t.id)).toContain('tkt-s3');
+    expect(results.map((t) => t.id)).not.toContain('tkt-s4');
+  });
+
+  it('matches across both title and body in the same result set', async () => {
+    await writeRaw('tkt-s5', makeRaw('Search title match', 1));
+    await writeRaw('tkt-s6', makeRaw('Unrelated', 2) + 'search body match\n');
+    const results = await searchTickets('search');
+    const ids = results.map((t) => t.id);
+    expect(ids).toContain('tkt-s5');
+    expect(ids).toContain('tkt-s6');
+  });
+
+  it('returns empty array when no tickets match', async () => {
+    await writeRaw('tkt-s7', makeRaw('Unrelated ticket', 1));
+    const results = await searchTickets('xyzzy-no-match');
+    expect(results).toHaveLength(0);
+  });
+
+  it('returns all tickets when the term appears everywhere', async () => {
+    await writeRaw('tkt-s8', makeRaw('common word', 1));
+    await writeRaw('tkt-s9', makeRaw('another common word', 2));
+    const results = await searchTickets('common');
+    expect(results.length).toBeGreaterThanOrEqual(2);
+  });
+});
