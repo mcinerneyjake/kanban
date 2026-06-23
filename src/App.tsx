@@ -18,12 +18,16 @@ export default function App() {
   const [filter, setFilter] = useState<FilterState>(defaultFilter);
   const [showArchive, setShowArchive] = useState(false);
 
-  const [projects, setProjects] = useState<string[]>([]);
-
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message));
-    api.projects().then(setProjects).catch(() => {});
   }, []);
+
+  // Derived from tickets already in state — avoids a separate /api/projects
+  // HTTP round-trip and a second full filesystem scan on every board refresh.
+  const projects = useMemo(
+    () => [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort(),
+    [tickets],
+  );
 
   const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets]);
 
@@ -102,13 +106,13 @@ export default function App() {
       }
     }
     if (descendants.has(newParentId)) return;
-    const snapshot = current;
+    const originalParent = current.find((t) => t.id === id)?.parent ?? null;
     setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)));
     try {
       await api.update(id, { parent: newParentId });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setTickets(snapshot);
+      setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: originalParent } : t)));
     }
   }, []);
 

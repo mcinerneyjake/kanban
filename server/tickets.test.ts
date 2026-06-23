@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
+import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
 
 let tmpDir: string;
 
@@ -118,6 +118,27 @@ describe('normalize coercion', () => {
     expect(t.type).toBe('task');
   });
 
+  it('coerces a numeric title (unquoted number in YAML) to empty string', async () => {
+    // js-yaml parses `title: 42` as the number 42; asString() must not let it
+    // flow through as a non-string value — returns '' as a safe fallback.
+    const raw = [
+      '---',
+      'title: 42',
+      'type: task',
+      'priority: medium',
+      'status: backlog',
+      'order: 1',
+      "created: '2026-01-01T00:00:00.000Z'",
+      "updated: '2026-01-01T00:00:00.000Z'",
+      '---',
+      '',
+    ].join('\n');
+    await writeRaw('tkt-numtitle', raw);
+    const t = await getTicket('tkt-numtitle');
+    expect(typeof t.title).toBe('string');
+    expect(t.title).toBe('');
+  });
+
   it('coerces unquoted YAML Date fields to ISO strings', async () => {
     // js-yaml auto-parses unquoted ISO timestamps as Date objects; asString() coerces back
     await writeRaw('tkt-datecoerce', [
@@ -197,6 +218,27 @@ describe('deleteTicket', () => {
   it('returns 404 for a nonexistent id', async () => {
     const err = await httpError(deleteTicket('tkt-ghost'));
     expect(err.status).toBe(404);
+  });
+});
+
+describe('listProjects', () => {
+  it('returns [] when no tickets have a project', async () => {
+    await writeRaw('tkt-np1', makeRaw('No project 1', 1));
+    await writeRaw('tkt-np2', makeRaw('No project 2', 2));
+    expect(await listProjects()).toEqual([]);
+  });
+
+  it('returns unique sorted project names, excluding tickets with null project', async () => {
+    await writeRaw('tkt-p1', makeRaw('A', 1, { project: 'zebra' }));
+    await writeRaw('tkt-p2', makeRaw('B', 2, { project: 'alpha' }));
+    await writeRaw('tkt-p3', makeRaw('C', 3, { project: 'zebra' }));
+    await writeRaw('tkt-p4', makeRaw('D', 4));
+    expect(await listProjects()).toEqual(['alpha', 'zebra']);
+  });
+
+  it('excludes empty-string project values', async () => {
+    await writeRaw('tkt-ep', makeRaw('Empty project', 1, { project: "''" }));
+    expect(await listProjects()).toEqual([]);
   });
 });
 

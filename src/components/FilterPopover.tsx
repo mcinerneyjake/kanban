@@ -7,12 +7,12 @@ export type DateField = 'created' | 'updated'
 const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title'];
 const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated'];
 
-function isSortBy(val: string): val is SortBy {
-  return SORT_BY_VALUES.find((s) => s === val) !== undefined;
+function makeIs<T extends string>(arr: readonly T[]) {
+  return (val: string): val is T => arr.find((s) => s === val) !== undefined;
 }
-function isDateField(val: string): val is DateField {
-  return DATE_FIELD_VALUES.find((s) => s === val) !== undefined;
-}
+
+const isSortBy = makeIs(SORT_BY_VALUES);
+const isDateField = makeIs(DATE_FIELD_VALUES);
 
 export type FilterState = {
   types: TicketType[]

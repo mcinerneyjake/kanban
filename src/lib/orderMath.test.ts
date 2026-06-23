@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { computeDropOrder } from './orderMath.js';
-import type { Ticket } from '../../shared/constants.js';
 
 // Minimal stub — computeDropOrder only reads .id and .order.
-function card(id: string, order: number): Ticket {
-  return { id, order } as Ticket;
+function card(id: string, order: number): { id: string; order: number } {
+  return { id, order };
 }
 
 describe('computeDropOrder — append (beforeId null)', () => {

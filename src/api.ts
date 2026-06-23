@@ -1,8 +1,10 @@
 import type { Ticket } from '../shared/constants.js';
 
-// Rejects with the server's {error} message (or a generic status string) if
-// the response is not ok. res.json() returns `any`, so .error is directly
-// accessible without a cast.
+// Rejects with the server's {error} message (or a generic status string) when
+// the HTTP response is not ok. Does not intercept network-level fetch()
+// rejections (offline, DNS) — those propagate as TypeError and are caught by
+// callers. res.json() returns `any`, so .error is directly accessible without
+// a cast.
 async function throwIfError(res: Response): Promise<void> {
   if (res.ok) return;
   const body = await res.json().catch(() => ({}));
@@ -35,5 +37,4 @@ export const api = {
   remove: (id: string): Promise<void> =>
     fetch(`/api/tickets/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
       .then(throwIfError),
-  projects: (): Promise<string[]> => get('/api/projects'),
 };

@@ -28,30 +28,26 @@ function extractId(args: Record<string, unknown> | undefined): string | null {
   return typeof args?.id === 'string' ? args.id : null;
 }
 
-function extractUpdatePatch(
-  args: Record<string, unknown> | undefined,
-): Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> {
-  const patch: Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> = {};
-  if (!args) return patch;
-  if (typeof args.title === 'string') patch.title = args.title;
-  if (typeof args.status === 'string' && isStatusId(args.status)) patch.status = args.status;
-  if (typeof args.priority === 'string' && isPriority(args.priority)) patch.priority = args.priority;
-  if (typeof args.type === 'string' && isTicketType(args.type)) patch.type = args.type;
-  if (typeof args.body === 'string') patch.body = args.body;
-  return patch;
+function isStringArray(val: unknown): val is string[] {
+  return Array.isArray(val) && val.every((item) => typeof item === 'string');
 }
 
-function extractCreateInput(
-  args: Record<string, unknown> | undefined,
-): Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>> {
-  const input: Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>> = {};
-  if (!args) return input;
-  if (typeof args.title === 'string') input.title = args.title;
-  if (typeof args.type === 'string' && isTicketType(args.type)) input.type = args.type;
-  if (typeof args.priority === 'string' && isPriority(args.priority)) input.priority = args.priority;
-  if (typeof args.status === 'string' && isStatusId(args.status)) input.status = args.status;
-  if (typeof args.body === 'string') input.body = args.body;
-  return input;
+type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>>
+
+function extractTicketFields(args: Record<string, unknown> | undefined): TicketFields {
+  const out: TicketFields = {};
+  if (!args) return out;
+  if (typeof args.title === 'string') out.title = args.title;
+  if (typeof args.type === 'string' && isTicketType(args.type)) out.type = args.type;
+  if (typeof args.priority === 'string' && isPriority(args.priority)) out.priority = args.priority;
+  if (typeof args.status === 'string' && isStatusId(args.status)) out.status = args.status;
+  if (typeof args.body === 'string') out.body = args.body;
+  if (typeof args.project === 'string') out.project = args.project;
+  else if (args.project === null) out.project = null;
+  if (isStringArray(args.blockers)) out.blockers = args.blockers;
+  if (typeof args.parent === 'string') out.parent = args.parent;
+  else if (args.parent === null) out.parent = null;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +87,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
           type: { type: 'string', enum: ['bug', 'feature', 'task', 'chore'] },
           body: { type: 'string', description: 'Full markdown description of the ticket' },
+          project: { type: ['string', 'null'], description: 'Project name, or null to clear' },
+          blockers: { type: 'array', items: { type: 'string' }, description: 'List of blocking ticket IDs' },
+          parent: { type: ['string', 'null'], description: 'Parent ticket ID, or null to clear' },
         },
         required: ['id'],
       },
@@ -115,6 +114,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
           status: { type: 'string', enum: ['backlog', 'todo', 'in-progress', 'done'] },
           body: { type: 'string', description: 'Markdown description' },
+          project: { type: 'string', description: 'Project name' },
+          blockers: { type: 'array', items: { type: 'string' }, description: 'List of blocking ticket IDs' },
+          parent: { type: 'string', description: 'Parent ticket ID' },
         },
         required: ['title'],
       },
@@ -148,7 +150,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'update_ticket': {
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
-        return { content: [textContent(JSON.stringify(await updateTicket(id, extractUpdatePatch(args)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await updateTicket(id, extractTicketFields(args)), null, 2))] };
       }
 
       case 'start_ticket': {
@@ -158,7 +160,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'create_ticket':
-        return { content: [textContent(JSON.stringify(await createTicket(extractCreateInput(args)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await createTicket(extractTicketFields(args)), null, 2))] };
 
       case 'delete_ticket': {
         const id = extractId(args);

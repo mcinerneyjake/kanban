@@ -3,6 +3,7 @@ import path from 'node:path';
 import express, { Request, Response, NextFunction } from 'express';
 import {
   listTickets,
+  listProjects,
   createTicket,
   updateTicket,
   deleteTicket,
@@ -29,9 +30,7 @@ const wrap = (fn: AsyncHandler) => (req: Request, res: Response, _next: NextFunc
 };
 
 app.get('/api/projects', wrap(async (_req, res) => {
-  const tickets = await listTickets();
-  const projects = [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort();
-  res.json(projects);
+  res.json(await listProjects());
 }));
 
 app.get('/api/tickets', wrap(async (_req, res) => {

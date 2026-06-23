@@ -83,9 +83,13 @@ function assertEnum<T extends string>(arr: readonly T[], val: T | undefined | nu
 
 // gray-matter/js-yaml will happily turn an unquoted ISO date back into a JS
 // Date on read. We always want strings, so coerce defensively.
+// Explicit typeof guard: gray-matter's data is typed as `any`, so unexpected
+// runtime types (e.g. a numeric title: 42 in hand-edited YAML) must not flow
+// through `??` as a non-string value.
 function asString(v: string | Date | null | undefined): string {
   if (v instanceof Date) return v.toISOString();
-  return v ?? '';
+  if (typeof v === 'string') return v;
+  return '';
 }
 
 // Coerce a parsed file into a stable, fully-populated ticket. Unknown/invalid
@@ -161,6 +165,11 @@ export async function listTickets(): Promise<Ticket[]> {
     tickets.push(normalize(file.slice(0, -3), data, content));
   }
   return tickets.sort((a, b) => a.order - b.order);
+}
+
+export async function listProjects(): Promise<string[]> {
+  const tickets = await listTickets();
+  return [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort();
 }
 
 export async function getTicket(id: string): Promise<Ticket> {
