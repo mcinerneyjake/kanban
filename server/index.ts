@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import express, { Request, Response, NextFunction } from 'express'
 import {
   listTickets,
@@ -83,7 +84,7 @@ export function stopArchiveScheduler() {
 }
 
 // Only bind port and start the scheduler when run directly, not when imported in tests.
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   scheduleWeeklyArchive()
   const PORT = process.env.PORT || 3001
   app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`))
