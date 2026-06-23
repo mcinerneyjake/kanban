@@ -3,7 +3,8 @@ import { api } from './api.js';
 import Board from './components/Board.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
-import FilterPopover, { defaultFilter, type FilterState } from './components/FilterPopover.jsx';
+import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
+import { encode, decode } from './lib/filterParams.js';
 import { useTheme } from './useTheme.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -15,8 +16,14 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
-  const [filter, setFilter] = useState<FilterState>(defaultFilter);
+  const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
+
+  useEffect(() => {
+    const params = encode(filter);
+    const search = params.toString();
+    history.replaceState(null, '', search ? `?${search}` : location.pathname);
+  }, [filter]);
 
   const load = useCallback(() => {
     api.list().then(setTickets).catch((e: Error) => setError(e.message));
