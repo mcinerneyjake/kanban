@@ -147,7 +147,7 @@ export default function App() {
     try {
       await Promise.all(doneTickets.map((t) => api.update(t.id, { status: 'archived' })));
       load();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); load(); }
   }, [filteredTickets, load]);
 
   // Optimistic move: patch local state first, persist, reload on failure.
