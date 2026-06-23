@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js'
 import Column from './Column.jsx'
-import type { SortBy } from './FilterBar.jsx'
+import type { SortBy } from './FilterPopover.jsx'
 import { computeDropOrder } from '../lib/orderMath.js'
 
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
