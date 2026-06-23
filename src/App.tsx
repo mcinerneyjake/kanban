@@ -88,10 +88,14 @@ export default function App() {
       }
     }
     if (descendants.has(newParentId)) return
+    const snapshot = tickets
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)))
     try {
       await api.update(id, { parent: newParentId })
-      load()
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) {
+      setError((e as Error).message)
+      setTickets(snapshot)
+    }
   }
 
   // Optimistic move: patch local state first, persist, reload on failure.
