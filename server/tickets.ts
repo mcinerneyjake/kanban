@@ -31,6 +31,37 @@ export class HttpError extends Error {
 
 type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent'>>
 
+// Shape returned by gray-matter after parsing a ticket file. js-yaml will
+// auto-parse unquoted ISO dates as Date objects; every other value is string,
+// number, or a mixed array depending on the YAML content.
+interface RawFrontmatter {
+  title?: string | Date
+  type?: string
+  priority?: string
+  status?: string
+  order?: number
+  created?: string | Date
+  updated?: string | Date
+  project?: string | null
+  blockers?: (string | number | boolean)[]
+  parent?: string | null
+}
+
+// Explicit-field object passed to matter.stringify — typed so serialize()
+// never writes unexpected keys to frontmatter.
+interface SerializedFrontmatter {
+  title: string
+  type: string
+  priority: string
+  status: string
+  order: number
+  created: string
+  updated: string
+  project?: string
+  blockers?: string[]
+  parent?: string
+}
+
 async function ensureDir() {
   await fs.mkdir(getTicketsDir(), { recursive: true })
 }
@@ -40,26 +71,27 @@ function ticketPath(id: string): string {
   return path.join(getTicketsDir(), `${id}.md`)
 }
 
-function validEnum<T extends string>(arr: readonly T[], val: unknown, fallback: T): T {
-  return (arr as readonly string[]).includes(val as string) ? val as T : fallback
+function validEnum<T extends string>(arr: readonly T[], val: string | null | undefined, fallback: T): T {
+  const found = arr.find((item) => item === val)
+  return found !== undefined ? found : fallback
 }
 
 function assertEnum<T extends string>(arr: readonly T[], val: T | undefined | null, field: string) {
-  if (val != null && !(arr as readonly string[]).includes(val as string))
+  if (val != null && arr.find((item) => item === val) === undefined)
     throw new HttpError(400, `Invalid ${field}: ${val}`)
 }
 
 // gray-matter/js-yaml will happily turn an unquoted ISO date back into a JS
 // Date on read. We always want strings, so coerce defensively.
-function asString(v: unknown): string {
+function asString(v: string | Date | null | undefined): string {
   if (v instanceof Date) return v.toISOString()
-  return v == null ? '' : String(v)
+  return v ?? ''
 }
 
 // Coerce a parsed file into a stable, fully-populated ticket. Unknown/invalid
 // enum values fall back to sane defaults so a hand-edited file can't crash the
 // board.
-function normalize(id: string, data: Record<string, unknown>, body: string): Ticket {
+function normalize(id: string, data: RawFrontmatter, body: string): Ticket {
   return {
     id,
     title: asString(data.title),
@@ -72,7 +104,7 @@ function normalize(id: string, data: Record<string, unknown>, body: string): Tic
     body: (body || '').trim(),
     project: typeof data.project === 'string' && data.project ? data.project : null,
     blockers: Array.isArray(data.blockers)
-      ? (data.blockers as unknown[]).filter((v): v is string => typeof v === 'string')
+      ? data.blockers.filter((v): v is string => typeof v === 'string')
       : [],
     parent: typeof data.parent === 'string' && data.parent ? data.parent : null,
   }
@@ -80,7 +112,7 @@ function normalize(id: string, data: Record<string, unknown>, body: string): Tic
 
 // Explicit key order -> deterministic, diff-friendly frontmatter.
 function serialize(ticket: Ticket): string {
-  const data: Record<string, unknown> = {
+  const data: SerializedFrontmatter = {
     title: ticket.title,
     type: ticket.type,
     priority: ticket.priority,
@@ -115,11 +147,6 @@ function newId(): string {
   return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
 }
 
-function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
-  const out = {} as Pick<T, K>
-  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k]
-  return out
-}
 
 // --- Public API ------------------------------------------------------------
 
@@ -131,7 +158,7 @@ export async function listTickets(): Promise<Ticket[]> {
     if (!file.endsWith('.md')) continue
     const raw = await fs.readFile(path.join(getTicketsDir(), file), 'utf8')
     const { data, content } = matter(raw)
-    tickets.push(normalize(file.slice(0, -3), data as Record<string, unknown>, content))
+    tickets.push(normalize(file.slice(0, -3), data, content))
   }
   return tickets.sort((a, b) => a.order - b.order)
 }
@@ -145,7 +172,7 @@ export async function getTicket(id: string): Promise<Ticket> {
     throw new HttpError(404, `Ticket not found: ${id}`)
   }
   const { data, content } = matter(raw)
-  return normalize(id, data as Record<string, unknown>, content)
+  return normalize(id, data, content)
 }
 
 export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
@@ -180,13 +207,21 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
   validateEnums(patch)
   const existing = await getTicket(id)
-  // MCP callers pass Record<string, unknown> and bypass TicketPatch typing —
-  // pick enforces the allowed field set at runtime so unknown keys are never
-  // written to ticket frontmatter.
+  // Explicit field-by-field merge: MCP callers pass Record<string, unknown> and
+  // bypass TicketPatch typing at compile time. By reading only known fields from
+  // patch here, unknown keys from MCP are silently ignored at runtime.
   const merged: Ticket = {
-    ...existing,
-    ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body', 'project', 'blockers', 'parent']),
     id,
+    title: patch.title ?? existing.title,
+    type: patch.type ?? existing.type,
+    priority: patch.priority ?? existing.priority,
+    status: patch.status ?? existing.status,
+    order: patch.order ?? existing.order,
+    body: patch.body ?? existing.body,
+    // null is a valid patch value (clears the field); undefined means no change
+    project: patch.project !== undefined ? patch.project : existing.project,
+    blockers: patch.blockers ?? existing.blockers,
+    parent: patch.parent !== undefined ? patch.parent : existing.parent,
     created: existing.created,
     updated: new Date().toISOString(),
   }

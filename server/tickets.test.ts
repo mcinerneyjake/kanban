@@ -24,10 +24,11 @@ beforeEach(async () => {
 })
 
 // Awaits a promise expected to reject with HttpError and returns the error.
-async function httpError(p: Promise<unknown>): Promise<HttpError> {
-  const err = await p.catch((e: unknown) => e)
+async function httpError<T>(p: Promise<T>): Promise<HttpError> {
+  const err = await p.catch((e) => e)
   expect(err).toBeInstanceOf(HttpError)
-  return err as HttpError
+  if (!(err instanceof HttpError)) throw new Error('Expected HttpError')
+  return err
 }
 
 // Writes a raw .md file directly into the temp tickets dir.
@@ -80,19 +81,22 @@ describe('createTicket validation', () => {
   })
 
   it('rejects invalid type with 400 mentioning "type"', async () => {
-    const err = await httpError(createTicket({ title: 'T', type: 'invalid' as never }))
+    // @ts-expect-error — testing runtime rejection of an invalid enum value
+    const err = await httpError(createTicket({ title: 'T', type: 'invalid' }))
     expect(err.status).toBe(400)
     expect(err.message).toContain('type')
   })
 
   it('rejects invalid priority with 400 mentioning "priority"', async () => {
-    const err = await httpError(createTicket({ title: 'T', priority: 'invalid' as never }))
+    // @ts-expect-error — testing runtime rejection of an invalid enum value
+    const err = await httpError(createTicket({ title: 'T', priority: 'invalid' }))
     expect(err.status).toBe(400)
     expect(err.message).toContain('priority')
   })
 
   it('rejects invalid status with 400 mentioning "status"', async () => {
-    const err = await httpError(createTicket({ title: 'T', status: 'invalid' as never }))
+    // @ts-expect-error — testing runtime rejection of an invalid enum value
+    const err = await httpError(createTicket({ title: 'T', status: 'invalid' }))
     expect(err.status).toBe(400)
     expect(err.message).toContain('status')
   })

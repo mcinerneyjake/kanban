@@ -1,17 +1,26 @@
 import type { Ticket } from '../shared/constants.js'
 
-// Tiny fetch wrapper. Unwraps JSON, surfaces the server's {error} message, and
-// tolerates 204 (No Content) from DELETE.
+// Rejects with the server's {error} message (or a generic status string) if
+// the response is not ok. res.json() returns `any`, so .error is directly
+// accessible without a cast.
+async function throwIfError(res: Response): Promise<void> {
+  if (res.ok) return
+  const body = await res.json().catch(() => ({}))
+  throw new Error(body.error || `Request failed (${res.status})`)
+}
+
+// Unwraps a successful JSON response. res.json() returns Promise<any>, which
+// is assignable to T without a cast.
 const json = async <T>(res: Response): Promise<T> => {
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: string }
-    throw new Error(body.error || `Request failed (${res.status})`)
-  }
-  return res.status === 204 ? null as T : res.json() as Promise<T>
+  await throwIfError(res)
+  return res.json()
 }
 
 const get = <T>(url: string): Promise<T> => fetch(url).then((res) => json<T>(res))
 
+// send() is for endpoints that return a JSON body (POST, PATCH).
+// DELETE returns 204 No Content — calling res.json() on an empty body would
+// throw a SyntaxError, so remove() uses fetch + throwIfError directly instead.
 const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
   fetch(url, {
     method,
@@ -23,6 +32,8 @@ export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),
-  remove: (id: string): Promise<null> => send(`/api/tickets/${id}`, 'DELETE'),
+  remove: (id: string): Promise<void> =>
+    fetch(`/api/tickets/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
+      .then(throwIfError),
   projects: (): Promise<string[]> => get('/api/projects'),
 }

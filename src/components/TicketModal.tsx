@@ -21,7 +21,8 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
   const ids = new Set<string>()
   const queue = [id]
   while (queue.length) {
-    const cur = queue.shift()!
+    const cur = queue.shift()
+    if (cur === undefined) break
     for (const t of all) {
       if (t.parent === cur && !ids.has(t.id)) {
         ids.add(t.id)
@@ -112,7 +113,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
   const availableBlockers = allTickets.filter(
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
   )
-  const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter(Boolean) as Ticket[]
+  const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter((t): t is Ticket => t !== undefined)
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()

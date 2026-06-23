@@ -1,34 +1,62 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError } from '../server/tickets.js'
-import type { Ticket } from '../shared/constants.js'
+import {
+  listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError,
+} from '../server/tickets.js'
+import {
+  isStatusId, isTicketType, isPriority,
+  type Ticket,
+} from '../shared/constants.js'
 
-// Typed boundaries for each MCP tool's input — mirrors the JSON Schema declared
-// in ListToolsRequestSchema so TypeScript and the runtime stay in sync.
-interface TicketIdArgs { id: string }
-interface UpdateTicketArgs extends TicketIdArgs, Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> {}
-type CreateTicketArgs = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>>
+// ---------------------------------------------------------------------------
+// Protocol helpers
+// ---------------------------------------------------------------------------
 
-// Type predicates — narrow `args: unknown` at the MCP protocol boundary
-// without type casting. The MCP SDK validates JSON Schema at runtime, so by
-// the time these run the shape is already guaranteed; the predicates just
-// surface that guarantee to TypeScript.
-function isObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === 'object' && val !== null
+// Return type carries the literal 'text' so callers don't need `as const`.
+function textContent(text: string): { type: 'text'; text: string } {
+  return { type: 'text', text }
 }
 
-function hasStringId(args: unknown): args is TicketIdArgs {
-  return isObject(args) && typeof args.id === 'string'
+// ---------------------------------------------------------------------------
+// Arg converters: map Record<string, unknown> → concrete typed objects.
+// Each function reads only the properties it cares about and validates their
+// types via typeof / predicate — no casts at any point.
+// ---------------------------------------------------------------------------
+
+function extractId(args: Record<string, unknown> | undefined): string | null {
+  return typeof args?.id === 'string' ? args.id : null
 }
 
-function isUpdateTicketArgs(args: unknown): args is UpdateTicketArgs {
-  return isObject(args) && typeof args.id === 'string'
+function extractUpdatePatch(
+  args: Record<string, unknown> | undefined,
+): Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> {
+  const patch: Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> = {}
+  if (!args) return patch
+  if (typeof args.title === 'string') patch.title = args.title
+  if (typeof args.status === 'string' && isStatusId(args.status)) patch.status = args.status
+  if (typeof args.priority === 'string' && isPriority(args.priority)) patch.priority = args.priority
+  if (typeof args.type === 'string' && isTicketType(args.type)) patch.type = args.type
+  if (typeof args.body === 'string') patch.body = args.body
+  return patch
 }
 
-function isCreateTicketArgs(args: unknown): args is CreateTicketArgs {
-  return isObject(args)
+function extractCreateInput(
+  args: Record<string, unknown> | undefined,
+): Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>> {
+  const input: Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>> = {}
+  if (!args) return input
+  if (typeof args.title === 'string') input.title = args.title
+  if (typeof args.type === 'string' && isTicketType(args.type)) input.type = args.type
+  if (typeof args.priority === 'string' && isPriority(args.priority)) input.priority = args.priority
+  if (typeof args.status === 'string' && isStatusId(args.status)) input.status = args.status
+  if (typeof args.body === 'string') input.body = args.body
+  return input
 }
+
+// ---------------------------------------------------------------------------
+// Server definition
+// ---------------------------------------------------------------------------
 
 const server = new Server(
   { name: 'kanban', version: '0.1.0' },
@@ -47,9 +75,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Get full details of a specific ticket by ID, including its markdown body.',
       inputSchema: {
         type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Ticket ID, e.g. tkt-abc123' },
-        },
+        properties: { id: { type: 'string', description: 'Ticket ID, e.g. tkt-abc123' } },
         required: ['id'],
       },
     },
@@ -74,9 +100,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Mark a ticket in-progress and return its full details including body. Use this when the user picks a ticket to work on — it sets the status and loads everything needed to begin implementation in one call.',
       inputSchema: {
         type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Ticket ID' },
-        },
+        properties: { id: { type: 'string', description: 'Ticket ID' } },
         required: ['id'],
       },
     },
@@ -100,9 +124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Permanently delete a ticket by ID.',
       inputSchema: {
         type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Ticket ID' },
-        },
+        properties: { id: { type: 'string', description: 'Ticket ID' } },
         required: ['id'],
       },
     },
@@ -113,46 +135,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
 
   try {
-    let result: unknown
     switch (name) {
       case 'list_tickets':
-        result = await listTickets()
-        break
-      case 'get_ticket': {
-        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
-        result = await getTicket(args.id)
-        break
-      }
-      case 'update_ticket': {
-        if (!isUpdateTicketArgs(args)) throw new HttpError(400, 'Missing required field: id')
-        const { id, ...patch } = args
-        result = await updateTicket(id, patch)
-        break
-      }
-      case 'start_ticket': {
-        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
-        result = await updateTicket(args.id, { status: 'in-progress' })
-        break
-      }
-      case 'create_ticket': {
-        if (!isCreateTicketArgs(args)) throw new HttpError(400, 'Invalid arguments')
-        result = await createTicket(args)
-        break
-      }
-      case 'delete_ticket': {
-        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
-        await deleteTicket(args.id)
-        result = { deleted: args.id }
-        break
-      }
-      default:
-        return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
-    }
+        return { content: [textContent(JSON.stringify(await listTickets(), null, 2))] }
 
-    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      case 'get_ticket': {
+        const id = extractId(args)
+        if (!id) throw new HttpError(400, 'Missing required field: id')
+        return { content: [textContent(JSON.stringify(await getTicket(id), null, 2))] }
+      }
+
+      case 'update_ticket': {
+        const id = extractId(args)
+        if (!id) throw new HttpError(400, 'Missing required field: id')
+        return { content: [textContent(JSON.stringify(await updateTicket(id, extractUpdatePatch(args)), null, 2))] }
+      }
+
+      case 'start_ticket': {
+        const id = extractId(args)
+        if (!id) throw new HttpError(400, 'Missing required field: id')
+        return { content: [textContent(JSON.stringify(await updateTicket(id, { status: 'in-progress' }), null, 2))] }
+      }
+
+      case 'create_ticket':
+        return { content: [textContent(JSON.stringify(await createTicket(extractCreateInput(args)), null, 2))] }
+
+      case 'delete_ticket': {
+        const id = extractId(args)
+        if (!id) throw new HttpError(400, 'Missing required field: id')
+        await deleteTicket(id)
+        return { content: [textContent(JSON.stringify({ deleted: id }, null, 2))] }
+      }
+
+      default:
+        return { content: [textContent(`Unknown tool: ${name}`)], isError: true }
+    }
   } catch (err) {
-    const message = err instanceof HttpError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`
-    return { content: [{ type: 'text', text: message }], isError: true }
+    const message = err instanceof HttpError
+      ? err.message
+      : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`
+    return { content: [textContent(message)], isError: true }
   }
 })
 

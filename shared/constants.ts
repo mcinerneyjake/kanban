@@ -27,6 +27,18 @@ export type StatusId = (typeof STATUSES)[number]['id']
 export type TicketType = (typeof TYPES)[number]
 export type Priority = (typeof PRIORITIES)[number]
 
+// Type predicates — use find() so TypeScript can narrow val to the literal
+// union type without a cast. Safe to call with any string at runtime.
+export function isStatusId(val: string): val is StatusId {
+  return STATUS_IDS.find((s) => s === val) !== undefined
+}
+export function isTicketType(val: string): val is TicketType {
+  return TYPES.find((t) => t === val) !== undefined
+}
+export function isPriority(val: string): val is Priority {
+  return PRIORITIES.find((p) => p === val) !== undefined
+}
+
 export type Ticket = {
   id: string
   title: string

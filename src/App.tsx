@@ -62,7 +62,7 @@ export default function App() {
       else if (editing) await api.update(editing.id, data)
       setEditing(null)
       load()
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   const handleDelete = async (id: string) => {
@@ -70,7 +70,7 @@ export default function App() {
       await api.remove(id)
       setEditing(null)
       load()
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   const handleReparent = async (id: string, newParentId: string) => {
@@ -79,7 +79,8 @@ export default function App() {
     const descendants = new Set<string>()
     const queue = [id]
     while (queue.length) {
-      const cur = queue.shift()!
+      const cur = queue.shift()
+      if (cur === undefined) break
       for (const t of tickets) {
         if (t.parent === cur && !descendants.has(t.id)) {
           descendants.add(t.id)
@@ -93,7 +94,7 @@ export default function App() {
     try {
       await api.update(id, { parent: newParentId })
     } catch (e) {
-      setError((e as Error).message)
+      setError(e instanceof Error ? e.message : String(e))
       setTickets(snapshot)
     }
   }
@@ -105,7 +106,7 @@ export default function App() {
     try {
       await api.update(id, { status, order })
     } catch (e) {
-      setError((e as Error).message)
+      setError(e instanceof Error ? e.message : String(e))
       load()
     }
   }
