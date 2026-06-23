@@ -3,3 +3,5 @@ dist
 *.tmp
 .DS_Store
 tickets/
+test-results/
+playwright-report/
