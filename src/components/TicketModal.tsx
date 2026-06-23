@@ -193,7 +193,7 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
                 list="assignee-suggestions"
                 placeholder="Unassigned"
                 value={form.assignee ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, assignee: e.target.value || null }))}
+                onChange={(e) => setForm((f) => ({ ...f, assignee: e.target.value.trim() || null }))}
               />
               <datalist id="assignee-suggestions">
                 {assignees.map((a) => <option key={a} value={a} />)}
