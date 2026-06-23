@@ -20,7 +20,7 @@ Do not skip this startup sequence. If the user opens with a question or task, co
 
 ## MCP server
 
-The kanban MCP server is wired in `.claude/settings.json` and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. If the tools are not available in a session, check that `.claude/settings.json` has the `kanban` entry with `cwd` set to the project root.
+The kanban MCP server is wired in `.mcp.json` at the project root (project scope) and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. If the tools are not available in a session, check that `.mcp.json` has the `kanban` entry, that the server is approved (Claude Code prompts to trust project MCP servers on first load), and restart the session — MCP servers load at startup and are not hot-reloaded. Note: MCP servers declared in `.claude/settings.json` are ignored — that file does not support an `mcpServers` key.
 
 ## Ticket workflow
 

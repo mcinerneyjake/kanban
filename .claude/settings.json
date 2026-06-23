@@ -1,9 +1,1 @@
-{
-  "mcpServers": {
-    "kanban": {
-      "command": "npx",
-      "args": ["tsx", "mcp/server.ts"],
-      "cwd": "/Users/Jake/Desktop/claude/level-up/projects/kanban"
-    }
-  }
-}
+{}
