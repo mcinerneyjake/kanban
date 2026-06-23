@@ -24,7 +24,7 @@ beforeEach(async () => {
   );
 });
 
-async function seedTicket(id: string, title = 'Test ticket') {
+async function seedTicket(id: string, title = 'Test ticket', body = '') {
   const content = [
     '---',
     `title: '${title}'`,
@@ -36,6 +36,7 @@ async function seedTicket(id: string, title = 'Test ticket') {
     "updated: '2026-01-01T00:00:00.000Z'",
     '---',
     '',
+    body,
   ].join('\n');
   await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
 }
@@ -250,25 +251,6 @@ describe('stopArchiveScheduler', () => {
 });
 
 describe('GET /api/tickets?q= (search)', () => {
-  async function seedWithBody(id: string, title: string, body: string) {
-    const content = [
-      '---',
-      `title: '${title}'`,
-      'type: task',
-      'priority: medium',
-      'status: backlog',
-      'order: 1',
-      "created: '2026-01-01T00:00:00.000Z'",
-      "updated: '2026-01-01T00:00:00.000Z'",
-      '---',
-      '',
-      body,
-    ].join('\n');
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
-  }
-
   it('returns all tickets when q is absent', async () => {
     await seedTicket('abc111111111', 'First');
     await seedTicket('abc222222222', 'Second');
@@ -294,8 +276,8 @@ describe('GET /api/tickets?q= (search)', () => {
   });
 
   it('matches tickets by body content', async () => {
-    await seedWithBody('abc666666666', 'Unrelated title', 'The password reset flow is broken');
-    await seedWithBody('abc777777777', 'Another ticket', 'Nothing relevant');
+    await seedTicket('abc666666666', 'Unrelated title', 'The password reset flow is broken');
+    await seedTicket('abc777777777', 'Another ticket', 'Nothing relevant');
     const res = await request(app).get('/api/tickets?q=password');
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
