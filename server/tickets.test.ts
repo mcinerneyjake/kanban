@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -170,10 +170,15 @@ describe('updateTicket', () => {
   })
 
   it('advances the updated timestamp', async () => {
-    const t = await createTicket({ title: 'Timestamp test' })
-    await new Promise((r) => setTimeout(r, 5))
-    const updated = await updateTicket(t.id, { title: 'Changed' })
-    expect(updated.updated).not.toBe(t.updated)
+    vi.useFakeTimers()
+    try {
+      const t = await createTicket({ title: 'Timestamp test' })
+      vi.advanceTimersByTime(1000)
+      const updated = await updateTicket(t.id, { title: 'Changed' })
+      expect(new Date(updated.updated).getTime()).toBeGreaterThan(new Date(t.updated).getTime())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
