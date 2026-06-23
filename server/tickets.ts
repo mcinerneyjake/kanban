@@ -112,9 +112,7 @@ function validateEnums(patch: TicketPatch) {
 }
 
 function newId(): string {
-  const ts = Date.now().toString(36)
-  const rand = Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')
-  return `tkt-${ts}${rand}`
+  return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
 }
 
 function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
@@ -182,6 +180,9 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
   validateEnums(patch)
   const existing = await getTicket(id)
+  // MCP callers pass Record<string, unknown> and bypass TicketPatch typing —
+  // pick enforces the allowed field set at runtime so unknown keys are never
+  // written to ticket frontmatter.
   const merged: Ticket = {
     ...existing,
     ...pick(patch, ['title', 'type', 'priority', 'status', 'order', 'body', 'project', 'blockers', 'parent']),
@@ -192,11 +193,6 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   if (!merged.title.trim()) throw new HttpError(400, 'Title is required')
   await writeTicket(merged)
   return merged
-}
-
-export async function listProjects(): Promise<string[]> {
-  const tickets = await listTickets()
-  return [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort()
 }
 
 const ARCHIVE_AGE_MS = 3 * 24 * 60 * 60 * 1000

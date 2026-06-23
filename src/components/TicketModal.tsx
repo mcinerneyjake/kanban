@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
+import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js'
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
 
@@ -14,6 +14,8 @@ type Props = {
   onOpen: (ticket: Ticket) => void
   onClose: () => void
 }
+
+const BOARD_STATUS_SET = new Set<StatusId>(BOARD_STATUSES.map((s) => s.id))
 
 function getDescendantIds(id: string, all: Ticket[]): Set<string> {
   const ids = new Set<string>()
@@ -101,14 +103,14 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     (t) =>
       t.id !== ticket?.id &&
       !descendantIds.has(t.id) &&
-      t.status !== 'archived' &&
+      BOARD_STATUS_SET.has(t.status) &&
       sameProject(t) &&
       // Always include the current parent so it's visible and clearable, even if done.
       (t.status !== 'done' || t.id === form.parent),
   )
 
   const availableBlockers = allTickets.filter(
-    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && t.status !== 'archived' && sameProject(t),
+    (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
   )
   const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter(Boolean) as Ticket[]
 

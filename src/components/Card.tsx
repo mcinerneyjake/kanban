@@ -46,22 +46,27 @@ export default function Card({ ticket, onOpen, columnId, depth = 0, childCount =
     setDropMode(mode)
   }
 
+  // Defined only when draggable — TypeScript narrows onDrop and columnId as
+  // non-undefined inside the ternary branch, eliminating the need for guards
+  // or non-null assertions at the call site.
   // stopPropagation so the parent Column's "append" drop doesn't also fire.
-  const onCardDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const id = e.dataTransfer.getData('text/ticket-id')
-    const srcStatus = e.dataTransfer.getData('text/ticket-status')
-    if (!id || id === ticket.id) { setDropMode(null); return }
-    // Only re-parent when both cards are in the same column; cross-column drops
-    // always move the ticket to the target column (insert before the hovered card).
-    if (dropMode === 'child' && srcStatus === columnId) {
-      onReparent?.(id, ticket.id)
-    } else {
-      if (onDrop && columnId) onDrop(id, columnId, ticket.id)
-    }
-    setDropMode(null)
-  }
+  const onCardDrop = onDrop && columnId
+    ? (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const id = e.dataTransfer.getData('text/ticket-id')
+        const srcStatus = e.dataTransfer.getData('text/ticket-status')
+        if (!id || id === ticket.id) { setDropMode(null); return }
+        // Only re-parent when both cards are in the same column; cross-column drops
+        // always move the ticket to the target column (insert before the hovered card).
+        if (dropMode === 'child' && srcStatus === columnId) {
+          onReparent?.(id, ticket.id)
+        } else {
+          onDrop(id, columnId, ticket.id)
+        }
+        setDropMode(null)
+      }
+    : undefined
 
   const dropClass = dropMode === 'before' ? ' card--drop-before'
     : dropMode === 'child' ? ' card--drop-child'
@@ -74,7 +79,7 @@ export default function Card({ ticket, onOpen, columnId, depth = 0, childCount =
       onDragStart={draggable ? onDragStart : undefined}
       onDragOver={draggable ? onCardDragOver : undefined}
       onDragLeave={draggable ? () => setDropMode(null) : undefined}
-      onDrop={draggable ? onCardDrop : undefined}
+      onDrop={onCardDrop}
       onClick={() => onOpen(ticket)}
     >
       <div className="card-title">{ticket.title}</div>

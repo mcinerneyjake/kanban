@@ -63,6 +63,34 @@ Before calling `create_ticket`, always use `AskUserQuestion` to collect the foll
 
 Then call `create_ticket` with the title (from the user's original request) and all four fields. Do not call `create_ticket` before collecting these selections.
 
+## Commit workflow
+
+After each ticket is marked done, ask the user: **"Ready to commit?"** — do not commit until they confirm. Then:
+
+1. `git add` only the files changed for this ticket (never `git add -A`)
+2. `git commit` with a message in this shape:
+   ```
+   <Imperative summary under 72 chars>
+
+   <1–3 sentences on why, not what. Reference the behaviour fixed or
+   the invariant established. Omit if the summary is self-contained.>
+
+   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   ```
+3. Pass the message via heredoc to avoid shell-escaping issues:
+   ```bash
+   git commit -m "$(cat <<'EOF'
+   Message here
+   EOF
+   )"
+   ```
+
+One ticket = one commit. Do not batch multiple tickets into a single commit.
+
+## Temporary scripts
+
+When a helper script is needed (e.g. to mark a ticket done via the service layer), write it directly to the project root, run it with `node_modules/.bin/tsx <script>.ts`, then delete it. Do not use `/tmp` or the Claude scratchpad directory — relative imports won't resolve from outside the project root.
+
 ## Project structure
 
 - `server/tickets.ts` — service layer (CRUD on markdown files, single source of truth)
@@ -75,6 +103,7 @@ Then call `create_ticket` with the title (from the user's original request) and 
 ## TypeScript conventions
 
 - **No type casting** (`as Foo`, `as string`, `as any`). Use type predicates (`(x): x is string => Boolean(x)`), proper generics, or fix the upstream type instead.
+- **No non-null assertions** (`foo!`, `bar!.baz`). Restructure so TypeScript can narrow the type itself — e.g. check `if (foo && bar)` at the closure level so the truthy branch carries the narrowed type.
 
 ## Stack
 

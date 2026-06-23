@@ -2,6 +2,33 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError } from '../server/tickets.js'
+import type { Ticket } from '../shared/constants.js'
+
+// Typed boundaries for each MCP tool's input — mirrors the JSON Schema declared
+// in ListToolsRequestSchema so TypeScript and the runtime stay in sync.
+interface TicketIdArgs { id: string }
+interface UpdateTicketArgs extends TicketIdArgs, Partial<Pick<Ticket, 'title' | 'status' | 'priority' | 'type' | 'body'>> {}
+type CreateTicketArgs = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body'>>
+
+// Type predicates — narrow `args: unknown` at the MCP protocol boundary
+// without type casting. The MCP SDK validates JSON Schema at runtime, so by
+// the time these run the shape is already guaranteed; the predicates just
+// surface that guarantee to TypeScript.
+function isObject(val: unknown): val is Record<string, unknown> {
+  return typeof val === 'object' && val !== null
+}
+
+function hasStringId(args: unknown): args is TicketIdArgs {
+  return isObject(args) && typeof args.id === 'string'
+}
+
+function isUpdateTicketArgs(args: unknown): args is UpdateTicketArgs {
+  return isObject(args) && typeof args.id === 'string'
+}
+
+function isCreateTicketArgs(args: unknown): args is CreateTicketArgs {
+  return isObject(args)
+}
 
 const server = new Server(
   { name: 'kanban', version: '0.1.0' },
@@ -91,33 +118,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'list_tickets':
         result = await listTickets()
         break
-      case 'get_ticket':
-        result = await getTicket((args as { id: string }).id)
+      case 'get_ticket': {
+        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
+        result = await getTicket(args.id)
         break
+      }
       case 'update_ticket': {
-        const { id, ...patch } = args as { id: string } & Record<string, unknown>
+        if (!isUpdateTicketArgs(args)) throw new HttpError(400, 'Missing required field: id')
+        const { id, ...patch } = args
         result = await updateTicket(id, patch)
         break
       }
       case 'start_ticket': {
-        const id = (args as { id: string }).id
-        result = await updateTicket(id, { status: 'in-progress' })
+        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
+        result = await updateTicket(args.id, { status: 'in-progress' })
         break
       }
-      case 'create_ticket':
-        result = await createTicket(args as Record<string, unknown>)
+      case 'create_ticket': {
+        if (!isCreateTicketArgs(args)) throw new HttpError(400, 'Invalid arguments')
+        result = await createTicket(args)
         break
-      case 'delete_ticket':
-        await deleteTicket((args as { id: string }).id)
-        result = { deleted: (args as { id: string }).id }
+      }
+      case 'delete_ticket': {
+        if (!hasStringId(args)) throw new HttpError(400, 'Missing required field: id')
+        await deleteTicket(args.id)
+        result = { deleted: args.id }
         break
+      }
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
   } catch (err) {
-    const message = err instanceof HttpError ? err.message : `Unexpected error: ${(err as Error).message}`
+    const message = err instanceof HttpError ? err.message : `Unexpected error: ${err instanceof Error ? err.message : String(err)}`
     return { content: [{ type: 'text', text: message }], isError: true }
   }
 })

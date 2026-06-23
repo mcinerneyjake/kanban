@@ -3,7 +3,6 @@ import path from 'node:path'
 import express, { Request, Response, NextFunction } from 'express'
 import {
   listTickets,
-  listProjects,
   createTicket,
   updateTicket,
   deleteTicket,
@@ -14,7 +13,7 @@ import {
 // Thin routing layer: parse the request, call the service, shape the response.
 // No business logic or file IO lives here.
 const app = express()
-app.use(express.json())
+app.use(express.json({ limit: '256kb' }))
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>
 
@@ -30,7 +29,9 @@ const wrap = (fn: AsyncHandler) => (req: Request, res: Response, _next: NextFunc
 }
 
 app.get('/api/projects', wrap(async (_req, res) => {
-  res.json(await listProjects())
+  const tickets = await listTickets()
+  const projects = [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort()
+  res.json(projects)
 }))
 
 app.get('/api/tickets', wrap(async (_req, res) => {
@@ -42,11 +43,15 @@ app.post('/api/tickets', wrap(async (req, res) => {
 }))
 
 app.patch('/api/tickets/:id', wrap(async (req, res) => {
-  res.json(await updateTicket(req.params['id'] as string, req.body))
+  const { id } = req.params
+  if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter')
+  res.json(await updateTicket(id, req.body))
 }))
 
 app.delete('/api/tickets/:id', wrap(async (req, res) => {
-  await deleteTicket(req.params['id'] as string)
+  const { id } = req.params
+  if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter')
+  await deleteTicket(id)
   res.status(204).end()
 }))
 
