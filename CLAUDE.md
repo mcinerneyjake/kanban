@@ -58,7 +58,10 @@ After every feature or bug-fix ticket, evaluate **each touched file independentl
 | `server/tickets.ts` (service) | `server/tickets.test.ts` | Vitest |
 | `server/index.ts` (API routes) | `server/index.test.ts` | Vitest |
 | `src/lib/` (shared utilities) | `src/lib/*.test.ts` next to the file | Vitest |
+| `mcp/handlers.ts` (MCP tool handlers) | `mcp/handlers.test.ts` | Vitest |
 | React components / CSS only | skip | — |
+
+> The MCP **logic** lives in `mcp/handlers.ts` (testable); `mcp/server.ts` is a thin transport-wiring entrypoint with no logic, so it needs no test.
 
 Vitest patterns to follow:
 - Use `TICKETS_DIR_OVERRIDE` to redirect file I/O to a temp directory — never touch the real `tickets/` folder
@@ -115,7 +118,8 @@ Prefer the MCP tools for all ticket operations — never write a script to mark 
 - `src/` — React frontend
 - `tickets/` — one `.md` file per ticket (frontmatter + markdown body)
 - `shared/constants.ts` — enum values for status, type, priority
-- `mcp/server.ts` — MCP server exposing ticket tools
+- `mcp/handlers.ts` — MCP tool definitions + dispatch logic (the testable core)
+- `mcp/server.ts` — thin MCP entrypoint: wires the handlers to a stdio transport
 
 ## TypeScript conventions
 
