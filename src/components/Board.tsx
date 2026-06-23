@@ -13,9 +13,10 @@ type Props = {
   onMove: (id: string, status: Ticket['status'], order: number) => void
   onReparent: (id: string, newParentId: string) => void
   onOpen: (ticket: Ticket) => void
+  onArchiveAll: () => void
 }
 
-export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen }: Props) {
+export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
 
   const toggleCollapse = useCallback((id: string) =>
@@ -97,6 +98,7 @@ export default function Board({ tickets, sort, childCounts, onMove, onReparent, 
             onReparent={onReparent}
             onOpen={onOpen}
             onToggleCollapse={toggleCollapse}
+            onArchiveAll={col.id === 'done' ? onArchiveAll : undefined}
           />
         );
       })}

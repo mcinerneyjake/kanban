@@ -116,6 +116,14 @@ export default function App() {
     }
   }, []);
 
+  const handleArchiveAll = useCallback(async () => {
+    const doneTickets = filteredTickets.filter((t) => t.status === 'done');
+    try {
+      await Promise.all(doneTickets.map((t) => api.update(t.id, { status: 'archived' })));
+      load();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }, [filteredTickets, load]);
+
   // Optimistic move: patch local state first, persist, reload on failure.
   const handleMove = useCallback(async (id: string, status: Ticket['status'], order: number) => {
     setTickets((prev) =>
@@ -148,7 +156,7 @@ export default function App() {
           {error} — click to dismiss
         </div>
       )}
-      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={setEditing} />
+      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={setEditing} onArchiveAll={handleArchiveAll} />
       <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
 
       {editing && (
