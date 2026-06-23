@@ -1,0 +1,24 @@
+name: PR branch name
+
+# Enforces the branch-per-ticket convention documented in CLAUDE.md:
+#   <type>/<id>-<slug>   e.g. chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket
+# Fails the PR if its head branch doesn't match, so naming stays consistent.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate head branch matches <type>/<id>-<slug>
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Head branch: $BRANCH"
+          if [[ "$BRANCH" =~ ^(fix|feat|task|chore)/tkt-[0-9a-f]{12}-[a-z0-9-]+$ ]]; then
+            echo "✓ Branch name matches <type>/<id>-<slug>"
+          else
+            echo "::error::Branch '$BRANCH' does not match <type>/<id>-<slug> — type ∈ {fix,feat,task,chore}, id like tkt-4f7ccb2cd6bc, slug lowercase-kebab. See CLAUDE.md → Branch, commit & PR workflow."
+            exit 1
+          fi
