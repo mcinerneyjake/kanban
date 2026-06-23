@@ -1,5 +1,5 @@
-import type { Ticket } from '../../shared/constants.js'
-import Card from './Card.jsx'
+import type { Ticket } from '../../shared/constants.js';
+import Card from './Card.jsx';
 
 type Status = { id: Ticket['status']; label: string }
 
@@ -19,10 +19,10 @@ type Props = {
 // card (handled in Card) inserts above that card.
 export default function Column({ column, tickets, depths, childCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse }: Props) {
   const onColumnDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const id = e.dataTransfer.getData('text/ticket-id')
-    if (id) onDrop(id, column.id, null)
-  }
+    e.preventDefault();
+    const id = e.dataTransfer.getData('text/ticket-id');
+    if (id) onDrop(id, column.id, null);
+  };
 
   return (
     <div
@@ -51,5 +51,5 @@ export default function Column({ column, tickets, depths, childCounts, collapsed
         ))}
       </div>
     </div>
-  )
+  );
 }

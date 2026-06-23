@@ -1,22 +1,22 @@
-import type { Ticket } from '../shared/constants.js'
+import type { Ticket } from '../shared/constants.js';
 
 // Rejects with the server's {error} message (or a generic status string) if
 // the response is not ok. res.json() returns `any`, so .error is directly
 // accessible without a cast.
 async function throwIfError(res: Response): Promise<void> {
-  if (res.ok) return
-  const body = await res.json().catch(() => ({}))
-  throw new Error(body.error || `Request failed (${res.status})`)
+  if (res.ok) return;
+  const body = await res.json().catch(() => ({}));
+  throw new Error(body.error || `Request failed (${res.status})`);
 }
 
 // Unwraps a successful JSON response. res.json() returns Promise<any>, which
 // is assignable to T without a cast.
 const json = async <T>(res: Response): Promise<T> => {
-  await throwIfError(res)
-  return res.json()
-}
+  await throwIfError(res);
+  return res.json();
+};
 
-const get = <T>(url: string): Promise<T> => fetch(url).then((res) => json<T>(res))
+const get = <T>(url: string): Promise<T> => fetch(url).then((res) => json<T>(res));
 
 // send() is for endpoints that return a JSON body (POST, PATCH).
 // DELETE returns 204 No Content — calling res.json() on an empty body would
@@ -26,7 +26,7 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }).then((res) => json<T>(res))
+  }).then((res) => json<T>(res));
 
 export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
@@ -36,4 +36,4 @@ export const api = {
     fetch(`/api/tickets/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
       .then(throwIfError),
   projects: (): Promise<string[]> => get('/api/projects'),
-}
+};

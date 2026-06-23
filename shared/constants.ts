@@ -9,19 +9,19 @@ export const BOARD_STATUSES = [
   { id: 'in-progress', label: 'In Progress' },
   { id: 'qa', label: 'QA' },
   { id: 'done', label: 'Done' },
-] as const
+] as const;
 
 // All valid statuses — includes archived, used for API validation and the modal dropdown.
 export const STATUSES = [
   ...BOARD_STATUSES,
   { id: 'archived', label: 'Archived' },
-] as const
+] as const;
 
-export const STATUS_IDS = STATUSES.map((s) => s.id)
+export const STATUS_IDS = STATUSES.map((s) => s.id);
 
-export const TYPES = ['bug', 'feature', 'task', 'chore'] as const
+export const TYPES = ['bug', 'feature', 'task', 'chore'] as const;
 
-export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
+export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 
 export type StatusId = (typeof STATUSES)[number]['id']
 export type TicketType = (typeof TYPES)[number]
@@ -30,13 +30,13 @@ export type Priority = (typeof PRIORITIES)[number]
 // Type predicates — use find() so TypeScript can narrow val to the literal
 // union type without a cast. Safe to call with any string at runtime.
 export function isStatusId(val: string): val is StatusId {
-  return STATUS_IDS.find((s) => s === val) !== undefined
+  return STATUS_IDS.find((s) => s === val) !== undefined;
 }
 export function isTicketType(val: string): val is TicketType {
-  return TYPES.find((t) => t === val) !== undefined
+  return TYPES.find((t) => t === val) !== undefined;
 }
 export function isPriority(val: string): val is Priority {
-  return PRIORITIES.find((p) => p === val) !== undefined
+  return PRIORITIES.find((p) => p === val) !== undefined;
 }
 
 export type Ticket = {

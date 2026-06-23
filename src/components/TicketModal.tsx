@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js'
+import { useState, useEffect } from 'react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
 
@@ -15,22 +15,22 @@ type Props = {
   onClose: () => void
 }
 
-const BOARD_STATUS_SET = new Set<StatusId>(BOARD_STATUSES.map((s) => s.id))
+const BOARD_STATUS_SET = new Set<StatusId>(BOARD_STATUSES.map((s) => s.id));
 
 function getDescendantIds(id: string, all: Ticket[]): Set<string> {
-  const ids = new Set<string>()
-  const queue = [id]
+  const ids = new Set<string>();
+  const queue = [id];
   while (queue.length) {
-    const cur = queue.shift()
-    if (cur === undefined) break
+    const cur = queue.shift();
+    if (cur === undefined) break;
     for (const t of all) {
       if (t.parent === cur && !ids.has(t.id)) {
-        ids.add(t.id)
-        queue.push(t.id)
+        ids.add(t.id);
+        queue.push(t.id);
       }
     }
   }
-  return ids
+  return ids;
 }
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
@@ -44,30 +44,30 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
     body: ticket?.body ?? '',
     project: ticket?.project ?? null,
     blockers: (ticket?.blockers ?? []).filter((id) => {
-      const t = allTickets.find((bt) => bt.id === id)
-      return t && t.status !== 'archived'
+      const t = allTickets.find((bt) => bt.id === id);
+      return t && t.status !== 'archived';
     }),
     parent: (() => {
-      const id = ticket?.parent ?? null
-      if (!id) return null
-      const p = allTickets.find((t) => t.id === id)
-      return p && p.status !== 'archived' ? id : null
+      const id = ticket?.parent ?? null;
+      if (!id) return null;
+      const p = allTickets.find((t) => t.id === id);
+      return p && p.status !== 'archived' ? id : null;
     })(),
-  })
-  const wasArchived = ticket?.status === 'archived'
-  const [preview, setPreview] = useState(false)
+  });
+  const wasArchived = ticket?.status === 'archived';
+  const [preview, setPreview] = useState(false);
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
 
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-    setForm((f) => ({ ...f, [k]: e.target.value }))
+    setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const setProject = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const project = e.target.value || null
+    const project = e.target.value || null;
     setForm((f) => ({
       ...f,
       project,
@@ -79,27 +79,27 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
       parent: project === null
         ? f.parent
         : (allTickets.find((t) => t.id === f.parent)?.project === project ? f.parent : null),
-    }))
-  }
+    }));
+  };
 
   const setParent = (e: React.ChangeEvent<HTMLSelectElement>) =>
-    setForm((f) => ({ ...f, parent: e.target.value || null }))
+    setForm((f) => ({ ...f, parent: e.target.value || null }));
 
   const addBlocker = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const id = e.target.value
-    if (!id || form.blockers.includes(id)) return
-    setForm((f) => ({ ...f, blockers: [...f.blockers, id] }))
-    e.target.value = ''
-  }
+    const id = e.target.value;
+    if (!id || form.blockers.includes(id)) return;
+    setForm((f) => ({ ...f, blockers: [...f.blockers, id] }));
+    e.target.value = '';
+  };
 
   const removeBlocker = (id: string) =>
-    setForm((f) => ({ ...f, blockers: f.blockers.filter((b) => b !== id) }))
+    setForm((f) => ({ ...f, blockers: f.blockers.filter((b) => b !== id) }));
 
   // children: direct children only, used for the sub-tickets display section
   // descendantIds: full subtree — excludes all descendants from parent options to prevent cycles
-  const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : []
-  const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>()
-  const sameProject = (t: Ticket) => form.project === null || t.project === form.project
+  const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : [];
+  const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>();
+  const sameProject = (t: Ticket) => form.project === null || t.project === form.project;
   const parentOptions = allTickets.filter(
     (t) =>
       t.id !== ticket?.id &&
@@ -108,18 +108,18 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
       sameProject(t) &&
       // Always include the current parent so it's visible and clearable, even if done.
       (t.status !== 'done' || t.id === form.parent),
-  )
+  );
 
   const availableBlockers = allTickets.filter(
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
-  )
-  const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter((t): t is Ticket => t !== undefined)
+  );
+  const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter((t): t is Ticket => t !== undefined);
 
   const submit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!form.title.trim()) return
-    onSave(form)
-  }
+    e.preventDefault();
+    if (!form.title.trim()) return;
+    onSave(form);
+  };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -274,5 +274,5 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
         </form>
       </div>
     </div>
-  )
+  );
 }

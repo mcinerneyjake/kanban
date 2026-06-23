@@ -1,5 +1,5 @@
-import type { Ticket } from '../../shared/constants.js'
-import Card from './Card.jsx'
+import type { Ticket } from '../../shared/constants.js';
+import Card from './Card.jsx';
 
 type Props = {
   tickets: Ticket[]
@@ -29,5 +29,5 @@ export default function ArchiveLane({ tickets, show, onToggle, onOpen }: Props) 
         </div>
       )}
     </div>
-  )
+  );
 }

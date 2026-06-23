@@ -1,17 +1,17 @@
-import { useState, useRef, useEffect } from 'react'
-import { TYPES, PRIORITIES, isPriority, type TicketType, type Priority } from '../../shared/constants.js'
+import { useState, useRef, useEffect } from 'react';
+import { TYPES, PRIORITIES, isPriority, type TicketType, type Priority } from '../../shared/constants.js';
 
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
 export type DateField = 'created' | 'updated'
 
-const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title']
-const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated']
+const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title'];
+const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated'];
 
 function isSortBy(val: string): val is SortBy {
-  return SORT_BY_VALUES.find((s) => s === val) !== undefined
+  return SORT_BY_VALUES.find((s) => s === val) !== undefined;
 }
 function isDateField(val: string): val is DateField {
-  return DATE_FIELD_VALUES.find((s) => s === val) !== undefined
+  return DATE_FIELD_VALUES.find((s) => s === val) !== undefined;
 }
 
 export type FilterState = {
@@ -32,7 +32,7 @@ export const defaultFilter: FilterState = {
   dateField: 'created',
   dateFrom: '',
   dateTo: '',
-}
+};
 
 type Props = {
   filter: FilterState
@@ -41,29 +41,29 @@ type Props = {
 }
 
 export default function FilterPopover({ filter, projects, onChange }: Props) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     const onMouse = (e: MouseEvent) => {
-      if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onMouse)
-    document.addEventListener('keydown', onKey)
+      if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onMouse);
+    document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onMouse)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
+      document.removeEventListener('mousedown', onMouse);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
 
   const toggleType = (t: TicketType) => {
     const next = filter.types.includes(t)
       ? filter.types.filter((x) => x !== t)
-      : [...filter.types, t]
-    onChange({ ...filter, types: next })
-  }
+      : [...filter.types, t];
+    onChange({ ...filter, types: next });
+  };
 
   const activeCount = [
     filter.types.length > 0,
@@ -71,7 +71,7 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
     filter.project !== '',
     filter.dateFrom !== '' || filter.dateTo !== '',
     filter.sort !== 'order',
-  ].filter(Boolean).length
+  ].filter(Boolean).length;
 
   return (
     <div className="fp-anchor" ref={ref}>
@@ -101,7 +101,7 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
             <span className="fp-label">Priority</span>
             <select
               value={filter.priority}
-              onChange={(e) => { const v = e.target.value; onChange({ ...filter, priority: isPriority(v) ? v : '' }) }}
+              onChange={(e) => { const v = e.target.value; onChange({ ...filter, priority: isPriority(v) ? v : '' }); }}
               className="filter-select fp-grow"
             >
               <option value="">All</option>
@@ -131,7 +131,7 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
             <span className="fp-label">Date</span>
             <select
               value={filter.dateField}
-              onChange={(e) => { const v = e.target.value; if (isDateField(v)) onChange({ ...filter, dateField: v }) }}
+              onChange={(e) => { const v = e.target.value; if (isDateField(v)) onChange({ ...filter, dateField: v }); }}
               className="filter-select"
             >
               <option value="created">Created</option>
@@ -158,7 +158,7 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
             <span className="fp-label">Sort</span>
             <select
               value={filter.sort}
-              onChange={(e) => { const v = e.target.value; if (isSortBy(v)) onChange({ ...filter, sort: v }) }}
+              onChange={(e) => { const v = e.target.value; if (isSortBy(v)) onChange({ ...filter, sort: v }); }}
               className="filter-select fp-grow"
             >
               <option value="order">Default</option>
@@ -176,5 +176,5 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
         </div>
       )}
     </div>
-  )
+  );
 }

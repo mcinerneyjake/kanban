@@ -1,56 +1,56 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { api } from './api.js'
-import Board from './components/Board.jsx'
-import ArchiveLane from './components/ArchiveLane.jsx'
-import TicketModal from './components/TicketModal.jsx'
-import FilterPopover, { defaultFilter, type FilterState } from './components/FilterPopover.jsx'
-import { useTheme } from './useTheme.js'
-import type { Ticket } from '../shared/constants.js'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { api } from './api.js';
+import Board from './components/Board.jsx';
+import ArchiveLane from './components/ArchiveLane.jsx';
+import TicketModal from './components/TicketModal.jsx';
+import FilterPopover, { defaultFilter, type FilterState } from './components/FilterPopover.jsx';
+import { useTheme } from './useTheme.js';
+import type { Ticket } from '../shared/constants.js';
 
 // Single source of UI state. Tickets are reloaded from the server after every
 // mutation (the files are the source of truth), except drag-moves which apply
 // optimistically for snappy reordering.
 export default function App() {
-  const { theme, toggle } = useTheme()
-  const [tickets, setTickets] = useState<Ticket[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState<Ticket | 'new' | null>(null)
-  const [filter, setFilter] = useState<FilterState>(defaultFilter)
-  const [showArchive, setShowArchive] = useState(false)
+  const { theme, toggle } = useTheme();
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
+  const [filter, setFilter] = useState<FilterState>(defaultFilter);
+  const [showArchive, setShowArchive] = useState(false);
 
-  const [projects, setProjects] = useState<string[]>([])
+  const [projects, setProjects] = useState<string[]>([]);
 
   const load = useCallback(() => {
-    api.list().then(setTickets).catch((e: Error) => setError(e.message))
-    api.projects().then(setProjects).catch(() => {})
-  }, [])
+    api.list().then(setTickets).catch((e: Error) => setError(e.message));
+    api.projects().then(setProjects).catch(() => {});
+  }, []);
 
-  const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets])
+  const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets]);
 
   const filteredTickets = useMemo(() => {
-    let result = tickets.filter((t) => t.status !== 'archived')
-    if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type))
-    if (filter.priority) result = result.filter((t) => t.priority === filter.priority)
-    if (filter.project) result = result.filter((t) => t.project === filter.project)
+    let result = tickets.filter((t) => t.status !== 'archived');
+    if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type));
+    if (filter.priority) result = result.filter((t) => t.priority === filter.priority);
+    if (filter.project) result = result.filter((t) => t.project === filter.project);
     if (filter.dateFrom || filter.dateTo) {
       result = result.filter((t) => {
-        const d = t[filter.dateField].slice(0, 10)
-        if (filter.dateFrom && d < filter.dateFrom) return false
-        if (filter.dateTo && d > filter.dateTo) return false
-        return true
-      })
+        const d = t[filter.dateField].slice(0, 10);
+        if (filter.dateFrom && d < filter.dateFrom) return false;
+        if (filter.dateTo && d > filter.dateTo) return false;
+        return true;
+      });
     }
-    return result
-  }, [tickets, filter])
+    return result;
+  }, [tickets, filter]);
 
   // Keyed by parent id → count of children, computed from all tickets (not filtered)
   const childCounts = useMemo(() => {
-    const counts: Record<string, number> = {}
+    const counts: Record<string, number> = {};
     for (const t of tickets) {
-      if (t.parent) counts[t.parent] = (counts[t.parent] ?? 0) + 1
+      if (t.parent) counts[t.parent] = (counts[t.parent] ?? 0) + 1;
     }
-    return counts
-  }, [tickets])
+    return counts;
+  }, [tickets]);
 
   // ticketsRef lets handleReparent read the current ticket list for cycle
   // detection without listing tickets as a dependency — keeping the callback
@@ -58,71 +58,71 @@ export default function App() {
   // effect (not during render) to satisfy the react-hooks/refs lint rule; the
   // effect always commits before the browser paints so the ref is current by
   // the time any user interaction fires.
-  const ticketsRef = useRef(tickets)
-  useEffect(() => { ticketsRef.current = tickets }, [tickets])
+  const ticketsRef = useRef(tickets);
+  useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
 
   useEffect(() => {
-    load()
-  }, [load])
+    load();
+  }, [load]);
 
   // editing is listed as a dep here because handleSave is only passed to
   // TicketModal, which already remounts (via key) whenever editing changes —
   // so re-creating this callback on editing change causes no extra renders.
   const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
-      if (editing === 'new') await api.create(data)
-      else if (editing) await api.update(editing.id, data)
-      setEditing(null)
-      load()
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-  }, [editing, load])
+      if (editing === 'new') await api.create(data);
+      else if (editing) await api.update(editing.id, data);
+      setEditing(null);
+      load();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }, [editing, load]);
 
   const handleDelete = useCallback(async (id: string) => {
     try {
-      await api.remove(id)
-      setEditing(null)
-      load()
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-  }, [load])
+      await api.remove(id);
+      setEditing(null);
+      load();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }, [load]);
 
   const handleReparent = useCallback(async (id: string, newParentId: string) => {
-    if (id === newParentId) return
+    if (id === newParentId) return;
     // Guard against cycles: reject if newParentId is a descendant of id.
-    const current = ticketsRef.current
-    const descendants = new Set<string>()
-    const queue = [id]
+    const current = ticketsRef.current;
+    const descendants = new Set<string>();
+    const queue = [id];
     while (queue.length) {
-      const cur = queue.shift()
-      if (cur === undefined) break
+      const cur = queue.shift();
+      if (cur === undefined) break;
       for (const t of current) {
         if (t.parent === cur && !descendants.has(t.id)) {
-          descendants.add(t.id)
-          queue.push(t.id)
+          descendants.add(t.id);
+          queue.push(t.id);
         }
       }
     }
-    if (descendants.has(newParentId)) return
-    const snapshot = current
-    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)))
+    if (descendants.has(newParentId)) return;
+    const snapshot = current;
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)));
     try {
-      await api.update(id, { parent: newParentId })
+      await api.update(id, { parent: newParentId });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setTickets(snapshot)
+      setError(e instanceof Error ? e.message : String(e));
+      setTickets(snapshot);
     }
-  }, [])
+  }, []);
 
   // Optimistic move: patch local state first, persist, reload on failure.
   const handleMove = useCallback(async (id: string, status: Ticket['status'], order: number) => {
     setTickets((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, status, order } : t)))
+      prev.map((t) => (t.id === id ? { ...t, status, order } : t)));
     try {
-      await api.update(id, { status, order })
+      await api.update(id, { status, order });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      load()
+      setError(e instanceof Error ? e.message : String(e));
+      load();
     }
-  }, [load])
+  }, [load]);
 
   return (
     <div className="app">
@@ -160,5 +160,5 @@ export default function App() {
         />
       )}
     </div>
-  )
+  );
 }
