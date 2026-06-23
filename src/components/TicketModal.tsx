@@ -54,7 +54,6 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
       return p && p.status !== 'archived' ? id : null;
     })(),
   });
-  const wasArchived = ticket?.status === 'archived';
   const [preview, setPreview] = useState(false);
 
   useEffect(() => {
@@ -149,7 +148,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
             <label>
               Status
               <select value={form.status} onChange={set('status')}>
-                {(wasArchived ? STATUSES : BOARD_STATUSES).map((s) => (
+                {(ticket ? STATUSES : BOARD_STATUSES).map((s) => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
               </select>
