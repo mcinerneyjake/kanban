@@ -143,6 +143,19 @@ describe('create_ticket', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('Title is required');
   });
+
+  it('rejects an invalid enum value instead of dropping it (rejection)', async () => {
+    const res = await handleToolCall('create_ticket', { title: 'X', type: 'nope' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid type');
+  });
+
+  // qa is transition-only — create advertises no qa, so the runtime must reject it.
+  it('rejects status qa at creation (rejection)', async () => {
+    const res = await handleToolCall('create_ticket', { title: 'X', status: 'qa' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid status');
+  });
 });
 
 describe('update_ticket', () => {
@@ -164,6 +177,16 @@ describe('update_ticket', () => {
     const res = await handleToolCall('update_ticket', { id: 'tkt-doesnotexist', status: 'done' });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('not found');
+  });
+
+  it('rejects an invalid status instead of dropping it (rejection)', async () => {
+    const id = await seed();
+    const res = await handleToolCall('update_ticket', { id, status: 'inprogres' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid status');
+    // the bad value must not have been persisted
+    const reread = await listTickets();
+    expect(reread.find((t) => t.id === id)?.status).toBe('backlog');
   });
 });
 
