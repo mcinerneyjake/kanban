@@ -151,7 +151,7 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
             <label>
               Status
               <select value={form.status} onChange={set('status')}>
-                {(ticket ? STATUSES : BOARD_STATUSES).map((s) => (
+                {(ticket?.status === 'archived' ? STATUSES : BOARD_STATUSES).map((s) => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
               </select>
