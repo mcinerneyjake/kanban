@@ -372,3 +372,36 @@ describe('searchTickets', () => {
     expect(results.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('dueDate field', () => {
+  it('persists dueDate when set on createTicket', async () => {
+    const t = await createTicket({ title: 'With due date', dueDate: '2026-12-31' });
+    expect(t.dueDate).toBe('2026-12-31');
+    const loaded = await getTicket(t.id);
+    expect(loaded.dueDate).toBe('2026-12-31');
+  });
+
+  it('defaults dueDate to null when omitted on createTicket', async () => {
+    const t = await createTicket({ title: 'No due date' });
+    expect(t.dueDate).toBeNull();
+  });
+
+  it('updates dueDate via updateTicket', async () => {
+    const t = await createTicket({ title: 'Update due date' });
+    const updated = await updateTicket(t.id, { dueDate: '2026-06-30' });
+    expect(updated.dueDate).toBe('2026-06-30');
+    expect((await getTicket(t.id)).dueDate).toBe('2026-06-30');
+  });
+
+  it('clears dueDate by setting null via updateTicket', async () => {
+    const t = await createTicket({ title: 'Clear due date', dueDate: '2026-06-30' });
+    const updated = await updateTicket(t.id, { dueDate: null });
+    expect(updated.dueDate).toBeNull();
+  });
+
+  it('leaves dueDate unchanged when not in the patch', async () => {
+    const t = await createTicket({ title: 'Preserve due date', dueDate: '2026-09-01' });
+    const updated = await updateTicket(t.id, { title: 'Renamed' });
+    expect(updated.dueDate).toBe('2026-09-01');
+  });
+});

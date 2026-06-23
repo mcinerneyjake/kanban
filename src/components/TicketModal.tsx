@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 
-type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
+type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate'>
 
 type Props = {
   ticket: Ticket | null
@@ -53,6 +53,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
       const p = allTickets.find((t) => t.id === id);
       return p && p.status !== 'archived' ? id : null;
     })(),
+    dueDate: ticket?.dueDate ?? null,
   });
   const [preview, setPreview] = useState(false);
 
@@ -171,6 +172,14 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
                   <option key={t.id} value={t.id}>{t.title}</option>
                 ))}
               </select>
+            </label>
+            <label className="solo">
+              Due date
+              <input
+                type="date"
+                value={form.dueDate ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value || null }))}
+              />
             </label>
           </div>
 

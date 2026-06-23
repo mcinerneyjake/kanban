@@ -403,15 +403,17 @@ body {
   gap: 4px;
   flex: 1;
 }
-.row select {
+.row select,
+.row input[type="date"] {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
-  text-transform: capitalize;
   background: var(--card-bg);
   color: var(--text);
 }
+.row select { text-transform: capitalize; }
+[data-theme="dark"] .row input[type="date"] { color-scheme: dark; }
 
 .body-head {
   display: flex;
@@ -516,6 +518,12 @@ body {
   background: #3d1a18;
   color: var(--danger);
 }
+
+.badge.due-date { background: var(--badge-bg); color: var(--muted); }
+.badge.due-date.due-today { background: #fff3cd; color: #7a5500; }
+.badge.due-date.overdue { background: #ffebe6; color: var(--danger); }
+[data-theme="dark"] .badge.due-date.due-today { background: #3d3000; color: #d29922; }
+[data-theme="dark"] .badge.due-date.overdue { background: #3d1a18; color: var(--danger); }
 
 .badge.subtasks {
   background: var(--badge-bg);

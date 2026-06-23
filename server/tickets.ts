@@ -29,7 +29,7 @@ export class HttpError extends Error {
   }
 }
 
-type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent'>>
+type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate'>>
 
 // Shape returned by gray-matter after parsing a ticket file. js-yaml will
 // auto-parse unquoted ISO dates as Date objects; every other value is string,
@@ -45,6 +45,7 @@ interface RawFrontmatter {
   project?: string | null
   blockers?: (string | number | boolean)[]
   parent?: string | null
+  dueDate?: string | null
 }
 
 // Explicit-field object passed to matter.stringify — typed so serialize()
@@ -60,6 +61,7 @@ interface SerializedFrontmatter {
   project?: string
   blockers?: string[]
   parent?: string
+  dueDate?: string
 }
 
 async function ensureDir() {
@@ -111,6 +113,7 @@ function normalize(id: string, data: RawFrontmatter, body: string): Ticket {
       ? data.blockers.filter((v): v is string => typeof v === 'string')
       : [],
     parent: typeof data.parent === 'string' && data.parent ? data.parent : null,
+    dueDate: typeof data.dueDate === 'string' && data.dueDate ? data.dueDate : null,
   };
 }
 
@@ -128,6 +131,7 @@ function serialize(ticket: Ticket): string {
   if (ticket.project) data.project = ticket.project;
   if (ticket.blockers.length > 0) data.blockers = ticket.blockers;
   if (ticket.parent) data.parent = ticket.parent;
+  if (ticket.dueDate) data.dueDate = ticket.dueDate;
   return matter.stringify(`\n${ticket.body}\n`, data);
 }
 
@@ -206,6 +210,7 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
       blockers: input.blockers ?? [],
       project: input.project ?? null,
       parent: input.parent ?? null,
+      dueDate: input.dueDate ?? null,
     },
     input.body ?? '',
   );
@@ -231,6 +236,7 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
     project: patch.project !== undefined ? patch.project : existing.project,
     blockers: patch.blockers ?? existing.blockers,
     parent: patch.parent !== undefined ? patch.parent : existing.parent,
+    dueDate: patch.dueDate !== undefined ? patch.dueDate : existing.dueDate,
     created: existing.created,
     updated: new Date().toISOString(),
   };
