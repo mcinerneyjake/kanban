@@ -52,13 +52,33 @@ function isStringArray(val: unknown): val is string[] {
 
 type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>>
 
-function extractTicketFields(args: Record<string, unknown> | undefined): TicketFields {
+// `allowedStatuses` is the per-operation status set (create vs update) — passed
+// in so the converter enforces the *advertised* schema at runtime, not just in
+// the JSON schema. An invalid enum value is rejected (matching the HTTP route's
+// `validateEnums` 400) rather than silently dropped, so a caller's typo or an
+// impossible state (e.g. status `qa` at create) surfaces as an error instead of
+// a no-op. Enum membership reuses the shared predicates — one source of truth.
+function extractTicketFields(
+  args: Record<string, unknown> | undefined,
+  allowedStatuses: readonly string[],
+): TicketFields {
   const out: TicketFields = {};
   if (!args) return out;
   if (typeof args.title === 'string') out.title = args.title;
-  if (typeof args.type === 'string' && isTicketType(args.type)) out.type = args.type;
-  if (typeof args.priority === 'string' && isPriority(args.priority)) out.priority = args.priority;
-  if (typeof args.status === 'string' && isStatusId(args.status)) out.status = args.status;
+  if (typeof args.type === 'string') {
+    if (!isTicketType(args.type)) throw new HttpError(400, `Invalid type: ${args.type}`);
+    out.type = args.type;
+  }
+  if (typeof args.priority === 'string') {
+    if (!isPriority(args.priority)) throw new HttpError(400, `Invalid priority: ${args.priority}`);
+    out.priority = args.priority;
+  }
+  if (typeof args.status === 'string') {
+    const msg = `Invalid status: ${args.status} (allowed: ${allowedStatuses.join(', ')})`;
+    if (!isStatusId(args.status)) throw new HttpError(400, msg);
+    if (!allowedStatuses.includes(args.status)) throw new HttpError(400, msg);
+    out.status = args.status;
+  }
   if (typeof args.body === 'string') out.body = args.body;
   if (typeof args.project === 'string') out.project = args.project;
   else if (args.project === null) out.project = null;
@@ -168,7 +188,7 @@ export async function handleToolCall(
       case 'update_ticket': {
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
-        return { content: [textContent(JSON.stringify(await updateTicket(id, extractTicketFields(args)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await updateTicket(id, extractTicketFields(args, UPDATE_STATUS_ENUM)), null, 2))] };
       }
 
       case 'start_ticket': {
@@ -178,7 +198,7 @@ export async function handleToolCall(
       }
 
       case 'create_ticket':
-        return { content: [textContent(JSON.stringify(await createTicket(extractTicketFields(args)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await createTicket(extractTicketFields(args, CREATE_STATUS_ENUM)), null, 2))] };
 
       case 'delete_ticket': {
         const id = extractId(args);
