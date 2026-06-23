@@ -2,7 +2,7 @@
 
 ## Session startup (MANDATORY — always do this before anything else)
 
-At the start of every session in this directory, **even if the user's first message is a specific request**, run these steps before responding:
+At the start of every session in this directory, run these steps before responding **when the opening message is a ticket or implementation request** (e.g. "work on X", "fix the bug in Y", "what's left on the board"):
 
 1. Call `list_tickets` to load the board
 2. Print a one-line summary: ticket counts by status (e.g. "3 backlog · 2 todo · 1 in-progress")
@@ -16,7 +16,7 @@ At the start of every session in this directory, **even if the user's first mess
 
 If no tickets are `todo`, just show the summary and wait for instructions.
 
-Do not skip this startup sequence. If the user opens with a question or task, complete steps 1–2 first, then address their request.
+**Escape hatch:** If the opening message is a meta, analysis, planning, or configuration request with no ticket implied (e.g. "analyze my workflow", "explain how X works", "update a setting"), skip the board load and address it directly. When genuinely in doubt, do steps 1–2 (they're cheap) and then address the request — but don't force the board on a clearly non-ticket ask.
 
 ## MCP server
 
@@ -30,12 +30,24 @@ This project has a kanban MCP server. When asked to work on a ticket:
 2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call)
 3. Implement the work described in the ticket's `body`
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
-5. Run `npm test` and confirm all tests pass
-6. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
+6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then run a `/code-review` pass (and `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and go straight to done.
+7. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
 
 The implementation summary **must** include a test line — either:
 - `Tests: N added — <brief description of what they cover>`
 - `Tests: none — <reason, e.g. "pure UI change" or "no new logic">`
+
+### Definition of Done
+
+A ticket is **Done** only when all of these hold (the gate is executable, not advisory):
+
+- [ ] `npm run typecheck` passes — or N/A (docs-only, no code touched)
+- [ ] `npm run lint` passes — or N/A (docs-only, no code touched)
+- [ ] `npm test` passes, with tests added per the Testing table below — or an explicit skip reason
+- [ ] Self-review (`qa`) completed for non-trivial tickets
+- [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` line
+- [ ] Status transitioned to `done` via `update_ticket`
 
 ## Testing
 
@@ -94,7 +106,7 @@ One ticket = one commit. Do not batch multiple tickets into a single commit.
 
 ## Temporary scripts
 
-When a helper script is needed (e.g. to mark a ticket done via the service layer), write it directly to the project root, run it with `node_modules/.bin/tsx <script>.ts`, then delete it. Do not use `/tmp` or the Claude scratchpad directory — relative imports won't resolve from outside the project root.
+Prefer the MCP tools for all ticket operations — never write a script to mark a ticket done or mutate ticket state; `update_ticket` does that. Only when a genuine one-off needs the service layer directly (e.g. a bulk migration across the markdown files) write a script to the project root, run it with `node_modules/.bin/tsx <script>.ts`, then delete it. Do not use `/tmp` or the Claude scratchpad directory — relative imports won't resolve from outside the project root.
 
 ## Project structure
 
