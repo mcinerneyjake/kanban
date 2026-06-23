@@ -204,16 +204,15 @@ const ARCHIVE_AGE_MS = 3 * 24 * 60 * 60 * 1000
 export async function archiveStaleTickets(): Promise<number> {
   const tickets = await listTickets()
   const now = Date.now()
-  let count = 0
-  for (const ticket of tickets) {
-    if (ticket.status !== 'done') continue
+  const stale = tickets.filter((ticket) => {
+    if (ticket.status !== 'done') return false
     const updatedAt = new Date(ticket.updated).getTime()
-    if (isNaN(updatedAt) || now - updatedAt < ARCHIVE_AGE_MS) continue
-    await updateTicket(ticket.id, { status: 'archived' })
-    count++
-  }
-  console.log(`[archive] Archived ${count} stale ticket(s)`)
-  return count
+    return !isNaN(updatedAt) && now - updatedAt >= ARCHIVE_AGE_MS
+  })
+  const archived = new Date().toISOString()
+  await Promise.all(stale.map((ticket) => writeTicket({ ...ticket, status: 'archived', updated: archived })))
+  console.log(`[archive] Archived ${stale.length} stale ticket(s)`)
+  return stale.length
 }
 
 export async function deleteTicket(id: string): Promise<void> {
