@@ -137,7 +137,7 @@ git push -u origin <prefix>/<id>-<slug>
 gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the ## Implementation summary>"
 ```
 
-The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge.
+The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`.
 
 ### 4. Merge (after CI is green)
 
