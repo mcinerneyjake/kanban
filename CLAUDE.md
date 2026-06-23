@@ -74,14 +74,20 @@ When asked to create a ticket, use `create_ticket`. When asked what's on the boa
 
 ### Ticket creation flow
 
-Before calling `create_ticket`, use `AskUserQuestion` to collect the following fields in a single prompt (4 questions). If type and/or priority are obvious from context (e.g. the user says "quick chore" or "urgent bug"), pre-select those as the first/recommended option rather than treating all choices as equal — the user can override without extra friction.
+**Infer the fields, then confirm in one step** — do not make the user answer four separate prompts.
 
-1. **Type** — single-select, options: `bug`, `feature`, `task`, `chore`
-2. **Priority** — single-select, options: `low`, `medium`, `high`, `urgent`
-3. **Status** — single-select, options: `backlog`, `todo`, `in-progress`, `qa`, `done` (default `backlog`)
-4. **Project** — single-select, options: `None` plus any project names visible in the current board context; the user can pick "Other" to type a custom name
+1. **Infer all four fields** from the request, using these heuristics (so the inference is reproducible):
+   - **Type** (`bug` | `feature` | `task` | `chore`) — from intent: "fix / broken / regression / bug" → `bug`; "add / build / support / new" → `feature`; "update / tidy / bump / rename / clean up" → `chore`; otherwise `task`.
+   - **Priority** (`low` | `medium` | `high` | `urgent`) — from urgency words: "quick / minor / nit / whenever" → `low`; "urgent / asap / blocking / drop everything" → `urgent`; "soon / important" → `high`; otherwise `medium`.
+   - **Status** (`backlog` | `todo` | `in-progress` | `qa` | `done`) — default `backlog`; `todo` if the user wants it queued next; `in-progress` if they want to start it now.
+   - **Project** — match against projects visible on the board; else `None`.
+   - **Title** — a concise imperative drawn from the request.
 
-Then call `create_ticket` with the title (from the user's original request) and all four fields. Do not call `create_ticket` before collecting these selections.
+2. **Confirm once.** State the inferred fields in a single line and ask the user to confirm or adjust — e.g. *"I'll create **Update the README** — chore · low · backlog · no project. Confirm or edit?"*. A confirmation creates it; any correction ("make it high") is applied first. Prefer this lightweight plain-text confirm over a prompt.
+
+3. **Fall back to an explicit `AskUserQuestion`** only for the field(s) that are genuinely ambiguous (e.g. intent doesn't map cleanly to a type) — pre-select the best inference as the recommended option.
+
+Never call `create_ticket` before the user has confirmed (or accepted the inferred defaults).
 
 ## Branch, commit & PR workflow
 
