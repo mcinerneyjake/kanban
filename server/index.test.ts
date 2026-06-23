@@ -1,5 +1,64 @@
-import { describe, it, expect, vi } from 'vitest';
-import { msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import request from 'supertest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js';
+
+let tmpDir: string;
+
+beforeAll(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-'));
+  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+});
+
+afterAll(async () => {
+  delete process.env.TICKETS_DIR_OVERRIDE;
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
+  const files = await fs.readdir(tmpDir);
+  await Promise.all(
+    files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))),
+  );
+});
+
+async function seedTicket(id: string, title = 'Test ticket') {
+  const content = [
+    '---',
+    `title: '${title}'`,
+    "type: task",
+    "priority: medium",
+    "status: backlog",
+    "order: 1",
+    "created: '2026-01-01T00:00:00.000Z'",
+    "updated: '2026-01-01T00:00:00.000Z'",
+    '---',
+    '',
+  ].join('\n');
+  await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+}
+
+describe('GET /api/tickets/:id', () => {
+  it('returns the ticket when it exists', async () => {
+    await seedTicket('abc123456789', 'My ticket');
+    const res = await request(app).get('/api/tickets/abc123456789');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'abc123456789', title: 'My ticket' });
+  });
+
+  it('returns 404 for an unknown id', async () => {
+    const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('not found') });
+  });
+
+  it('returns 400 for an invalid id (path traversal)', async () => {
+    const res = await request(app).get('/api/tickets/..%2F..%2Fetc%2Fpasswd');
+    expect(res.status).toBe(400);
+  });
+});
 
 // Build a Date for a given day-of-week and hour (local time).
 // day: 0=Sun, 1=Mon, ... 6=Sat

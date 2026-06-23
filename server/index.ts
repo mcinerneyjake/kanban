@@ -4,6 +4,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import {
   listTickets,
   listProjects,
+  getTicket,
   createTicket,
   updateTicket,
   deleteTicket,
@@ -13,7 +14,7 @@ import {
 
 // Thin routing layer: parse the request, call the service, shape the response.
 // No business logic or file IO lives here.
-const app = express();
+export const app = express();
 app.use(express.json({ limit: '256kb' }));
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>
@@ -35,6 +36,12 @@ app.get('/api/projects', wrap(async (_req, res) => {
 
 app.get('/api/tickets', wrap(async (_req, res) => {
   res.json(await listTickets());
+}));
+
+app.get('/api/tickets/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter');
+  res.json(await getTicket(id));
 }));
 
 app.post('/api/tickets', wrap(async (req, res) => {
