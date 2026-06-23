@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { msUntilNextSundayEvening, stopArchiveScheduler } from './index.js'
+import { describe, it, expect, vi } from 'vitest'
+import { msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js'
 
 // Build a Date for a given day-of-week and hour (local time).
 // day: 0=Sun, 1=Mon, ... 6=Sat
@@ -70,5 +70,20 @@ describe('stopArchiveScheduler', () => {
 
   it('is idempotent — calling twice does not throw', () => {
     expect(() => { stopArchiveScheduler(); stopArchiveScheduler() }).not.toThrow()
+  })
+
+  it('calls clearTimeout exactly once when a timer is running, then becomes a no-op', () => {
+    vi.useFakeTimers()
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout')
+    try {
+      scheduleWeeklyArchive()       // populates archiveTimer
+      stopArchiveScheduler()        // should call clearTimeout and null the ref
+      expect(clearSpy).toHaveBeenCalledOnce()
+      stopArchiveScheduler()        // no-op: archiveTimer is now null
+      expect(clearSpy).toHaveBeenCalledOnce() // still exactly once
+    } finally {
+      clearSpy.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })

@@ -69,7 +69,7 @@ export function msUntilNextSundayEvening(now = new Date()): number {
 
 let archiveTimer: ReturnType<typeof setTimeout> | null = null
 
-function scheduleWeeklyArchive() {
+export function scheduleWeeklyArchive() {
   const delay = msUntilNextSundayEvening()
   const days = Math.round(delay / 864e5)
   console.log(`[archive] Next run in ~${days} day(s)`)
