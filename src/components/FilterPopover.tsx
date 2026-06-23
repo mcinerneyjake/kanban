@@ -4,8 +4,8 @@ import { TYPES, PRIORITIES, isPriority, type TicketType, type Priority } from '.
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
 export type DateField = 'created' | 'updated'
 
-const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title'];
-const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated'];
+export const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title'];
+export const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated'];
 
 function makeIs<T extends string>(arr: readonly T[]) {
   return (val: string): val is T => arr.find((s) => s === val) !== undefined;

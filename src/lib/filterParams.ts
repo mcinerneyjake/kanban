@@ -1,8 +1,5 @@
 import { isTicketType, isPriority } from '../../shared/constants.js';
-import { defaultFilter, type FilterState, type SortBy, type DateField } from '../components/FilterPopover.js';
-
-const SORT_BY_VALUES = ['order', 'priority', 'created', 'title'] as const;
-const DATE_FIELD_VALUES = ['created', 'updated'] as const;
+import { defaultFilter, SORT_BY_VALUES, DATE_FIELD_VALUES, type FilterState, type SortBy, type DateField } from '../components/FilterPopover.js';
 
 const isSortBy = (v: string): v is SortBy => SORT_BY_VALUES.find((s) => s === v) !== undefined;
 const isDateField = (v: string): v is DateField => DATE_FIELD_VALUES.find((s) => s === v) !== undefined;
