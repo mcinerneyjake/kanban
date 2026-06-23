@@ -72,6 +72,10 @@ Then call `create_ticket` with the title (from the user's original request) and 
 - `shared/constants.ts` — enum values for status, type, priority
 - `mcp/server.ts` — MCP server exposing ticket tools
 
+## TypeScript conventions
+
+- **No type casting** (`as Foo`, `as string`, `as any`). Use type predicates (`(x): x is string => Boolean(x)`), proper generics, or fix the upstream type instead.
+
 ## Stack
 
 React + Vite frontend, Express API, markdown files as the database (no SQL).

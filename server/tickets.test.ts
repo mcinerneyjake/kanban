@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { listTickets, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js'
+import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js'
 
 let tmpDir: string
 
@@ -283,5 +283,25 @@ describe('archiveStaleTickets', () => {
     expect((await getTicket('tkt-stale2')).status).toBe('archived')
     expect((await getTicket('tkt-recent')).status).toBe('done')
     expect((await getTicket('tkt-active')).status).toBe('in-progress')
+  })
+})
+
+describe('listProjects', () => {
+  it('returns an empty array when no tickets have a project', async () => {
+    await writeRaw('tkt-np', makeRaw('No project', 1))
+    expect(await listProjects()).toEqual([])
+  })
+
+  it('returns unique project names sorted alphabetically', async () => {
+    await writeRaw('tkt-p1', makeRaw('T1', 1, { project: 'zebra' }))
+    await writeRaw('tkt-p2', makeRaw('T2', 2, { project: 'alpha' }))
+    await writeRaw('tkt-p3', makeRaw('T3', 3, { project: 'alpha' }))
+    expect(await listProjects()).toEqual(['alpha', 'zebra'])
+  })
+
+  it('excludes tickets with no project value from the result', async () => {
+    await writeRaw('tkt-a', makeRaw('A', 1, { project: 'kanban' }))
+    await writeRaw('tkt-b', makeRaw('B', 2))
+    expect(await listProjects()).toEqual(['kanban'])
   })
 })

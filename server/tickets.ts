@@ -194,14 +194,9 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   return merged
 }
 
-const PROJECTS_DIR = path.join(__dirname, '..', '..')
-
 export async function listProjects(): Promise<string[]> {
-  const entries = await fs.readdir(PROJECTS_DIR, { withFileTypes: true })
-  return entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-    .map((e) => e.name)
-    .sort()
+  const tickets = await listTickets()
+  return [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort()
 }
 
 const ARCHIVE_AGE_MS = 3 * 24 * 60 * 60 * 1000
