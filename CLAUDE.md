@@ -6,16 +6,21 @@ At the start of every session in this directory, **even if the user's first mess
 
 1. Call `list_tickets` to load the board
 2. Print a one-line summary: ticket counts by status (e.g. "3 backlog · 2 todo · 1 in-progress")
-3. If any tickets are `todo`, use `AskUserQuestion` to present a single-select prompt:
+3. If the user's opening message names a specific ticket (e.g. "work on X", "start ticket Y"), match it against the board and call `start_ticket` directly — skip the selection prompt entirely.
+4. Otherwise, if any tickets are `todo`, use `AskUserQuestion` to present a single-select prompt:
    - question: "Which ticket should we start?"
    - header: "Ticket"
    - One option per `todo` ticket: `label` = ticket title, `description` = `[priority] type`
    - Include a final option: label "Skip", description "Don't start a ticket right now"
-4. When the user picks a ticket (not Skip), call `start_ticket` with its id — this marks it in-progress and returns the full body so implementation can begin immediately
+5. When the user picks a ticket (not Skip), call `start_ticket` with its id — this marks it in-progress and returns the full body so implementation can begin immediately
 
 If no tickets are `todo`, just show the summary and wait for instructions.
 
 Do not skip this startup sequence. If the user opens with a question or task, complete steps 1–2 first, then address their request.
+
+## MCP server
+
+The kanban MCP server is wired in `.claude/settings.json` and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. If the tools are not available in a session, check that `.claude/settings.json` has the `kanban` entry with `cwd` set to the project root.
 
 ## Ticket workflow
 
@@ -34,7 +39,7 @@ The implementation summary **must** include a test line — either:
 
 ## Testing
 
-After every feature or bug-fix ticket, evaluate which layers were touched and write tests accordingly:
+After every feature or bug-fix ticket, evaluate **each touched file independently** and write tests accordingly. Do not evaluate the ticket as a whole — a route ticket that also modifies a shared utility in `src/lib/` requires tests for both layers:
 
 | Layer touched | Test file | Framework |
 |---|---|---|
@@ -54,7 +59,7 @@ When asked to create a ticket, use `create_ticket`. When asked what's on the boa
 
 ### Ticket creation flow
 
-Before calling `create_ticket`, always use `AskUserQuestion` to collect the following fields in a single prompt (4 questions):
+Before calling `create_ticket`, use `AskUserQuestion` to collect the following fields in a single prompt (4 questions). If type and/or priority are obvious from context (e.g. the user says "quick chore" or "urgent bug"), pre-select those as the first/recommended option rather than treating all choices as equal — the user can override without extra friction.
 
 1. **Type** — single-select, options: `bug`, `feature`, `task`, `chore`
 2. **Priority** — single-select, options: `low`, `medium`, `high`, `urgent`
