@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket } from '../../shared/constants.js'
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>
@@ -236,7 +237,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
             <div
               className="md-preview"
               dangerouslySetInnerHTML={{
-                __html: marked.parse(form.body || '_No description_') as string,
+                __html: DOMPurify.sanitize(String(marked.parse(form.body || '_No description_'))),
               }}
             />
           ) : (
