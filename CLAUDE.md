@@ -27,7 +27,7 @@ The kanban MCP server is wired in `.mcp.json` at the project root (project scope
 This project has a kanban MCP server. When asked to work on a ticket:
 
 1. Call `list_tickets` to find it by title match
-2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call)
+2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call), then cut the ticket's branch (see **Branch, commit & PR workflow → 1. Branch**)
 3. Implement the work described in the ticket's `body`
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
@@ -83,29 +83,66 @@ Before calling `create_ticket`, use `AskUserQuestion` to collect the following f
 
 Then call `create_ticket` with the title (from the user's original request) and all four fields. Do not call `create_ticket` before collecting these selections.
 
-## Commit workflow
+## Branch, commit & PR workflow
 
-After each ticket is marked done, ask the user: **"Ready to commit?"** — do not commit until they confirm. Then:
+Every ticket lands on its own branch and merges to `main` via a **squash-merged PR** — never a direct push to `main`. There are three human-approval gates: **"Ready to commit?"**, **"Ready to open PR?"**, **"Ready to merge?"**. Never cross a gate without explicit confirmation.
 
-1. `git add` only the files changed for this ticket (never `git add -A`)
-2. `git commit` with a message in this shape:
-   ```
+### 1. Branch (at `start_ticket`)
+
+When a ticket goes in-progress, cut its branch from an up-to-date `main` **before editing**:
+
+```bash
+git switch main && git pull
+git switch -c <prefix>/<id>-<slug>
+```
+
+- **`<prefix>`** maps the ticket `type`: `bug→fix`, `feature→feat`, `task→task`, `chore→chore`.
+- **`<id>`** is the full ticket id (e.g. `tkt-4f7ccb2cd6bc`).
+- **`<slug>`** is the title kebab-cased: lowercased, symbols dropped, ~4–5 words max.
+
+Example: `chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket`.
+
+### 2. Commit (after the ticket is `done`)
+
+Ask **"Ready to commit?"** — do not commit until confirmed. Then:
+
+1. `git add` only the files changed for this ticket (never `git add -A`).
+2. `git commit` with a message in this shape, passed via heredoc to avoid shell-escaping issues:
+   ```bash
+   git commit -m "$(cat <<'EOF'
    <Imperative summary under 72 chars>
 
    <1–3 sentences on why, not what. Reference the behaviour fixed or
    the invariant established. Omit if the summary is self-contained.>
 
    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-   ```
-3. Pass the message via heredoc to avoid shell-escaping issues:
-   ```bash
-   git commit -m "$(cat <<'EOF'
-   Message here
    EOF
    )"
    ```
 
-One ticket = one commit. Do not batch multiple tickets into a single commit.
+Commit as many times as the work needs — the squash-merge collapses the branch to **one commit on `main`**, preserving the one-ticket-one-commit history. Do not put multiple tickets on one branch.
+
+### 3. PR (after committing)
+
+Ask **"Ready to open PR?"** — then push the branch and open it:
+
+```bash
+git push -u origin <prefix>/<id>-<slug>
+gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the ## Implementation summary>"
+```
+
+The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge.
+
+### 4. Merge (after CI is green)
+
+Ask **"Ready to merge?"** — never merge without explicit approval. Then:
+
+```bash
+gh pr merge --squash --delete-branch
+git switch main && git pull
+```
+
+This squashes the branch to a single commit on `main` and deletes the branch locally and remotely.
 
 ## Temporary scripts
 
