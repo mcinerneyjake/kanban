@@ -40,6 +40,22 @@ async function seedTicket(id: string, title = 'Test ticket') {
   await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
 }
 
+describe('GET /api/tickets', () => {
+  it('returns an empty array when no tickets exist', async () => {
+    const res = await request(app).get('/api/tickets');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('returns all tickets', async () => {
+    await seedTicket('abc123456789', 'First');
+    await seedTicket('def123456789', 'Second');
+    const res = await request(app).get('/api/tickets');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+  });
+});
+
 describe('GET /api/tickets/:id', () => {
   it('returns the ticket when it exists', async () => {
     await seedTicket('abc123456789', 'My ticket');
@@ -57,6 +73,92 @@ describe('GET /api/tickets/:id', () => {
   it('returns 400 for an invalid id (path traversal)', async () => {
     const res = await request(app).get('/api/tickets/..%2F..%2Fetc%2Fpasswd');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/tickets', () => {
+  it('creates a ticket and returns 201 with the new ticket', async () => {
+    const res = await request(app)
+      .post('/api/tickets')
+      .send({ title: 'New ticket', type: 'task', priority: 'medium', status: 'backlog' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ title: 'New ticket', type: 'task' });
+    expect(typeof res.body.id).toBe('string');
+  });
+
+  it('returns 400 when title is missing', async () => {
+    const res = await request(app).post('/api/tickets').send({ type: 'task' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('Title') });
+  });
+
+  it('returns 400 when title is an empty string', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: '   ' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /api/tickets/:id', () => {
+  it('updates an existing ticket and returns the updated body', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ title: 'Updated' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'abc123456789', title: 'Updated' });
+  });
+
+  it('returns 404 for an unknown id', async () => {
+    const res = await request(app)
+      .patch('/api/tickets/zzzzzzzzzzzz')
+      .send({ title: 'Ghost' });
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('not found') });
+  });
+
+  it('returns 400 for an invalid id', async () => {
+    const res = await request(app)
+      .patch('/api/tickets/..%2Fbad')
+      .send({ title: 'x' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /api/tickets/:id', () => {
+  it('deletes an existing ticket and returns 204', async () => {
+    await seedTicket('abc123456789', 'To delete');
+    const res = await request(app).delete('/api/tickets/abc123456789');
+    expect(res.status).toBe(204);
+    const check = await request(app).get('/api/tickets/abc123456789');
+    expect(check.status).toBe(404);
+  });
+
+  it('returns 404 for an unknown id', async () => {
+    const res = await request(app).delete('/api/tickets/zzzzzzzzzzzz');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('not found') });
+  });
+
+  it('returns 400 for an invalid id', async () => {
+    const res = await request(app).delete('/api/tickets/..%2Fbad');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('wrap error handler', () => {
+  it('maps HttpError status codes directly (e.g. 400, 404)', async () => {
+    // Path-traversal triggers a 400 HttpError from the service layer
+    const res = await request(app).get('/api/tickets/..%2Fetc%2Fpasswd');
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('does not leak stack traces in the error response body', async () => {
+    // Unknown id gives a 404 with only { error: string }, no stack
+    const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
+    expect(res.status).toBe(404);
+    expect(res.body).not.toHaveProperty('stack');
+    expect(Object.keys(res.body)).toEqual(['error']);
   });
 });
 
