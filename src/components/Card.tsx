@@ -9,6 +9,18 @@ function formatDueDate(iso: string): string {
   return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}`;
 }
 
+const AVATAR_COLORS = ['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6'];
+
+function avatarColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+function initials(name: string): string {
+  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+}
+
 const plural = (n: number, word: string) => `${n} ${word}${n !== 1 ? 's' : ''}`;
 
 type DropMode = 'before' | 'child' | null
@@ -108,6 +120,15 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed
         {ticket.blockers.length > 0 && (
           <span className="badge blocked" title={`Blocked by ${plural(ticket.blockers.length, 'ticket')}`}>
             ⛔ {ticket.blockers.length}
+          </span>
+        )}
+        {ticket.assignee && (
+          <span
+            className="assignee-avatar"
+            style={{ background: avatarColor(ticket.assignee) }}
+            title={ticket.assignee}
+          >
+            {initials(ticket.assignee)}
           </span>
         )}
         {ticket.dueDate && ticket.status !== 'done' && ticket.status !== 'archived' && (() => {

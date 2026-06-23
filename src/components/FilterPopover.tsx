@@ -18,6 +18,7 @@ export type FilterState = {
   types: TicketType[]
   priority: Priority | ''
   project: string
+  assignee: string
   sort: SortBy
   dateField: DateField
   dateFrom: string
@@ -28,6 +29,7 @@ export const defaultFilter: FilterState = {
   types: [],
   priority: '',
   project: '',
+  assignee: '',
   sort: 'order',
   dateField: 'created',
   dateFrom: '',
@@ -37,10 +39,11 @@ export const defaultFilter: FilterState = {
 type Props = {
   filter: FilterState
   projects: string[]
+  assignees: string[]
   onChange: (f: FilterState) => void
 }
 
-export default function FilterPopover({ filter, projects, onChange }: Props) {
+export default function FilterPopover({ filter, projects, assignees, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -69,6 +72,7 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
     filter.types.length > 0,
     filter.priority !== '',
     filter.project !== '',
+    filter.assignee !== '',
     filter.dateFrom !== '' || filter.dateTo !== '',
     filter.sort !== 'order',
   ].filter(Boolean).length;
@@ -122,6 +126,22 @@ export default function FilterPopover({ filter, projects, onChange }: Props) {
                 <option value="">All</option>
                 {projects.map((p) => (
                   <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {assignees.length > 0 && (
+            <div className="fp-row">
+              <span className="fp-label">Assignee</span>
+              <select
+                value={filter.assignee}
+                onChange={(e) => onChange({ ...filter, assignee: e.target.value })}
+                className="filter-select fp-grow"
+              >
+                <option value="">All</option>
+                {assignees.map((a) => (
+                  <option key={a} value={a}>{a}</option>
                 ))}
               </select>
             </div>

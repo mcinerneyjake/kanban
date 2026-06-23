@@ -29,7 +29,7 @@ export class HttpError extends Error {
   }
 }
 
-type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate'>>
+type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
 // Shape returned by gray-matter after parsing a ticket file. js-yaml will
 // auto-parse unquoted ISO dates as Date objects; every other value is string,
@@ -46,6 +46,7 @@ interface RawFrontmatter {
   blockers?: (string | number | boolean)[]
   parent?: string | null
   dueDate?: string | null
+  assignee?: string | null
 }
 
 // Explicit-field object passed to matter.stringify — typed so serialize()
@@ -62,6 +63,7 @@ interface SerializedFrontmatter {
   blockers?: string[]
   parent?: string
   dueDate?: string
+  assignee?: string
 }
 
 async function ensureDir() {
@@ -114,6 +116,7 @@ function normalize(id: string, data: RawFrontmatter, body: string): Ticket {
       : [],
     parent: typeof data.parent === 'string' && data.parent ? data.parent : null,
     dueDate: typeof data.dueDate === 'string' && data.dueDate ? data.dueDate : null,
+    assignee: typeof data.assignee === 'string' && data.assignee ? data.assignee : null,
   };
 }
 
@@ -132,6 +135,7 @@ function serialize(ticket: Ticket): string {
   if (ticket.blockers.length > 0) data.blockers = ticket.blockers;
   if (ticket.parent) data.parent = ticket.parent;
   if (ticket.dueDate) data.dueDate = ticket.dueDate;
+  if (ticket.assignee) data.assignee = ticket.assignee;
   return matter.stringify(`\n${ticket.body}\n`, data);
 }
 
@@ -211,6 +215,7 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
       project: input.project ?? null,
       parent: input.parent ?? null,
       dueDate: input.dueDate ?? null,
+      assignee: input.assignee ?? null,
     },
     input.body ?? '',
   );
@@ -237,6 +242,7 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
     blockers: patch.blockers ?? existing.blockers,
     parent: patch.parent !== undefined ? patch.parent : existing.parent,
     dueDate: patch.dueDate !== undefined ? patch.dueDate : existing.dueDate,
+    assignee: patch.assignee !== undefined ? patch.assignee : existing.assignee,
     created: existing.created,
     updated: new Date().toISOString(),
   };

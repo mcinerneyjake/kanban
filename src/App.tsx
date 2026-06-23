@@ -43,6 +43,11 @@ export default function App() {
     [tickets],
   );
 
+  const assignees = useMemo(
+    () => [...new Set(tickets.map((t) => t.assignee).filter((a): a is string => Boolean(a)))].sort(),
+    [tickets],
+  );
+
   const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets]);
 
   const filteredTickets = useMemo(() => {
@@ -50,6 +55,7 @@ export default function App() {
     if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type));
     if (filter.priority) result = result.filter((t) => t.priority === filter.priority);
     if (filter.project) result = result.filter((t) => t.project === filter.project);
+    if (filter.assignee) result = result.filter((t) => t.assignee === filter.assignee);
     if (filter.dateFrom || filter.dateTo) {
       result = result.filter((t) => {
         const d = t[filter.dateField].slice(0, 10);
@@ -171,7 +177,7 @@ export default function App() {
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
-          <FilterPopover filter={filter} projects={projects} onChange={setFilter} />
+          <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
           <button className="btn primary" onClick={() => setEditing('new')}>
             + New ticket
           </button>
@@ -193,6 +199,7 @@ export default function App() {
           ticket={editing === 'new' ? null : editing}
           allTickets={tickets}
           projects={projects}
+          assignees={assignees}
           onSave={handleSave}
           onDelete={handleDelete}
           onOpen={setEditing}

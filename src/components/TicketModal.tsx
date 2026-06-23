@@ -3,12 +3,13 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 
-type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate'>
+type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
 type Props = {
   ticket: Ticket | null
   allTickets: Ticket[]
   projects: string[]
+  assignees: string[]
   onSave: (data: FormState) => void
   onDelete: (id: string) => void
   onOpen: (ticket: Ticket) => void
@@ -35,7 +36,7 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
-export default function TicketModal({ ticket, allTickets, projects, onSave, onDelete, onOpen, onClose }: Props) {
+export default function TicketModal({ ticket, allTickets, projects, assignees, onSave, onDelete, onOpen, onClose }: Props) {
   const [form, setForm] = useState<FormState>({
     title: ticket?.title ?? '',
     type: ticket?.type ?? 'task',
@@ -54,6 +55,7 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
       return p && p.status !== 'archived' ? id : null;
     })(),
     dueDate: ticket?.dueDate ?? null,
+    assignee: ticket?.assignee ?? null,
   });
   const [preview, setPreview] = useState(false);
 
@@ -173,6 +175,9 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
                 ))}
               </select>
             </label>
+          </div>
+
+          <div className="row">
             <label className="solo">
               Due date
               <input
@@ -180,6 +185,19 @@ export default function TicketModal({ ticket, allTickets, projects, onSave, onDe
                 value={form.dueDate ?? ''}
                 onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value || null }))}
               />
+            </label>
+            <label className="solo">
+              Assignee
+              <input
+                type="text"
+                list="assignee-suggestions"
+                placeholder="Unassigned"
+                value={form.assignee ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, assignee: e.target.value || null }))}
+              />
+              <datalist id="assignee-suggestions">
+                {assignees.map((a) => <option key={a} value={a} />)}
+              </datalist>
             </label>
           </div>
 

@@ -53,4 +53,5 @@ export type Ticket = {
   blockers: string[]
   parent: string | null
   dueDate: string | null
+  assignee: string | null
 }

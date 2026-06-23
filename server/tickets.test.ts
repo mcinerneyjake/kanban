@@ -405,3 +405,35 @@ describe('dueDate field', () => {
     expect(updated.dueDate).toBe('2026-09-01');
   });
 });
+
+describe('assignee field', () => {
+  it('persists assignee when set on createTicket', async () => {
+    const t = await createTicket({ title: 'Assigned ticket', assignee: 'Alice' });
+    expect(t.assignee).toBe('Alice');
+    expect((await getTicket(t.id)).assignee).toBe('Alice');
+  });
+
+  it('defaults assignee to null when omitted on createTicket', async () => {
+    const t = await createTicket({ title: 'Unassigned ticket' });
+    expect(t.assignee).toBeNull();
+  });
+
+  it('updates assignee via updateTicket', async () => {
+    const t = await createTicket({ title: 'Reassign me' });
+    const updated = await updateTicket(t.id, { assignee: 'Bob' });
+    expect(updated.assignee).toBe('Bob');
+    expect((await getTicket(t.id)).assignee).toBe('Bob');
+  });
+
+  it('clears assignee by setting null via updateTicket', async () => {
+    const t = await createTicket({ title: 'Clear assignee', assignee: 'Alice' });
+    const updated = await updateTicket(t.id, { assignee: null });
+    expect(updated.assignee).toBeNull();
+  });
+
+  it('leaves assignee unchanged when not in the patch', async () => {
+    const t = await createTicket({ title: 'Preserve assignee', assignee: 'Alice' });
+    const updated = await updateTicket(t.id, { title: 'Renamed' });
+    expect(updated.assignee).toBe('Alice');
+  });
+});

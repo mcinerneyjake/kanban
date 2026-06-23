@@ -41,6 +41,14 @@ describe('encode', () => {
     expect(p.get('dateFrom')).toBe('2026-01-01');
     expect(p.get('dateTo')).toBe('2026-06-30');
   });
+
+  it('omits assignee when empty', () => {
+    expect(encode(defaultFilter).has('assignee')).toBe(false);
+  });
+
+  it('includes assignee when set', () => {
+    expect(encode({ ...defaultFilter, assignee: 'Jake' }).get('assignee')).toBe('Jake');
+  });
 });
 
 describe('decode', () => {
@@ -77,6 +85,10 @@ describe('decode', () => {
     expect(f.dateFrom).toBe('2026-01-01');
     expect(f.dateTo).toBe('2026-06-30');
   });
+
+  it('restores assignee as-is', () => {
+    expect(decode(new URLSearchParams('assignee=Jake')).assignee).toBe('Jake');
+  });
 });
 
 describe('round-trip', () => {
@@ -85,6 +97,7 @@ describe('round-trip', () => {
       types: ['bug' as const, 'feature' as const],
       priority: 'high' as const,
       project: 'kanban',
+      assignee: 'Jake',
       sort: 'priority' as const,
       dateField: 'updated' as const,
       dateFrom: '2026-01-01',

@@ -12,6 +12,7 @@ export function encode(f: FilterState): URLSearchParams {
   for (const t of f.types) p.append('type', t);
   if (f.priority) p.set('priority', f.priority);
   if (f.project) p.set('project', f.project);
+  if (f.assignee) p.set('assignee', f.assignee);
   if (f.sort !== defaultFilter.sort) p.set('sort', f.sort);
   if (f.dateField !== defaultFilter.dateField) p.set('dateField', f.dateField);
   if (f.dateFrom) p.set('dateFrom', f.dateFrom);
@@ -24,11 +25,12 @@ export function decode(p: URLSearchParams): FilterState {
   const priorityRaw = p.get('priority') ?? '';
   const priority = isPriority(priorityRaw) ? priorityRaw : '';
   const project = p.get('project') ?? '';
+  const assignee = p.get('assignee') ?? '';
   const sortRaw = p.get('sort') ?? '';
   const sort = isSortBy(sortRaw) ? sortRaw : defaultFilter.sort;
   const dateFieldRaw = p.get('dateField') ?? '';
   const dateField = isDateField(dateFieldRaw) ? dateFieldRaw : defaultFilter.dateField;
   const dateFrom = p.get('dateFrom') ?? '';
   const dateTo = p.get('dateTo') ?? '';
-  return { types, priority, project, sort, dateField, dateFrom, dateTo };
+  return { types, priority, project, assignee, sort, dateField, dateFrom, dateTo };
 }
