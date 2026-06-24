@@ -245,6 +245,11 @@ function collectDescendants(id: string, all: Ticket[]): Set<string> {
 
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
   validateEnums(patch);
+  // `order` is typed number, but HTTP callers pass an untyped body — guard the
+  // runtime type so a non-number (e.g. "five") can't be written, then silently
+  // coerced to 0 by normalize() on the next read (which reorders the card).
+  if (patch.order != null && typeof patch.order !== 'number')
+    throw new HttpError(400, 'order must be a number');
   const existing = await getTicket(id);
   if (typeof patch.parent === 'string') {
     if (patch.parent === id) throw new HttpError(400, 'A ticket cannot be its own parent');

@@ -113,6 +113,24 @@ describe('PATCH /api/tickets/:id', () => {
     expect(res.body).toMatchObject({ id: 'abc123456789', title: 'Updated' });
   });
 
+  it('returns 400 when order is not a number', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ order: 'five' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('order') });
+  });
+
+  it('accepts a fractional order (drag-drop midpoint)', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ order: 1.5 });
+    expect(res.status).toBe(200);
+    expect(res.body.order).toBe(1.5);
+  });
+
   it('returns 404 for an unknown id', async () => {
     const res = await request(app)
       .patch('/api/tickets/zzzzzzzzzzzz')
