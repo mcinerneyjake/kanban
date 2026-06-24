@@ -147,6 +147,7 @@ body {
   letter-spacing: 0.04em;
   width: 52px;
   flex-shrink: 0;
+  margin-right: 16px;
 }
 
 .fp-grow { flex: 1; min-width: 0; }
