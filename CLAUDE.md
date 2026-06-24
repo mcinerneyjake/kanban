@@ -139,9 +139,21 @@ gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the
 
 The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`.
 
-When the PR opens, call `update_ticket` to set `status: "qa"` — the ticket enters review whether or not it went through the self-review step. It stays in `qa` until the merge step.
+When the PR opens, call `update_ticket` to set `status: "qa"` — the ticket enters review whether or not it went through the self-review step. It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
 
 ### 4. Merge (after CI is green)
+
+Before asking **"Ready to merge?"**, check the code review comment posted to the PR by the `code-review` CI job:
+
+```bash
+gh pr view <number> --comments
+```
+
+If there are significant findings, present them to the user and ask: **"Fix these in the current PR, or create follow-up tickets?"**
+- **Fix now** — implement, commit, push; wait for CI to go green again, then return to this step
+- **Follow-up tickets** — call `create_ticket` for each finding, then proceed to merge
+
+If the review found no significant issues (or the secret wasn't configured), proceed directly.
 
 Ask **"Ready to merge?"** — never merge without explicit approval. Then:
 
