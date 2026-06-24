@@ -27,7 +27,7 @@ kanban/
 ├── shared/          Domain enums shared by server, client + MCP (no drift)
 ├── src/             React app
 ├── tickets/         ← source of truth: one .md per ticket (gitignored)
-├── .github/         CI workflows (quality gate + PR branch-name check)
+├── .github/         CI: quality gate · PR branch-name · Claude code review
 └── vite.config.ts   dev proxy /api → :3001
 ```
 
@@ -72,6 +72,10 @@ A husky pre-commit hook runs all three locally; the same gate runs in GitHub
 Actions on every PR, alongside a check that branch names follow
 `<type>/<id>-<slug>`. Work lands on `main` via squash-merged PRs, with branch
 protection requiring both checks green.
+
+A third workflow runs an automated **Claude code review** on each PR — it posts
+findings as a comment when an `ANTHROPIC_API_KEY` repo secret is configured, and
+skips silently when the secret is absent or the diff is docs/config-only.
 
 ## Design notes
 
