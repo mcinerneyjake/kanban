@@ -138,6 +138,14 @@ describe('create_ticket', () => {
     expect(created.project).toBe('Acme');
   });
 
+  it('persists dueDate and assignee (edge)', async () => {
+    const created = asRecord(await handleToolCall('create_ticket', {
+      title: 'Scheduled', dueDate: '2026-07-01', assignee: 'Jordan',
+    }));
+    expect(created.dueDate).toBe('2026-07-01');
+    expect(created.assignee).toBe('Jordan');
+  });
+
   it('errors when title is missing (rejection)', async () => {
     const res = await handleToolCall('create_ticket', { type: 'task' });
     expect(res.isError).toBe(true);
@@ -229,6 +237,16 @@ describe('update_ticket', () => {
     await handleToolCall('update_ticket', { id, parent: parentId });
     const cleared = asRecord(await handleToolCall('update_ticket', { id, parent: null }));
     expect(cleared.parent).toBeNull();
+  });
+
+  it('sets and clears dueDate and assignee (edge)', async () => {
+    const id = await seed();
+    const set = asRecord(await handleToolCall('update_ticket', { id, dueDate: '2026-07-01', assignee: 'Jordan' }));
+    expect(set.dueDate).toBe('2026-07-01');
+    expect(set.assignee).toBe('Jordan');
+    const cleared = asRecord(await handleToolCall('update_ticket', { id, dueDate: null, assignee: null }));
+    expect(cleared.dueDate).toBeNull();
+    expect(cleared.assignee).toBeNull();
   });
 });
 
