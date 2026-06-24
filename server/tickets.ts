@@ -223,9 +223,34 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
   return ticket;
 }
 
+// Reject parent assignments that would create a cycle. Walk the parent→child
+// graph from `id`; the new parent may not be `id` itself nor any descendant of
+// it. Computed from the current board (the source of truth) so HTTP and MCP
+// callers can't persist a cycle that the React client already prevents in the UI.
+function collectDescendants(id: string, all: Ticket[]): Set<string> {
+  const descendants = new Set<string>();
+  const queue: string[] = [id];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (cur === undefined) break;
+    for (const t of all) {
+      if (t.parent === cur && !descendants.has(t.id)) {
+        descendants.add(t.id);
+        queue.push(t.id);
+      }
+    }
+  }
+  return descendants;
+}
+
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
   validateEnums(patch);
   const existing = await getTicket(id);
+  if (typeof patch.parent === 'string') {
+    if (patch.parent === id) throw new HttpError(400, 'A ticket cannot be its own parent');
+    if (collectDescendants(id, await listTickets()).has(patch.parent))
+      throw new HttpError(400, 'parent would create a cycle');
+  }
   // Explicit field-by-field merge: MCP callers pass Record<string, unknown> and
   // bypass TicketPatch typing at compile time. By reading only known fields from
   // patch here, unknown keys from MCP are silently ignored at runtime.
