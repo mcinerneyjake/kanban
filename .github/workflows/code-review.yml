@@ -1,0 +1,115 @@
+name: Code Review
+
+# Runs Claude on the PR diff and posts findings as a comment.
+# Requires ANTHROPIC_API_KEY to be set as a repo secret; silently skips if absent.
+# Also skips when no .ts/.tsx files are in the diff (docs/config-only changes).
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check API key
+        id: check-key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::ANTHROPIC_API_KEY secret not configured — skipping code review"
+          fi
+
+      - name: Check for significant changes
+        if: steps.check-key.outputs.available == 'true'
+        id: sig-check
+        run: |
+          if git diff --name-only origin/main...HEAD | grep -qE '\.(ts|tsx)$'; then
+            echo "significant=true" >> $GITHUB_OUTPUT
+          else
+            echo "significant=false" >> $GITHUB_OUTPUT
+            echo "::notice::No .ts/.tsx files changed — skipping code review"
+          fi
+
+      - name: Get PR diff
+        if: steps.check-key.outputs.available == 'true' && steps.sig-check.outputs.significant == 'true'
+        run: git diff origin/main...HEAD | head -c 50000 > diff.txt
+
+      - name: Review with Claude
+        if: steps.check-key.outputs.available == 'true' && steps.sig-check.outputs.significant == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+
+          diff = open("diff.txt").read().strip()
+          if not diff:
+              print("Empty diff — skipping review")
+              sys.exit(0)
+
+          payload = {
+              "model": "claude-sonnet-4-6",
+              "max_tokens": 1024,
+              "messages": [{
+                  "role": "user",
+                  "content": (
+                      "Review this diff for bugs and significant code quality issues. "
+                      "Skip style nits. Format findings as a concise markdown list. "
+                      "If there are no significant findings, say so.\n\n"
+                      f"```diff\n{diff}\n```"
+                  )
+              }]
+          }
+
+          with open("payload.json", "w") as f:
+              json.dump(payload, f)
+
+          result = subprocess.run(
+              ["curl", "-sf", "https://api.anthropic.com/v1/messages",
+               "-H", f'x-api-key: {os.environ["ANTHROPIC_API_KEY"]}',
+               "-H", "anthropic-version: 2023-06-01",
+               "-H", "content-type: application/json",
+               "-d", "@payload.json"],
+              capture_output=True, text=True,
+          )
+          if result.returncode != 0:
+              print(f"API call failed: {result.stderr}", file=sys.stderr)
+              sys.exit(1)
+
+          review = json.loads(result.stdout)["content"][0]["text"]
+          with open("review.txt", "w") as f:
+              f.write(review)
+          PYEOF
+
+      - name: Delete previous review comments
+        if: steps.check-key.outputs.available == 'true' && steps.sig-check.outputs.significant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '.[] | select(.body | startswith("## Claude Code Review")) | .id' |
+          while read -r id; do
+            gh api -X DELETE "repos/${{ github.repository }}/issues/comments/$id"
+          done
+
+      - name: Post review comment
+        if: steps.check-key.outputs.available == 'true' && steps.sig-check.outputs.significant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f review.txt ] || exit 0
+          printf '## Claude Code Review\n\n%s\n\n---\n*Automated review. Address findings in this PR or create follow-up tickets before merging — see CLAUDE.md.*' \
+            "$(cat review.txt)" > comment.txt
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.txt
