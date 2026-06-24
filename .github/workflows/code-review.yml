@@ -110,6 +110,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           [ -f review.txt ] || exit 0
-          printf '## Claude Code Review\n\n%s\n\n---\n*Automated review. Address findings in this PR or create follow-up tickets before merging — see CLAUDE.md.*' \
-            "$(cat review.txt)" > comment.txt
+          {
+            printf '## Claude Code Review\n\n'
+            cat review.txt
+            printf '\n\n---\n*Automated review. Address findings in this PR or create follow-up tickets before merging — see CLAUDE.md.*'
+          } > comment.txt
           gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.txt
