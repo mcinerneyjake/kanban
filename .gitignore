@@ -1,8 +1,14 @@
 node_modules
 dist
 *.tmp
+
+# Secrets — never commit. The agent reads ANTHROPIC_API_KEY from here.
+.env
+.env.*
+!.env.example
 .DS_Store
 tickets/
 test-results/
 playwright-report/
 DEPLOYMENT-PLAN.md
+AGENT-FLOW.md
