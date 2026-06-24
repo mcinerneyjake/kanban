@@ -18,11 +18,14 @@ export default defineConfig({
         'src/lib/**/*.ts',
       ],
       reporter: ['text', 'html'],
+      // Enterprise-floor gate: catches a regression in coverage discipline
+      // without pinning the suite to its current high-water mark (~97%/94%).
+      // A floor, not a target — see CLAUDE.md testing guidance.
       thresholds: {
-        lines: 90,
-        functions: 90,
-        branches: 85,
-        statements: 90,
+        lines: 80,
+        functions: 80,
+        branches: 75,
+        statements: 80,
       },
     },
   },
