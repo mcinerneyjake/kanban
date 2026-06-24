@@ -36,6 +36,11 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
     && 'data' in v && Array.isArray(v.data) && v.data.every(isEmbeddingDatum);
 }
 
+// Local embedding servers cap inputs/tokens per request — embed in batches.
+const EMBED_BATCH_SIZE = 64;
+// Fail fast instead of hanging if the runtime is down or a model is still loading.
+const EMBED_TIMEOUT_MS = 30_000;
+
 export class RuntimeEmbedder implements Embedder {
   constructor(private readonly cfg: EmbedConfig) {}
 
@@ -43,14 +48,20 @@ export class RuntimeEmbedder implements Embedder {
     return new RuntimeEmbedder(resolveEmbedConfig(env));
   }
 
+  // Embed inputs in batches, concatenating results in input order.
   private async post(inputs: string[]): Promise<number[][]> {
-    const res = await fetch(`${this.cfg.baseUrl}/embeddings`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: this.cfg.model, input: inputs }),
-    });
+    const out: number[][] = [];
+    for (let i = 0; i < inputs.length; i += EMBED_BATCH_SIZE) {
+      out.push(...await this.postBatch(inputs.slice(i, i + EMBED_BATCH_SIZE)));
+    }
+    return out;
+  }
+
+  private async postBatch(inputs: string[]): Promise<number[][]> {
+    const res = await this.fetchEmbeddings(inputs);
     if (!res.ok) {
-      throw new Error(`Embeddings request failed: ${res.status} ${res.statusText}`);
+      const body = (await res.text().catch(() => '')).slice(0, 500);
+      throw new Error(`Embeddings request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
     }
     const json: unknown = await res.json();
     if (!isEmbeddingResponse(json)) {
@@ -58,6 +69,22 @@ export class RuntimeEmbedder implements Embedder {
     }
     // The API may return data out of input order; sort by index to realign.
     return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
+  }
+
+  private async fetchEmbeddings(inputs: string[]): Promise<Response> {
+    try {
+      return await fetch(`${this.cfg.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: this.cfg.model, input: inputs }),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new Error(`Embeddings request timed out after ${EMBED_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`);
+      }
+      throw err;
+    }
   }
 
   embedDocuments(texts: string[]): Promise<number[][]> {
