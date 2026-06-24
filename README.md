@@ -6,6 +6,45 @@ or in your editor; both stay in sync because the files *are* the source of
 truth. The board is also driven by an **MCP server**, so an agent like Claude
 Code can list, create, and move tickets as first-class tools.
 
+## Quick Start
+
+**Requires Node 20+.**
+
+```bash
+npm install
+npm run seed     # optional — populate an empty board with demo tickets
+npm run dev      # starts API (:3001) and Vite (:5173) together
+```
+
+Open <http://localhost:5173>.
+
+> `npm run dev` runs both processes via `concurrently`. Run only the API with
+> `npm run server`.
+>
+> `npm run seed` copies the demo tickets in `seed/` into `tickets/` — but only
+> when the board is empty, so it never overwrites your own tickets.
+
+### Use it as an MCP server
+
+The board is exposed to agents through an MCP server, so Claude Code can manage
+tickets as first-class tools. `.mcp.json` at the repo root wires it in at
+*project scope*, so it auto-starts when you open the project — Claude Code
+prompts you to trust it on first load:
+
+```json
+{
+  "mcpServers": {
+    "kanban": {
+      "command": "npx",
+      "args": ["tsx", "mcp/server.ts"]
+    }
+  }
+}
+```
+
+Once trusted, the tools (`list_tickets`, `get_ticket`, `start_ticket`,
+`create_ticket`, `update_ticket`, `delete_ticket`) are available in the session.
+
 ## Stack
 
 - **Backend** — Express, thin. Two-layer Route → Service; the service
@@ -47,22 +86,6 @@ updated: 2026-06-20T09:00:00.000Z
 ## Description
 Markdown body…
 ```
-
-## Run
-
-```bash
-npm install
-npm run seed     # optional — populate an empty board with demo tickets
-npm run dev      # starts API (:3001) and Vite (:5173) together
-```
-
-Open <http://localhost:5173>.
-
-> `npm run dev` runs both processes via `concurrently`. Run only the API with
-> `npm run server`.
->
-> `npm run seed` copies the demo tickets in `seed/` into `tickets/` — but only
-> when the board is empty, so it never overwrites your own tickets.
 
 ## Tests & CI
 
