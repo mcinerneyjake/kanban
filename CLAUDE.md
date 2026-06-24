@@ -139,6 +139,8 @@ gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the
 
 The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`.
 
+**Branch protection:** `main` is protected by a GitHub ruleset that enforces all three CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level.
+
 When the PR opens, call `update_ticket` to set `status: "qa"` — the ticket enters review whether or not it went through the self-review step. It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
 
 ### 4. Merge (after CI is green)
