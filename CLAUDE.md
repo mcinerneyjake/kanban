@@ -32,7 +32,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
 6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then run a `/code-review` pass (and `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and go straight to done.
-7. Call `update_ticket` to set `status: "done"` when finished, and append an `## Implementation summary` to the ticket body
+7. Append an `## Implementation summary` to the ticket body via `update_ticket`. Do **not** set `status: "done"` yet — that happens after the PR merges (see **Branch, commit & PR workflow → 4. Merge**).
 
 The implementation summary **must** include a test line — either:
 - `Tests: N added — <brief description of what they cover>`
@@ -47,7 +47,7 @@ A ticket is **Done** only when all of these hold (the gate is executable, not ad
 - [ ] `npm test` passes, with tests added per the Testing table below — or an explicit skip reason
 - [ ] Self-review (`qa`) completed for non-trivial tickets
 - [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` line
-- [ ] Status transitioned to `done` via `update_ticket`
+- [ ] Status transitioned to `done` via `update_ticket` **after PR merge**
 
 ## Testing
 
@@ -108,7 +108,7 @@ git switch -c <prefix>/<id>-<slug>
 
 Example: `chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket`.
 
-### 2. Commit (after the ticket is `done`)
+### 2. Commit (once implementation is complete)
 
 Ask **"Ready to commit?"** — do not commit until confirmed. Then:
 
@@ -148,7 +148,7 @@ gh pr merge --squash --delete-branch
 git switch main && git pull
 ```
 
-This squashes the branch to a single commit on `main` and deletes the branch locally and remotely.
+This squashes the branch to a single commit on `main` and deletes the branch locally and remotely. After the merge completes, call `update_ticket` to set `status: "done"` — this is the moment the ticket is officially closed.
 
 ## Temporary scripts
 
