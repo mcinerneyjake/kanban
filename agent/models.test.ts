@@ -29,4 +29,12 @@ describe('resolveEmbedConfig', () => {
     expect(cfg.queryInstruction).toBe('');
     expect(cfg.docInstruction).toBe('');
   });
+
+  it('honors EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX overrides for any model', () => {
+    const cfg = resolveEmbedConfig({
+      EMBED_MODEL: 'all-minilm-l6-v2', EMBED_QUERY_PREFIX: 'query: ', EMBED_DOC_PREFIX: 'passage: ',
+    });
+    expect(cfg.queryInstruction).toBe('query: ');
+    expect(cfg.docInstruction).toBe('passage: ');
+  });
 });
