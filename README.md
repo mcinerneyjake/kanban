@@ -52,6 +52,7 @@ Markdown body…
 
 ```bash
 npm install
+npm run seed     # optional — populate an empty board with demo tickets
 npm run dev      # starts API (:3001) and Vite (:5173) together
 ```
 
@@ -59,6 +60,9 @@ Open <http://localhost:5173>.
 
 > `npm run dev` runs both processes via `concurrently`. Run only the API with
 > `npm run server`.
+>
+> `npm run seed` copies the demo tickets in `seed/` into `tickets/` — but only
+> when the board is empty, so it never overwrites your own tickets.
 
 ## Tests & CI
 
