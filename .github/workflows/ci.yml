@@ -2,7 +2,8 @@ name: CI
 
 # Mirrors the local husky pre-commit gate (typecheck + lint + test) server-side,
 # so every PR into main must pass the same checks before it can be merged — and
-# the gate is enforced even if a contributor bypasses the local hook.
+# the gate is enforced even if a contributor bypasses the local hook. CI runs the
+# coverage variant so the per-layer thresholds in vitest.config.ts are enforced too.
 on:
   pull_request:
     branches: [main]
@@ -21,4 +22,4 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      - run: npm run test:coverage

@@ -150,6 +150,12 @@ describe('create_ticket', () => {
     expect(res.content[0].text).toContain('Invalid type');
   });
 
+  it('rejects an invalid priority instead of dropping it (rejection)', async () => {
+    const res = await handleToolCall('create_ticket', { title: 'X', priority: 'meh' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid priority');
+  });
+
   // qa is transition-only — create advertises no qa, so the runtime must reject it.
   it('rejects status qa at creation (rejection)', async () => {
     const res = await handleToolCall('create_ticket', { title: 'X', status: 'qa' });
@@ -187,6 +193,42 @@ describe('update_ticket', () => {
     // the bad value must not have been persisted
     const reread = await listTickets();
     expect(reread.find((t) => t.id === id)?.status).toBe('backlog');
+  });
+
+  it('rejects an invalid type instead of dropping it (rejection)', async () => {
+    const id = await seed();
+    const res = await handleToolCall('update_ticket', { id, type: 'nope' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid type');
+  });
+
+  it('rejects an invalid priority instead of dropping it (rejection)', async () => {
+    const id = await seed();
+    const res = await handleToolCall('update_ticket', { id, priority: 'wat' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid priority');
+  });
+
+  it('persists blockers, parent, and body fields (edge)', async () => {
+    const parentId = await seed({ title: 'Parent' });
+    const id = await seed();
+    const updated = asRecord(await handleToolCall('update_ticket', {
+      id, blockers: ['tkt-aaa', 'tkt-bbb'], parent: parentId, body: 'New body text',
+    }));
+    expect(updated.blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
+    expect(updated.parent).toBe(parentId);
+    expect(updated.body).toBe('New body text');
+    // ignores a non-string-array blockers value rather than persisting garbage
+    const after = asRecord(await handleToolCall('update_ticket', { id, blockers: [1, 2] }));
+    expect(after.blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
+  });
+
+  it('clears the parent when passed null (edge)', async () => {
+    const parentId = await seed({ title: 'Parent 2' });
+    const id = await seed();
+    await handleToolCall('update_ticket', { id, parent: parentId });
+    const cleared = asRecord(await handleToolCall('update_ticket', { id, parent: null }));
+    expect(cleared.parent).toBeNull();
   });
 });
 

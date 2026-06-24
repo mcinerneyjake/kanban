@@ -10,5 +10,6 @@ dist
 tickets/
 test-results/
 playwright-report/
+coverage/
 DEPLOYMENT-PLAN.md
 AGENT-FLOW.md
