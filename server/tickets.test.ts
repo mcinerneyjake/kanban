@@ -52,6 +52,26 @@ async function writeRaw(id: string, content: string) {
 
 // ---------------------------------------------------------------------------
 
+describe('dueDate format validation', () => {
+  it('rejects a malformed dueDate on update with 400', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, { dueDate: 'garbage' }));
+    expect(err.status).toBe(400);
+  });
+
+  it('rejects a malformed dueDate on create with 400', async () => {
+    const err = await httpError(createTicket({ title: 'A', dueDate: 'nope' }));
+    expect(err.status).toBe(400);
+  });
+
+  it('accepts a valid YYYY-MM-DD and allows null to clear', async () => {
+    const t = await createTicket({ title: 'A', dueDate: '2026-07-01' });
+    expect(t.dueDate).toBe('2026-07-01');
+    const cleared = await updateTicket(t.id, { dueDate: null });
+    expect(cleared.dueDate).toBeNull();
+  });
+});
+
 describe('parent cycle guard (updateTicket)', () => {
   it('rejects a ticket being set as its own parent', async () => {
     const t = await createTicket({ title: 'A' });

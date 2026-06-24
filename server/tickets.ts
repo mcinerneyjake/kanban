@@ -155,6 +155,16 @@ function validateEnums(patch: TicketPatch) {
   assertEnum(STATUS_IDS, patch.status, 'status');
 }
 
+const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// dueDate is hand-editable and accepted from untyped callers; enforce a strict
+// YYYY-MM-DD shape on write so a bad value can't reach the UI (where
+// formatDueDate would render "undefined NaN") or break the overdue comparison.
+function assertDueDate(dueDate: string | null | undefined) {
+  if (typeof dueDate === 'string' && !DUE_DATE_RE.test(dueDate))
+    throw new HttpError(400, 'dueDate must be YYYY-MM-DD');
+}
+
 function newId(): string {
   return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
@@ -194,6 +204,7 @@ export async function getTicket(id: string): Promise<Ticket> {
 
 export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
   validateEnums(input);
+  assertDueDate(input.dueDate);
   if (!input.title || !input.title.trim())
     throw new HttpError(400, 'Title is required');
 
@@ -250,6 +261,7 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   // coerced to 0 by normalize() on the next read (which reorders the card).
   if (patch.order != null && typeof patch.order !== 'number')
     throw new HttpError(400, 'order must be a number');
+  assertDueDate(patch.dueDate);
   const existing = await getTicket(id);
   if (typeof patch.parent === 'string') {
     if (patch.parent === id) throw new HttpError(400, 'A ticket cannot be its own parent');
