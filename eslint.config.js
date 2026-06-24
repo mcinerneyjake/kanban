@@ -19,7 +19,7 @@ export default tseslint.config(
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['server/**', 'mcp/**', 'shared/**'],
+    files: ['server/**', 'mcp/**', 'shared/**', 'agent/**'],
     languageOptions: { globals: globals.node },
   },
 )

@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm run server\" \"vite\"",
     "server": "tsx watch server/index.ts",
+    "agent": "tsx agent/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "review": "node scripts/review.mjs",
-    "lint": "eslint src server shared mcp",
+    "lint": "eslint src server shared mcp agent",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "test:e2e": "playwright test",
