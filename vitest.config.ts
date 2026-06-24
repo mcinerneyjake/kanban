@@ -7,9 +7,11 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       // Scope coverage to the testable logic layers (per CLAUDE.md's testing
-      // table). React components, transport entrypoints, and the agent
-      // placeholder carry no unit-testable logic and are deliberately omitted
-      // so the threshold reflects real, asserted behaviour — not UI glue.
+      // table). React components and transport entrypoints carry no
+      // unit-testable logic; the agent module is still under phased
+      // construction and not yet in the testing table (its own tests run, but
+      // it is excluded from the gate for now). So the threshold reflects real,
+      // asserted behaviour — not UI glue or in-flight code.
       include: [
         'server/tickets.ts',
         'server/index.ts',
