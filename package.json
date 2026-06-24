@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "review": "node scripts/review.mjs",
+    "seed": "node scripts/seed.mjs",
     "lint": "eslint src server shared mcp agent",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
