@@ -50,7 +50,7 @@ function isStringArray(val: unknown): val is string[] {
   return Array.isArray(val) && val.every((item) => typeof item === 'string');
 }
 
-type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent'>>
+type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
 // `allowedStatuses` is the per-operation status set (create vs update) — passed
 // in so the converter enforces the *advertised* schema at runtime, not just in
@@ -85,6 +85,10 @@ function extractTicketFields(
   if (isStringArray(args.blockers)) out.blockers = args.blockers;
   if (typeof args.parent === 'string') out.parent = args.parent;
   else if (args.parent === null) out.parent = null;
+  if (typeof args.dueDate === 'string') out.dueDate = args.dueDate;
+  else if (args.dueDate === null) out.dueDate = null;
+  if (typeof args.assignee === 'string') out.assignee = args.assignee;
+  else if (args.assignee === null) out.assignee = null;
   return out;
 }
 
@@ -122,6 +126,8 @@ export const TOOLS: Tool[] = [
         project: { type: ['string', 'null'], description: 'Project name, or null to clear' },
         blockers: { type: 'array', items: { type: 'string' }, description: 'List of blocking ticket IDs' },
         parent: { type: ['string', 'null'], description: 'Parent ticket ID, or null to clear' },
+        dueDate: { type: ['string', 'null'], description: 'Due date YYYY-MM-DD, or null to clear' },
+        assignee: { type: ['string', 'null'], description: 'Assignee name, or null to clear' },
       },
       required: ['id'],
     },
@@ -149,6 +155,8 @@ export const TOOLS: Tool[] = [
         project: { type: 'string', description: 'Project name' },
         blockers: { type: 'array', items: { type: 'string' }, description: 'List of blocking ticket IDs' },
         parent: { type: 'string', description: 'Parent ticket ID' },
+        dueDate: { type: 'string', description: 'Due date YYYY-MM-DD' },
+        assignee: { type: 'string', description: 'Assignee name' },
       },
       required: ['title'],
     },
