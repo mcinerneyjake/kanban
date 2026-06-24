@@ -4,6 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js';
+// Namespace import so a single service function can be stubbed to throw a
+// non-HttpError, exercising the wrap() 500 branch (live ESM binding — index.ts
+// reads the same module object vitest spies on).
+import * as tickets from './tickets.js';
 
 let tmpDir: string;
 
@@ -289,5 +293,134 @@ describe('GET /api/tickets?q= (search)', () => {
     const res = await request(app).get('/api/tickets?q=xyzzy-no-match');
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(0);
+  });
+});
+
+describe('GET /api/projects', () => {
+  it('returns an empty array when no tickets have a project', async () => {
+    await seedTicket('proj11111111', 'No project');
+    const res = await request(app).get('/api/projects');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('returns unique project names sorted ascending', async () => {
+    // seedTicket writes no `project:` key, so inject it via raw frontmatter.
+    const raw = (id: string, project: string) =>
+      fs.writeFile(
+        path.join(tmpDir, `${id}.md`),
+        [
+          '---', `title: '${id}'`, 'type: task', 'priority: medium',
+          'status: backlog', 'order: 1', `project: '${project}'`,
+          "created: '2026-01-01T00:00:00.000Z'",
+          "updated: '2026-01-01T00:00:00.000Z'", '---', '',
+        ].join('\n'),
+        'utf8',
+      );
+    await raw('projaaaaaaaa', 'zebra');
+    await raw('projbbbbbbbb', 'alpha');
+    await raw('projcccccccc', 'zebra');
+    const res = await request(app).get('/api/projects');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(['alpha', 'zebra']);
+  });
+});
+
+describe('POST /api/archive', () => {
+  it('returns { archived: 0 } on an empty board', async () => {
+    const res = await request(app).post('/api/archive');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ archived: 0 });
+  });
+
+  it('archives stale done tickets and returns the count', async () => {
+    // A done ticket updated >3 days ago is stale; a fresh one is not.
+    const write = (id: string, updated: string) =>
+      fs.writeFile(
+        path.join(tmpDir, `${id}.md`),
+        [
+          '---', `title: '${id}'`, 'type: task', 'priority: medium',
+          'status: done', 'order: 1', `updated: '${updated}'`,
+          "created: '2026-01-01T00:00:00.000Z'", '---', '',
+        ].join('\n'),
+        'utf8',
+      );
+    await write('arcstale1111', '2026-01-01T00:00:00.000Z');
+    await write('arcfresh1111', new Date().toISOString());
+    const res = await request(app).post('/api/archive');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ archived: 1 });
+
+    const stale = await request(app).get('/api/tickets/arcstale1111');
+    expect(stale.body.status).toBe('archived');
+    const fresh = await request(app).get('/api/tickets/arcfresh1111');
+    expect(fresh.body.status).toBe('done');
+  });
+});
+
+describe('wrap error funnel — 500 branch', () => {
+  it('maps an unexpected (non-HttpError) throw to 500 with only { error }', async () => {
+    // Stub a service call to throw a plain Error (not HttpError). wrap() must
+    // map it to 500, log it, and respond with { error } — never a stack.
+    const spy = vi.spyOn(tickets, 'listProjects').mockRejectedValueOnce(new Error('boom'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await request(app).get('/api/projects');
+      expect(res.status).toBe(500);
+      expect(Object.keys(res.body)).toEqual(['error']);
+      expect(res.body).not.toHaveProperty('stack');
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe('scheduleWeeklyArchive — timer callback fires', () => {
+  it('runs the archive sweep when the timer fires, then reschedules', async () => {
+    vi.useFakeTimers();
+    // Stub the sweep itself (its archiving logic is covered elsewhere). This
+    // isolates the scheduler's own contract: fire the callback, then re-arm.
+    const sweep = vi.spyOn(tickets, 'archiveStaleTickets').mockResolvedValue(0);
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      scheduleWeeklyArchive();          // arms the first timer
+      expect(sweep).not.toHaveBeenCalled();
+      // Advance past the longest possible delay (≤7 days) to fire the callback,
+      // which awaits archiveStaleTickets() and then reschedules.
+      await vi.advanceTimersByTimeAsync(8 * 24 * 60 * 60 * 1000);
+      expect(sweep).toHaveBeenCalled();
+      // A new timer must have been armed (recursive reschedule); stopping it
+      // calls clearTimeout, proving a live timer existed after the fire.
+      stopArchiveScheduler();
+      expect(clearSpy).toHaveBeenCalled();
+    } finally {
+      sweep.mockRestore();
+      clearSpy.mockRestore();
+      stopArchiveScheduler();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the scheduler alive when a sweep rejects (error is swallowed)', async () => {
+    vi.useFakeTimers();
+    const sweep = vi.spyOn(tickets, 'archiveStaleTickets').mockRejectedValue(new Error('disk gone'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      scheduleWeeklyArchive();
+      await vi.advanceTimersByTimeAsync(8 * 24 * 60 * 60 * 1000);
+      expect(sweep).toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalled();   // failure logged, not thrown
+      stopArchiveScheduler();
+      expect(clearSpy).toHaveBeenCalled(); // still rescheduled despite the error
+    } finally {
+      sweep.mockRestore();
+      errSpy.mockRestore();
+      clearSpy.mockRestore();
+      stopArchiveScheduler();
+      vi.useRealTimers();
+    }
   });
 });

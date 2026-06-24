@@ -205,6 +205,22 @@ describe('updateTicket', () => {
       vi.useRealTimers();
     }
   });
+
+  it('clears project by passing null, leaving it set when omitted', async () => {
+    const t = await createTicket({ title: 'Has project', project: 'Acme' });
+    const cleared = await updateTicket(t.id, { project: null });
+    expect(cleared.project).toBeNull();
+    // omitting project on a later patch must not resurrect or alter it
+    const renamed = await updateTicket(t.id, { title: 'Renamed' });
+    expect(renamed.project).toBeNull();
+  });
+
+  it('sets then clears parent via null', async () => {
+    const t = await createTicket({ title: 'Child', parent: 'tkt-parent' });
+    expect(t.parent).toBe('tkt-parent');
+    const cleared = await updateTicket(t.id, { parent: null });
+    expect(cleared.parent).toBeNull();
+  });
 });
 
 describe('deleteTicket', () => {
@@ -249,6 +265,34 @@ describe('listTickets', () => {
     await writeRaw('tkt-mmm', makeRaw('B', 20));
     const tickets = await listTickets();
     expect(tickets.map((t) => t.order)).toEqual([10, 20, 30]);
+  });
+
+  it('ignores non-.md files in the tickets directory', async () => {
+    await writeRaw('tkt-real', makeRaw('Real', 1));
+    await fs.writeFile(path.join(tmpDir, 'README.txt'), 'not a ticket', 'utf8');
+    await fs.writeFile(path.join(tmpDir, '.DS_Store'), 'junk', 'utf8');
+    const tickets = await listTickets();
+    expect(tickets.map((t) => t.id)).toEqual(['tkt-real']);
+  });
+});
+
+describe('normalize raw-file coercion (invalid enums + blockers)', () => {
+  it('falls back to "medium" for an invalid priority in a raw file', async () => {
+    await writeRaw('tkt-badprio', makeRaw('Bad prio', 1, { priority: 'screaming' }));
+    expect((await getTicket('tkt-badprio')).priority).toBe('medium');
+  });
+
+  it('falls back to "backlog" for an invalid status in a raw file', async () => {
+    await writeRaw('tkt-badstat', makeRaw('Bad status', 1, { status: 'limbo' }));
+    expect((await getTicket('tkt-badstat')).status).toBe('backlog');
+  });
+
+  it('filters out non-string entries from a blockers array', async () => {
+    // YAML array with mixed types; normalize keeps only the string members.
+    await writeRaw('tkt-blockers', makeRaw('Mixed blockers', 1, {
+      blockers: '["tkt-aaa", 42, true, "tkt-bbb"]',
+    }));
+    expect((await getTicket('tkt-blockers')).blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
   });
 });
 
@@ -370,6 +414,13 @@ describe('searchTickets', () => {
     await writeRaw('tkt-s9', makeRaw('another common word', 2));
     const results = await searchTickets('common');
     expect(results.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns every ticket for an empty query term (matches all)', async () => {
+    await writeRaw('tkt-s10', makeRaw('Anything', 1));
+    await writeRaw('tkt-s11', makeRaw('Whatever', 2));
+    const results = await searchTickets('');
+    expect(results).toHaveLength(2);
   });
 });
 

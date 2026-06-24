@@ -97,8 +97,10 @@ export function stopArchiveScheduler() {
 }
 
 // Only bind port and start the scheduler when run directly, not when imported in tests.
+/* v8 ignore start -- process-entry bootstrap, not reachable under test */
 if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   scheduleWeeklyArchive();
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`));
 }
+/* v8 ignore stop */
