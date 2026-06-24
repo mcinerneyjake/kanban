@@ -31,7 +31,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 3. Implement the work described in the ticket's `body`
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
-6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then run a `/code-review` pass (and `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and go straight to done.
+6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then run a `/code-review` pass (and `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and proceed to step 7.
 7. Append an `## Implementation summary` to the ticket body via `update_ticket`. Do **not** set `status: "done"` yet — that happens after the PR merges (see **Branch, commit & PR workflow → 4. Merge**).
 
 The implementation summary **must** include a test line — either:
@@ -138,6 +138,8 @@ gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the
 ```
 
 The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`.
+
+The ticket stays at its current status (`in-progress` or `qa`) while the PR is open — do not change it until the merge step.
 
 ### 4. Merge (after CI is green)
 
