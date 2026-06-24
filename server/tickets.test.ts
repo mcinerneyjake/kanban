@@ -52,6 +52,32 @@ async function writeRaw(id: string, content: string) {
 
 // ---------------------------------------------------------------------------
 
+describe('parent cycle guard (updateTicket)', () => {
+  it('rejects a ticket being set as its own parent', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, { parent: t.id }));
+    expect(err.status).toBe(400);
+  });
+
+  it('rejects setting a descendant as the parent (would cycle)', async () => {
+    const a = await createTicket({ title: 'A' });
+    const b = await createTicket({ title: 'B', parent: a.id });
+    const c = await createTicket({ title: 'C', parent: b.id });
+    // A -> B -> C; making A a child of C closes the loop.
+    const err = await httpError(updateTicket(a.id, { parent: c.id }));
+    expect(err.status).toBe(400);
+    // the cycle must not have been persisted
+    expect((await getTicket(a.id)).parent).toBeNull();
+  });
+
+  it('allows a valid (acyclic) reparent', async () => {
+    const a = await createTicket({ title: 'A' });
+    const b = await createTicket({ title: 'B' });
+    const updated = await updateTicket(b.id, { parent: a.id });
+    expect(updated.parent).toBe(a.id);
+  });
+});
+
 describe('path-traversal guard', () => {
   it('rejects ../ paths with 400', async () => {
     const err = await httpError(getTicket('../../../etc/passwd'));
