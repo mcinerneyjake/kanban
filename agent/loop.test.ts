@@ -70,6 +70,14 @@ describe('runIntake', () => {
     expect(result.messages.some((m) => m.role === 'tool')).toBe(false);
   });
 
+  it('substitutes a fallback when the model returns an empty final', async () => {
+    for (const empty of [null, '', '   ']) {
+      const chat = new ScriptedChat([assistant(empty)]);
+      const result = await runIntake('x', { chat, index: await buildIndex() });
+      expect(result.final.trim().length).toBeGreaterThan(0);
+    }
+  });
+
   it('runs a tool call, feeds the result back, then returns the final answer', async () => {
     const chat = new ScriptedChat([
       assistant(null, [toolCall('c1', 'search_board', '{"query":"login"}')]),
