@@ -576,6 +576,21 @@ body {
   font-size: 11px;
 }
 
+.related-spinner {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: related-spin 0.7s linear infinite;
+}
+@keyframes related-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .related-spinner { animation-duration: 2s; }
+}
+
 .subtask-list {
   display: flex;
   flex-direction: column;

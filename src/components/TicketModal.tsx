@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 import { useRelatedTickets } from '../useRelatedTickets.js';
+import { relatedStripState } from '../lib/relatedStripState.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -61,6 +62,7 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
   const [preview, setPreview] = useState(false);
   // Create mode only: live "related tickets" dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
+  const relatedState = relatedStripState(related.matches.length > 0, related.loading, related.error);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -140,13 +142,13 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
 
           {/* Dedup: semantic matches as you type a new ticket. Click one to
               edit it instead of creating a duplicate. */}
-          {ticket === null && (related.loading || related.matches.length > 0) && (
+          {relatedState !== 'hidden' && (
             <div className="subtasks-section">
-              {related.matches.length > 0 ? (
+              {relatedState === 'list' ? (
                 <>
                   <div className="subtasks-head">
                     <span>Related tickets</span>
-                    {related.loading && <span className="subtasks-count">…</span>}
+                    {related.loading && <span className="related-spinner" aria-hidden="true" />}
                   </div>
                   <div className="subtask-list">
                     {related.matches.map((m) => {
@@ -161,8 +163,15 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
                     })}
                   </div>
                 </>
+              ) : relatedState === 'searching' ? (
+                <div className="subtasks-head">
+                  <span className="related-spinner" aria-hidden="true" />
+                  <span>Searching related tickets…</span>
+                </div>
               ) : (
-                <div className="subtasks-head"><span>Searching related tickets…</span></div>
+                <div className="subtasks-head">
+                  <span>Couldn't search related tickets — is the model running?</span>
+                </div>
               )}
             </div>
           )}
