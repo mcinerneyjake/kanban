@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 // non-HttpError, exercising the wrap() 500 branch (live ESM binding — index.ts
 // reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
+import { resetIndexCache } from '../agent/indexCache.js';
 
 let tmpDir: string;
 
@@ -440,5 +441,73 @@ describe('scheduleWeeklyArchive — timer callback fires', () => {
       stopArchiveScheduler();
       vi.useRealTimers();
     }
+  });
+});
+
+// --- intake search route (embedder stubbed via global fetch) ---
+
+function isEmbedReq(v: unknown): v is { input: string[] } {
+  return typeof v === 'object' && v !== null && 'input' in v
+    && Array.isArray(v.input) && v.input.every((s) => typeof s === 'string');
+}
+
+describe('POST /api/intake/search', () => {
+  // "login"-bearing inputs get a vector aligned with a "login" query, so a
+  // login report ranks the login ticket first — deterministic, no real model.
+  function stubEmbeddings(): void {
+    vi.stubGlobal('fetch', vi.fn((_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      const input = isEmbedReq(parsed) ? parsed.input : [];
+      const data = input.map((s, i) => ({ index: i, embedding: [s.toLowerCase().includes('login') ? 1 : 0, 1] }));
+      return Promise.resolve(new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    }));
+  }
+
+  beforeEach(() => { resetIndexCache(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('400 when query is missing', async () => {
+    const res = await request(app).post('/api/intake/search').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('returns results ranked by semantic similarity, with status', async () => {
+    await seedTicket('tkt-aaa', 'Fix login bug');
+    await seedTicket('tkt-bbb', 'Add dashboard charts');
+    stubEmbeddings();
+    const res = await request(app).post('/api/intake/search').send({ query: 'the login screen is broken' });
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].id).toBe('tkt-aaa');
+    expect(res.body.results[0].status).toBe('backlog');
+  });
+
+  it('503 when the embeddings runtime is unreachable', async () => {
+    await seedTicket('tkt-aaa', 'Fix login bug');
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
+    const res = await request(app).post('/api/intake/search').send({ query: 'x' });
+    expect(res.status).toBe(503);
+  });
+
+  it('400 when the query is only whitespace', async () => {
+    const res = await request(app).post('/api/intake/search').send({ query: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('respects the limit parameter', async () => {
+    await seedTicket('tkt-aaa', 'Fix login bug');
+    await seedTicket('tkt-bbb', 'Another login issue');
+    await seedTicket('tkt-ccc', 'Add dashboard charts');
+    stubEmbeddings();
+    const res = await request(app).post('/api/intake/search').send({ query: 'login', limit: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(1);
+  });
+
+  it('returns an empty list for an empty board without calling the runtime', async () => {
+    // No tickets seeded and no fetch stub — search short-circuits on an empty
+    // index, so this must succeed even with no model running.
+    const res = await request(app).post('/api/intake/search').send({ query: 'anything' });
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([]);
   });
 });
