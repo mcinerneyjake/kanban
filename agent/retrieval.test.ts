@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { cosineSimilarity, TicketIndex, RuntimeEmbedder, type Embedder } from './retrieval.js';
+import { createTicket } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
 import { type EmbedConfig } from './models.js';
 
@@ -71,6 +75,51 @@ describe('TicketIndex', () => {
     const index = await TicketIndex.build(embedder, []);
     expect(index.size).toBe(0);
     expect(await index.search('anything')).toEqual([]);
+  });
+
+  it('embeds the ticket body, not just the title', async () => {
+    // Identical titles with no keyword — only the body can drive the match,
+    // so this fails if docText ever stops including the body.
+    const index = await TicketIndex.build(embedder, [
+      mk('a', 'Ticket', 'resolve the login flow'),
+      mk('b', 'Ticket', 'tweak the dashboard widget'),
+    ]);
+    const results = await index.search('login', 1);
+    expect(results[0].id).toBe('a');
+    expect(results[0].score).toBeCloseTo(1);
+  });
+
+  it('returns [] when k is 0', async () => {
+    const index = await TicketIndex.build(embedder, board());
+    expect(await index.search('login', 0)).toEqual([]);
+  });
+
+  it('throws if the embedder returns the wrong number of vectors', async () => {
+    const broken: Embedder = {
+      embedDocuments: (texts) => Promise.resolve(texts.slice(1).map(() => [1])),
+      embedQuery: () => Promise.resolve([1]),
+    };
+    await expect(TicketIndex.build(broken, [mk('a', 'x'), mk('b', 'y')]))
+      .rejects.toThrow(/returned 1 vectors for 2/);
+  });
+});
+
+describe('TicketIndex.build (live board)', () => {
+  const embedder = new StubEmbedder([['login', [1, 0, 0]]]);
+  let tmpDir: string;
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-retrieval-test-'));
+    process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  });
+  afterAll(async () => {
+    delete process.env.TICKETS_DIR_OVERRIDE;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads the live board when no tickets argument is given', async () => {
+    await createTicket({ title: 'Live ticket' });
+    const index = await TicketIndex.build(embedder);
+    expect(index.size).toBeGreaterThan(0);
   });
 });
 
@@ -161,5 +210,10 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
   it('throws when the query returns no vector', async () => {
     stubFetch(() => ({ json: { data: [] } }));
     await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/no vector/);
+  });
+
+  it('reports a friendly error when the request times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))));
+    await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/timed out/);
   });
 });

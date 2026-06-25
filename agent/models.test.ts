@@ -12,6 +12,10 @@ describe('resolveEmbedConfig', () => {
     expect(resolveEmbedConfig({ EMBED_BASE_URL: 'http://x/v1/' }).baseUrl).toBe('http://x/v1');
   });
 
+  it('strips multiple trailing slashes from the base URL', () => {
+    expect(resolveEmbedConfig({ EMBED_BASE_URL: 'http://x/v1///' }).baseUrl).toBe('http://x/v1');
+  });
+
   it('Qwen3-Embedding prefixes the query only', () => {
     const cfg = resolveEmbedConfig({ EMBED_MODEL: 'qwen3-embedding:0.6b' });
     expect(cfg.queryInstruction).toContain('Instruct:');
