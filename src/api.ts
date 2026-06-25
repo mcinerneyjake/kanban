@@ -31,12 +31,16 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
   }).then((res) => json<T>(res));
 
 export interface IntakeMatch { id: string; title: string; status: Ticket['status']; score: number }
+export interface IntakeProposal { action: string; args: Record<string, unknown> }
+export interface ProposeResult { proposal: IntakeProposal | null; summary: string }
 
 export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
   intake: {
     search: (query: string, limit?: number): Promise<{ results: IntakeMatch[] }> =>
       send('/api/intake/search', 'POST', { query, limit }),
+    propose: (report: string): Promise<ProposeResult> =>
+      send('/api/intake/propose', 'POST', { report }),
   },
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),
