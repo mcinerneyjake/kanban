@@ -1,6 +1,9 @@
 import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
 import { resolveEmbedConfig } from './models.js';
 
+// Load local config if a .env is present; tolerate its absence.
+try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
+
 // Standalone "semantic board search" demo — the Phase 1 deliverable made
 // runnable. Builds the in-memory index from the live board via the configured
 // embedder and prints the top matches for a query.

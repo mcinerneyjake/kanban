@@ -143,4 +143,88 @@ describe('runIntake', () => {
     await expect(runIntake('x', { chat, index: await buildIndex(), maxSteps: 3 }))
       .rejects.toThrow(/within 3 steps/);
   });
+
+  // --- human-in-the-loop approval gate (Phase 4) ---
+
+  it('gates a mutating tool — rejection prevents the write', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Should not exist"}')]),
+      assistant('skipped it'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => false });
+    const board = await listTickets();
+    expect(board.some((t) => t.title === 'Should not exist')).toBe(false);
+    expect(result.messages.find((m) => m.role === 'tool')?.content).toMatch(/declined/i);
+    // the loop continues past the decline to a clean final answer
+    expect(result.final).toBe('skipped it');
+  });
+
+  it('awaits an async approval callback (the CLI path)', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Async gated"}')]),
+      assistant('ok'),
+    ]);
+    await runIntake('x', { chat, index: await buildIndex(), approve: () => Promise.resolve(false) });
+    expect((await listTickets()).some((t) => t.title === 'Async gated')).toBe(false);
+  });
+
+  it('gates any non-read-only tool by default (fail-safe)', async () => {
+    let prompted = 0;
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'delete_ticket', '{"id":"t1"}')]),
+      assistant('done'),
+    ]);
+    await runIntake('x', { chat, index: await buildIndex(), approve: () => { prompted++; return false; } });
+    expect(prompted).toBe(1); // delete_ticket isn't read-only -> gated by default
+  });
+
+  it('gates only the mutating call in a mixed turn — reads run freely', async () => {
+    let prompts = 0;
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'search_board', '{"query":"x"}'),
+        toolCall('c2', 'create_ticket', '{"title":"Mixed turn"}'),
+      ]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => { prompts++; return false; } });
+    expect(result.messages.filter((m) => m.role === 'tool')).toHaveLength(2); // both produced a result
+    expect(prompts).toBe(1); // only the write was gated
+    expect((await listTickets()).some((t) => t.title === 'Mixed turn')).toBe(false);
+  });
+
+  it('executes a mutating tool when approve returns true', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Approved ticket"}')]),
+      assistant('created'),
+    ]);
+    await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    const board = await listTickets();
+    expect(board.some((t) => t.title === 'Approved ticket')).toBe(true);
+  });
+
+  it('does not gate read-only tools (approve never called)', async () => {
+    let asked = 0;
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'search_board', '{"query":"x"}')]),
+      assistant('done'),
+    ]);
+    await runIntake('x', { chat, index: await buildIndex(), approve: () => { asked++; return true; } });
+    expect(asked).toBe(0);
+  });
+
+  it('passes the tool name and parsed args to approve', async () => {
+    const seen: { name: string; args: Record<string, unknown> | undefined }[] = [];
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'update_ticket', '{"id":"t1","title":"New"}')]),
+      assistant('done'),
+    ]);
+    await runIntake('x', {
+      chat, index: await buildIndex(),
+      approve: (name, args) => { seen.push({ name, args }); return false; },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].name).toBe('update_ticket');
+    expect(seen[0].args).toMatchObject({ id: 't1', title: 'New' });
+  });
 });
