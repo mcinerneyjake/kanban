@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { api } from './api.js';
+import { api, type IntakeProposal } from './api.js';
 import Board from './components/Board.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
+import TriageModal from './components/TriageModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
+import { proposalToPrefill, proposalTargetId, type Prefill } from './lib/proposalPrefill.js';
 import { useTheme } from './useTheme.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -16,6 +18,9 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
+  // Optional agent-triage prefill carried into the create/edit modal.
+  const [prefill, setPrefill] = useState<Prefill | null>(null);
+  const [triaging, setTriaging] = useState(false);
   const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
@@ -36,8 +41,6 @@ export default function App() {
     api.list().then(setTickets).catch((e: Error) => setError(e.message));
   }, []);
 
-  // Derived from tickets already in state — avoids a separate /api/projects
-  // HTTP round-trip and a second full filesystem scan on every board refresh.
   const projects = useMemo(
     () => [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort(),
     [tickets],
@@ -82,12 +85,9 @@ export default function App() {
     return counts;
   }, [tickets]);
 
-  // ticketsRef lets handleReparent read the current ticket list for cycle
-  // detection without listing tickets as a dependency — keeping the callback
-  // stable so Card's memo is not busted on every board mutation. Synced in an
-  // effect (not during render) to satisfy the react-hooks/refs lint rule; the
-  // effect always commits before the browser paints so the ref is current by
-  // the time any user interaction fires.
+  // ticketsRef lets stable callbacks read the current ticket list without listing
+  // tickets as a dependency. Synced in an effect (not during render) so the ref is
+  // current before any user interaction fires.
   const ticketsRef = useRef(tickets);
   useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
 
@@ -95,25 +95,42 @@ export default function App() {
     load();
   }, [load]);
 
-  // editing is listed as a dep here because handleSave is only passed to
-  // TicketModal, which already remounts (via key) whenever editing changes —
-  // so re-creating this callback on editing change causes no extra renders.
+  // Open the modal — create ('new') or edit (a ticket) — with an optional prefill
+  // (the agent's triage proposal). Always (re)sets prefill so a normal open never
+  // inherits a stale one.
+  const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null) => {
+    setPrefill(initial);
+    setEditing(target);
+  }, []);
+
+  const closeTicket = useCallback(() => {
+    setEditing(null);
+    setPrefill(null);
+  }, []);
+
+  const handleTriageApprove = useCallback((proposal: IntakeProposal) => {
+    setTriaging(false);
+    const id = proposalTargetId(proposal);
+    const target = id ? ticketsRef.current.find((t) => t.id === id) : undefined;
+    openTicket(target ?? 'new', proposalToPrefill(proposal.args));
+  }, [openTicket]);
+
   const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
       if (editing === 'new') await api.create(data);
       else if (editing) await api.update(editing.id, data);
-      setEditing(null);
+      closeTicket();
       load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  }, [editing, load]);
+  }, [editing, load, closeTicket]);
 
   const handleDelete = useCallback(async (id: string) => {
     try {
       await api.remove(id);
-      setEditing(null);
+      closeTicket();
       load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  }, [load]);
+  }, [load, closeTicket]);
 
   const handleReparent = useCallback(async (id: string, newParentId: string) => {
     if (id === newParentId) return;
@@ -178,7 +195,10 @@ export default function App() {
             onChange={(e) => setSearchInput(e.target.value)}
           />
           <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
-          <button className="btn primary" onClick={() => setEditing('new')}>
+          <button className="btn" onClick={() => setTriaging(true)} title="Let the agent triage a report into a ticket">
+            ✨ Triage
+          </button>
+          <button className="btn primary" onClick={() => openTicket('new')}>
             + New ticket
           </button>
         </div>
@@ -190,20 +210,25 @@ export default function App() {
         </div>
       )}
 
-      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={setEditing} onArchiveAll={handleArchiveAll} />
-      <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={setEditing} />
+      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+      <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
+
+      {triaging && (
+        <TriageModal onApprove={handleTriageApprove} onClose={() => setTriaging(false)} />
+      )}
 
       {editing && (
         <TicketModal
           key={editing === 'new' ? 'new' : editing.id}
           ticket={editing === 'new' ? null : editing}
+          initial={prefill ?? undefined}
           allTickets={tickets}
           projects={projects}
           assignees={assignees}
           onSave={handleSave}
           onDelete={handleDelete}
-          onOpen={setEditing}
-          onClose={() => setEditing(null)}
+          onOpen={openTicket}
+          onClose={closeTicket}
         />
       )}
     </div>

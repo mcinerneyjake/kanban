@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
+import { type Prefill } from '../lib/proposalPrefill.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -16,6 +17,7 @@ type Props = {
   onDelete: (id: string) => void
   onOpen: (ticket: Ticket) => void
   onClose: () => void
+  initial?: Prefill
 }
 
 const BOARD_STATUS_SET = new Set<StatusId>(BOARD_STATUSES.map((s) => s.id));
@@ -38,13 +40,13 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
-export default function TicketModal({ ticket, allTickets, projects, assignees, onSave, onDelete, onOpen, onClose }: Props) {
+export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onClose }: Props) {
   const [form, setForm] = useState<FormState>({
-    title: ticket?.title ?? '',
-    type: ticket?.type ?? 'task',
-    priority: ticket?.priority ?? 'medium',
-    status: ticket?.status ?? 'backlog',
-    body: ticket?.body ?? '',
+    title: initial?.title ?? ticket?.title ?? '',
+    type: initial?.type ?? ticket?.type ?? 'task',
+    priority: initial?.priority ?? ticket?.priority ?? 'medium',
+    status: initial?.status ?? ticket?.status ?? 'backlog',
+    body: initial?.body ?? ticket?.body ?? '',
     project: ticket?.project ?? null,
     blockers: (ticket?.blockers ?? []).filter((id) => {
       const t = allTickets.find((bt) => bt.id === id);
