@@ -511,3 +511,68 @@ describe('POST /api/intake/search', () => {
     expect(res.body.results).toEqual([]);
   });
 });
+
+describe('POST /api/intake/propose', () => {
+  // Stubs both /embeddings (for the index) and /chat/completions (scripted turns).
+  function stubProposeFlow(turns: { content: string | null; tool_calls?: unknown[] }[]): void {
+    let chatTurn = 0;
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/embeddings')) {
+        const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+        const inputs = isEmbedReq(parsed) ? parsed.input : [];
+        const data = inputs.map((_str, i) => ({ index: i, embedding: [1, 0, 0] }));
+        return Promise.resolve(new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      const message = turns[chatTurn] ?? { content: '(end)' };
+      chatTurn++;
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    }));
+  }
+
+  beforeEach(() => { resetIndexCache(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('400 when report is missing', async () => {
+    const res = await request(app).post('/api/intake/propose').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('returns a captured proposal without writing it', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
+      { content: null, tool_calls: [{ id: 'c2', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"New bug"}' } }] },
+      { content: 'Proposed creating a ticket.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'a new bug to add' });
+    expect(res.status).toBe(200);
+    expect(res.body.proposal).toMatchObject({ action: 'create_ticket', args: { title: 'New bug' } });
+    expect((await tickets.listTickets()).some((t) => t.title === 'New bug')).toBe(false);
+  });
+
+  it('503 when the runtime is unreachable', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
+    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(503);
+  });
+
+  it('400 when the report is only whitespace', async () => {
+    const res = await request(app).post('/api/intake/propose').send({ report: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('503 when the chat model fails even though the embedder is up', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/embeddings')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(new Error('chat down')); // /chat/completions fails
+    }));
+    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(503);
+  });
+});
