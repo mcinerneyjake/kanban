@@ -23,9 +23,9 @@ class StubEmbedder implements Embedder {
   }
 }
 
-function mk(id: string, title: string, body = ''): Ticket {
+function mk(id: string, title: string, body = '', status: Ticket['status'] = 'backlog'): Ticket {
   return {
-    id, title, body, type: 'task', priority: 'medium', status: 'backlog',
+    id, title, body, type: 'task', priority: 'medium', status,
     order: 0, created: '', updated: '', project: null, blockers: [],
     parent: null, dueDate: null, assignee: null,
   };
@@ -69,6 +69,17 @@ describe('TicketIndex', () => {
   it('respects the top-k limit', async () => {
     const index = await TicketIndex.build(embedder, board());
     expect(await index.search('login', 1)).toHaveLength(1);
+  });
+
+  it('carries each ticket\'s own status through to its result', async () => {
+    const index = await TicketIndex.build(embedder, [
+      mk('t1', 'Fix login bug', '', 'done'),
+      mk('t2', 'Add dashboard charts', '', 'in-progress'),
+    ]);
+    const results = await index.search('login', 2);
+    const statusById = new Map(results.map((r) => [r.id, r.status]));
+    expect(statusById.get('t1')).toBe('done');
+    expect(statusById.get('t2')).toBe('in-progress');
   });
 
   it('returns [] for an empty board', async () => {

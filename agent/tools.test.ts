@@ -27,18 +27,19 @@ function mk(id: string, title: string): Ticket {
 const embedder = new StubEmbedder([['login', [1, 0, 0]], ['dashboard', [0, 1, 0]]]);
 
 // Validate + narrow a search_board result payload (no casts).
-function parseResults(text: string): { id: string; title: string; score: number }[] {
+function parseResults(text: string): { id: string; title: string; status: string; score: number }[] {
   const parsed: unknown = JSON.parse(text);
   if (!Array.isArray(parsed)) throw new Error('search_board did not return a JSON array');
   return parsed.map((p) => {
     if (typeof p !== 'object' || p === null) throw new Error('result is not an object');
     const id = 'id' in p ? p.id : undefined;
     const title = 'title' in p ? p.title : undefined;
+    const status = 'status' in p ? p.status : undefined;
     const score = 'score' in p ? p.score : undefined;
-    if (typeof id !== 'string' || typeof title !== 'string' || typeof score !== 'number') {
-      throw new Error('result missing id/title/score');
+    if (typeof id !== 'string' || typeof title !== 'string' || typeof status !== 'string' || typeof score !== 'number') {
+      throw new Error('result missing id/title/status/score');
     }
-    return { id, title, score };
+    return { id, title, status, score };
   });
 }
 
@@ -99,7 +100,7 @@ describe('dispatchTool — search_board', () => {
     const res = await dispatchTool('search_board', { query: 'login screen broken' }, index);
     expect(res.isError).toBeFalsy();
     const results = parseResults(res.content[0].text);
-    expect(results[0]).toMatchObject({ id: 't1', title: 'Fix login bug' });
+    expect(results[0]).toMatchObject({ id: 't1', title: 'Fix login bug', status: 'backlog' });
     expect(typeof results[0].score).toBe('number');
   });
 

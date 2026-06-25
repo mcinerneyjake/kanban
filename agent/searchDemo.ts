@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   const results = await index.search(query, 8);
   console.log(`Top matches for "${query}":\n`);
   for (const r of results) {
-    console.log(`  ${r.score.toFixed(3)}  [${r.id}] ${r.title}`);
+    console.log(`  ${r.score.toFixed(3)}  [${r.id}] (${r.status}) ${r.title}`);
   }
 }
 
