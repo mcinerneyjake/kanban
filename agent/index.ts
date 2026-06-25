@@ -3,6 +3,7 @@ import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
 import { RuntimeChatClient } from './llm.js';
 import { runIntake } from './loop.js';
 import { getTicket } from '../server/tickets.js';
+import { askApproval } from './approval.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with
@@ -34,8 +35,8 @@ async function main(): Promise<void> {
         console.log('(could not load the current ticket state)');
       }
     }
-    const answer = (await rl.question('Approve? [y/N] ')).trim().toLowerCase();
-    return answer === 'y' || answer === 'yes';
+    // Fail-safe: a closed stdin (EOF / non-interactive) declines rather than crashing.
+    return askApproval(() => rl.question('Approve? [y/N] '));
   };
 
   try {
