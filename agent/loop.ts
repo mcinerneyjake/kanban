@@ -15,12 +15,16 @@ const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given a raw r
 2. For each issue, ALWAYS call search_board FIRST to find existing tickets.
 3. If a clear, OPEN duplicate or closely related ticket exists, prefer update_ticket over creating a new one. Each search result includes a "status" — IGNORE archived or done tickets as update targets (they are closed); create a new ticket instead, and you may reference the related closed one.
 4. Only call create_ticket when nothing OPEN on the board already covers the issue.
-When finished, reply with a short plain-text summary of what you created or updated, and why.`;
+When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created or updated (its id and title), or states that no action was taken and why. Never reply with an empty message.`;
 
 // Read-only tools run without approval. Everything else is gated — so a tool
 // added later defaults to requiring approval rather than slipping through
 // unguarded (fail-safe, not fail-open).
 const READ_ONLY_TOOLS = new Set(['search_board', 'list_tickets', 'get_ticket']);
+
+// Shown if the model ever returns an empty final answer — the CLI should never
+// print a blank result.
+const EMPTY_SUMMARY_FALLBACK = 'The agent finished but did not return a summary.';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -87,7 +91,8 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
 
     const calls = assistant.tool_calls ?? [];
     if (calls.length === 0) {
-      return { final: assistant.content ?? '', messages, steps: step };
+      const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
+      return { final, messages, steps: step };
     }
 
     for (const call of calls) {
