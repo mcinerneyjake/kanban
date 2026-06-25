@@ -13,6 +13,8 @@ import {
   HttpError,
 } from './tickets.js';
 import { getTicketIndex } from '../agent/indexCache.js';
+import { RuntimeChatClient } from '../agent/llm.js';
+import { proposeIntake } from '../agent/propose.js';
 
 // Thin routing layer: parse the request, call the service, shape the response.
 // No business logic or file IO lives here.
@@ -78,6 +80,20 @@ app.post('/api/intake/search', wrap(async (req, res) => {
   try {
     const index = await getTicketIndex();
     res.json({ results: await index.search(query, limit) });
+  } catch (err) {
+    throw new HttpError(503, `Intake unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}));
+
+// Run the intake agent in PROPOSE mode: returns a proposed create/update for the
+// report WITHOUT writing it (the caller approves + applies via the normal flow).
+// Needs both the embedder (index) and the chat model. 503 when either is down.
+app.post('/api/intake/propose', wrap(async (req, res) => {
+  const report = typeof req.body?.report === 'string' ? req.body.report.trim() : '';
+  if (!report) throw new HttpError(400, 'report is required');
+  try {
+    const index = await getTicketIndex();
+    res.json(await proposeIntake(report, { chat: RuntimeChatClient.fromEnv(), index }));
   } catch (err) {
     throw new HttpError(503, `Intake unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
