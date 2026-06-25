@@ -22,7 +22,7 @@ protection blocks direct pushes to `main`, so nothing merges without the gate
 green. A human approves three checkpoints — commit, open PR, merge — but the
 implementation between them is the agent's.
 
-The result: **124 commits across four days, 53 co-authored by Claude**, each a
+The result: **~125 commits across four days, 53 co-authored by Claude**, each a
 self-contained, tested, reviewed slice rather than a big-bang dump. It's a
 working demo of agent-driven development where the *process* — tickets, gates,
 and review — is as much the artifact as the code.
@@ -44,6 +44,11 @@ Open <http://localhost:5173>.
 >
 > `npm run seed` copies the demo tickets in `seed/` into `tickets/` — but only
 > when the board is empty, so it never overwrites your own tickets.
+
+> **No LLM setup needed to run the board.** The kanban app, the MCP server, and CI
+> all run with zero model configuration. Only the intake agent's dedup/triage
+> features need a local model — the server boots fine without one and simply skips
+> warming the embedding index. See [Agentic-RAG intake agent](#agentic-rag-intake-agent).
 
 ### Use it as an MCP server
 
@@ -109,7 +114,7 @@ with `curl http://localhost:1234/v1/models`:
 EMBED_BASE_URL=http://localhost:1234/v1
 EMBED_MODEL=text-embedding-qwen3-embedding-0.6b
 LLM_BASE_URL=http://localhost:1234/v1
-LLM_MODEL=qwen/qwen3.5-9b
+LLM_MODEL=openai/gpt-oss-20b
 ```
 
 Any OpenAI-compatible runtime works (LM Studio, llama.cpp, Ollama). The chat
@@ -119,7 +124,7 @@ Open-weight `LLM_MODEL` options, in rough quality order:
 | Model | Notes |
 |---|---|
 | `qwen3-coder-30b-a3b` | Best tool-calling + summaries |
-| `gpt-oss-20b` | Great on ~16 GB |
+| `openai/gpt-oss-20b` | Great on ~16 GB |
 | `qwen3.5-9b` | Lightest; summaries can be thin |
 
 Task-instruction prefixes for known embedders (Qwen3-Embedding, nomic) are
