@@ -13,8 +13,8 @@ import { type ToolResult } from '../mcp/handlers.js';
 const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given a raw report (a bug, a request, or a note), land it on the board correctly:
 1. Extract the concrete issue(s) from the input.
 2. For each issue, ALWAYS call search_board FIRST to find existing tickets.
-3. If a clear duplicate or closely related ticket exists, prefer update_ticket over creating a new one.
-4. Only call create_ticket when nothing on the board already covers the issue.
+3. If a clear, OPEN duplicate or closely related ticket exists, prefer update_ticket over creating a new one. Each search result includes a "status" — IGNORE archived or done tickets as update targets (they are closed); create a new ticket instead, and you may reference the related closed one.
+4. Only call create_ticket when nothing OPEN on the board already covers the issue.
 When finished, reply with a short plain-text summary of what you created or updated, and why.`;
 
 // Read-only tools run without approval. Everything else is gated — so a tool

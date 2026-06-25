@@ -118,7 +118,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 // --- in-memory ticket index -------------------------------------------------
 
-export interface ScoredTicket { id: string; title: string; score: number }
+export interface ScoredTicket { id: string; title: string; status: Ticket['status']; score: number }
 
 const DEFAULT_TOP_K = 5;
 
@@ -128,7 +128,7 @@ function docText(t: Ticket): string {
 }
 
 export class TicketIndex {
-  private entries: { id: string; title: string; vector: number[] }[] = [];
+  private entries: { id: string; title: string; status: Ticket['status']; vector: number[] }[] = [];
 
   constructor(private readonly embedder: Embedder) {}
 
@@ -146,7 +146,7 @@ export class TicketIndex {
     if (vectors.length !== all.length) {
       throw new Error(`Embedder returned ${vectors.length} vectors for ${all.length} tickets`);
     }
-    this.entries = all.map((t, i) => ({ id: t.id, title: t.title, vector: vectors[i] }));
+    this.entries = all.map((t, i) => ({ id: t.id, title: t.title, status: t.status, vector: vectors[i] }));
   }
 
   get size(): number {
@@ -158,7 +158,7 @@ export class TicketIndex {
     if (this.entries.length === 0) return [];
     const q = await this.embedder.embedQuery(query);
     return this.entries
-      .map((e) => ({ id: e.id, title: e.title, score: cosineSimilarity(q, e.vector) }))
+      .map((e) => ({ id: e.id, title: e.title, status: e.status, score: cosineSimilarity(q, e.vector) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(0, k));
   }
