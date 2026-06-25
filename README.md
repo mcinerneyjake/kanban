@@ -92,10 +92,46 @@ LLM_MODEL=qwen/qwen3.5-9b
 ```
 
 Any OpenAI-compatible runtime works (LM Studio, llama.cpp, Ollama). The chat
-model needs reliable tool-calling, and a larger model gives better summaries.
+model needs reliable tool-calling; a bigger model gives better summaries.
+Open-weight `LLM_MODEL` options, in rough quality order:
+
+| Model | Notes |
+|---|---|
+| `qwen3-coder-30b-a3b` | Best tool-calling + summaries |
+| `gpt-oss-20b` | Great on ~16 GB |
+| `qwen3.5-9b` | Lightest; summaries can be thin |
+
 Task-instruction prefixes for known embedders (Qwen3-Embedding, nomic) are
-applied automatically; override them with `EMBED_QUERY_PREFIX` /
-`EMBED_DOC_PREFIX` for any other embedder.
+applied automatically; override with `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX`
+for any other embedder.
+
+#### Trying it yourself — the quick, robust path
+
+Fully local: no API keys, no billing, nothing to flake mid-demo.
+
+1. Install [LM Studio](https://lmstudio.ai).
+2. Load **Qwen3-Embedding-0.6B** (~600 MB) plus a chat model from the table,
+   and start the local server (`:1234`).
+3. `curl http://localhost:1234/v1/models` → put the exact ids in `.env`.
+4. `npm run dev`, then create a ticket (watch the dedup strip) or run
+   `npm run agent -- "<report>"`.
+
+#### Bring your own key (cloud chat — optional, advanced)
+
+Prefer not to run a local *chat* model? Point `LLM_BASE_URL` at an
+OpenAI-compatible cloud endpoint and set `LLM_API_KEY` (`.env` only, never
+commit):
+
+- **OpenAI** — `https://api.openai.com/v1` (e.g. `LLM_MODEL=gpt-4o-mini`).
+  Native format, no shim.
+- **Claude** — `https://api.anthropic.com/v1` (Anthropic's OpenAI-compat
+  endpoint, e.g. `LLM_MODEL=claude-...`). A best-effort migration shim —
+  **verify the tool loop works** before demoing on it.
+
+Two caveats worth knowing: **Anthropic has no embeddings API**, so retrieval
+still needs an embedder (a local one, or OpenAI's). And the embedder is keyless
+today, so a *fully*-cloud setup is OpenAI-for-both; Claude is chat-only
+alongside a local embedder.
 
 ## Stack
 
