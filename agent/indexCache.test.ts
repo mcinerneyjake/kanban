@@ -62,4 +62,37 @@ describe('getTicketIndex', () => {
     await getTicketIndex({ embedder, tickets });
     expect(embedder.builds).toBe(2);
   });
+
+  it('coalesces concurrent builds, then releases so the next change rebuilds', async () => {
+    const embedder = new CountingEmbedder();
+    const tickets = [mk('t1', 'A'), mk('t2', 'B')];
+    const [a, b] = await Promise.all([
+      getTicketIndex({ embedder, tickets }),
+      getTicketIndex({ embedder, tickets }),
+    ]);
+    expect(embedder.builds).toBe(1); // one shared embedding pass, not two
+    expect(a).toBe(b);
+    // the in-flight build was released, so a later change rebuilds
+    await getTicketIndex({ embedder, tickets: [...tickets, mk('t3', 'C')] });
+    expect(embedder.builds).toBe(2);
+  });
+
+  it('releases the in-flight build on failure so the next call retries (warm fallback)', async () => {
+    let attempts = 0;
+    const flaky: Embedder = {
+      embedDocuments: (texts) => {
+        attempts++;
+        return attempts === 1
+          ? Promise.reject(new Error('embedder down'))
+          : Promise.resolve(texts.map(() => [1, 0, 0]));
+      },
+      embedQuery: () => Promise.resolve([1, 0, 0]),
+    };
+    const tickets = [mk('t1', 'A')];
+    await expect(getTicketIndex({ embedder: flaky, tickets })).rejects.toThrow(/embedder down/);
+    // pending was released, so this retries (not the rejected promise)
+    const index = await getTicketIndex({ embedder: flaky, tickets });
+    expect(index.size).toBe(1);
+    expect(attempts).toBe(2);
+  });
 });
