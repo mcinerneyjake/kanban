@@ -30,8 +30,14 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
     body: JSON.stringify(data),
   }).then((res) => json<T>(res));
 
+export interface IntakeMatch { id: string; title: string; status: Ticket['status']; score: number }
+
 export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
+  intake: {
+    search: (query: string, limit?: number): Promise<{ results: IntakeMatch[] }> =>
+      send('/api/intake/search', 'POST', { query, limit }),
+  },
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),
   remove: (id: string): Promise<void> =>
