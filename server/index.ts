@@ -12,6 +12,7 @@ import {
   archiveStaleTickets,
   HttpError,
 } from './tickets.js';
+import { getTicketIndex } from '../agent/indexCache.js';
 
 // Thin routing layer: parse the request, call the service, shape the response.
 // No business logic or file IO lives here.
@@ -68,6 +69,20 @@ app.post('/api/archive', wrap(async (_req, res) => {
   res.json({ archived: count });
 }));
 
+// Semantic search over the board for the Intake UI. Read-only; the embedding
+// index is cached server-side. Returns 503 when the embeddings runtime is down.
+app.post('/api/intake/search', wrap(async (req, res) => {
+  const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+  if (!query) throw new HttpError(400, 'query is required');
+  const limit = typeof req.body?.limit === 'number' ? req.body.limit : 5;
+  try {
+    const index = await getTicketIndex();
+    res.json({ results: await index.search(query, limit) });
+  } catch (err) {
+    throw new HttpError(503, `Intake unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}));
+
 // Schedule archiving every Sunday at 6 PM local time.
 // Exported for testing — pass a specific `now` to avoid real-clock dependency.
 export function msUntilNextSundayEvening(now = new Date()): number {
@@ -99,6 +114,8 @@ export function stopArchiveScheduler() {
 // Only bind port and start the scheduler when run directly, not when imported in tests.
 /* v8 ignore start -- process-entry bootstrap, not reachable under test */
 if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Load local model config if present; tolerate its absence (defaults apply).
+  try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
   scheduleWeeklyArchive();
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => console.log(`Kanban API → http://localhost:${PORT}`));
