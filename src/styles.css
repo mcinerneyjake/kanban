@@ -51,7 +51,15 @@ body {
   color: var(--text);
 }
 
-.app { padding: 16px 24px; }
+/* Flex column so the archive lane can pin to the bottom of the viewport
+   (margin-top:auto below). min-height fills short boards; a tall board grows
+   past it and scrolls, with the archive trailing at the end as usual. */
+.app {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
 
 .topbar {
   display: flex;
@@ -219,6 +227,10 @@ body {
   grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   align-items: start;
+  /* Guarantees a minimum gap above the pinned archive divider: the archive's
+     margin-top:auto collapses to 0 when the board fills the height, so this is
+     the floor that keeps cards from hugging the divider. */
+  margin-bottom: 20px;
 }
 
 .column {
@@ -672,10 +684,13 @@ body {
 }
 
 /* --- Archive lane -------------------------------------------------------- */
+/* Pinned to the bottom of the .app flex column: margin-top:auto eats the free
+   space above it, so the toggle holds a stable position instead of tracking the
+   tallest column's bottom edge. Collapsed it costs only its own one-line height. */
 .archive-lane {
-  margin-top: 20px;
-  border-top: 1px solid var(--border);
+  margin-top: auto;
   padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .archive-toggle {
