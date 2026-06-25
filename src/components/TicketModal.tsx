@@ -60,7 +60,7 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
   });
   const [preview, setPreview] = useState(false);
   // Create mode only: live "related tickets" dedup as the title is typed.
-  const related = useRelatedTickets(form.title, form.body, ticket === null);
+  const related = useRelatedTickets(form.title, ticket === null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

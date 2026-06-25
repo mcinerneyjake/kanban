@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { intakeQuery } from './intakeQuery.js';
 
 describe('intakeQuery', () => {
-  it('combines title + body when long enough', () => {
-    expect(intakeQuery('Login is broken', '')).toBe('Login is broken');
-    expect(intakeQuery('PDF', 'export cuts off the footer')).toBe('PDF export cuts off the footer');
+  it('returns the trimmed title when long enough', () => {
+    expect(intakeQuery('Login is broken')).toBe('Login is broken');
+    expect(intakeQuery('  PDF export bug  ')).toBe('PDF export bug');
   });
 
-  it('returns null for short or empty input (avoids noise round-trips)', () => {
-    expect(intakeQuery('', '')).toBeNull();
-    expect(intakeQuery('fix', '')).toBeNull();
-    expect(intakeQuery('   ', '  ')).toBeNull();
+  it('returns null for a short or empty title (avoids noise round-trips)', () => {
+    expect(intakeQuery('')).toBeNull();
+    expect(intakeQuery('fix')).toBeNull();
+    expect(intakeQuery('   ')).toBeNull();
   });
 });
