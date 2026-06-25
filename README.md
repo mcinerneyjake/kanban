@@ -45,6 +45,58 @@ prompts you to trust it on first load:
 Once trusted, the tools (`list_tickets`, `get_ticket`, `start_ticket`,
 `create_ticket`, `update_ticket`, `delete_ticket`) are available in the session.
 
+## Agentic-RAG intake agent
+
+A local, agentic Retrieval-Augmented-Generation agent that turns a raw report
+(a bug, a request, a note) into the right action on the board — **find the
+existing ticket and update it, or create a new one** — with a human approving
+every write. It runs entirely against a local, OpenAI-compatible LLM runtime
+(e.g. [LM Studio](https://lmstudio.ai)); no cloud API or key required.
+
+```bash
+npm run agent -- "the PDF export cuts off the footer on mobile Safari"
+```
+
+The agent embeds the report, semantically searches the board for duplicates,
+and proposes a `create_ticket` / `update_ticket` — pausing for your `y/N`
+approval (showing the proposed change, plus the current state for updates)
+before anything is written.
+
+### How it works
+
+Four layers, each independently testable (the model is mocked in tests):
+
+1. **Retrieval** (`agent/retrieval.ts`) — embeds every ticket via the runtime's
+   `/v1/embeddings` and builds an in-memory cosine index. Run just this layer
+   with `npm run agent:search -- "<query>"`.
+2. **Tools** (`agent/tools.ts`) — a safe whitelist of the MCP tools plus
+   `search_board`, adapted to the OpenAI function-tool schema.
+3. **Loop** (`agent/loop.ts`) — the tool-use loop: chat → dispatch tool calls →
+   feed results back → summarize. Search results carry ticket **status**, and
+   the agent is told to skip archived/done tickets as update targets.
+4. **CLI + approval gate** (`agent/index.ts`) — the entry point and a
+   **fail-safe** human-in-the-loop gate: every non-read-only tool needs
+   approval, and a closed stdin defaults to *decline*.
+
+### Local-LLM setup
+
+Configure an embedding model and a chat model via a gitignored `.env` (copy
+`.env.example`). The IDs **must match what your runtime advertises** — check
+with `curl http://localhost:1234/v1/models`:
+
+```bash
+EMBED_BASE_URL=http://localhost:1234/v1
+EMBED_MODEL=text-embedding-qwen3-embedding-0.6b
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=qwen/qwen3.5-9b
+```
+
+Any OpenAI-compatible runtime works (LM Studio, llama.cpp, Ollama). The chat
+model needs reliable tool-calling, and a larger model gives better summaries.
+Task-instruction prefixes for known embedders (Qwen3-Embedding, nomic) are
+applied automatically; override them with `EMBED_QUERY_PREFIX` /
+`EMBED_DOC_PREFIX` for any other embedder.
+
 ## Stack
 
 - **Backend** — Express, thin. Two-layer Route → Service; the service
