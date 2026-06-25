@@ -6,6 +6,27 @@ or in your editor; both stay in sync because the files *are* the source of
 truth. The board is also driven by an **MCP server**, so an agent like Claude
 Code can list, create, and move tickets as first-class tools.
 
+## How this was built (AI-first)
+
+This board was built by an agent driving itself. Every feature — the
+Markdown-backed store, the MCP server, the agentic-RAG intake agent — landed as
+a kanban ticket that Claude Code picked up through *this project's own* MCP
+tools, implemented, and shipped. The board is both the product and its own
+issue tracker: Claude reads the next ticket with `start_ticket`, writes the
+code, and closes it with `update_ticket` — dogfooding the very tools it builds.
+
+The workflow is deliberately strict so an agent can run it end-to-end. One
+ticket → one branch → one squash-merged PR, gated by CI (typecheck · lint ·
+Vitest) and a *second* automated Claude review that comments on each PR. Branch
+protection blocks direct pushes to `main`, so nothing merges without the gate
+green. A human approves three checkpoints — commit, open PR, merge — but the
+implementation between them is the agent's.
+
+The result: **124 commits across four days, 53 co-authored by Claude**, each a
+self-contained, tested, reviewed slice rather than a big-bang dump. It's a
+working demo of agent-driven development where the *process* — tickets, gates,
+and review — is as much the artifact as the code.
+
 ## Quick Start
 
 **Requires Node 20+.**
