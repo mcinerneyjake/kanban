@@ -7,6 +7,7 @@ import TriageModal from './components/TriageModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { proposalToPrefill, proposalTargetId, type Prefill } from './lib/proposalPrefill.js';
+import { computeChildCounts } from './lib/childCounts.js';
 import { useTheme } from './useTheme.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -76,14 +77,10 @@ export default function App() {
     return result;
   }, [tickets, filter, searchTerm]);
 
-  // Keyed by parent id → count of children, computed from all tickets (not filtered)
-  const childCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const t of tickets) {
-      if (t.parent) counts[t.parent] = (counts[t.parent] ?? 0) + 1;
-    }
-    return counts;
-  }, [tickets]);
+  // Keyed by parent id → sub-ticket count shown on the card, computed from all
+  // tickets (not filtered). Done children drop off an open parent's count;
+  // a done parent shows its full original count. See computeChildCounts.
+  const childCounts = useMemo(() => computeChildCounts(tickets), [tickets]);
 
   // ticketsRef lets stable callbacks read the current ticket list without listing
   // tickets as a dependency. Synced in an effect (not during render) so the ref is
