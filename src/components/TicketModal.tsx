@@ -142,25 +142,27 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
               edit it instead of creating a duplicate. */}
           {ticket === null && (related.loading || related.matches.length > 0) && (
             <div className="subtasks-section">
-              <div className="subtasks-head">
-                <span>Related tickets</span>
-                {related.loading && <span className="subtasks-count">…</span>}
-              </div>
               {related.matches.length > 0 ? (
-                <div className="subtask-list">
-                  {related.matches.map((m) => {
-                    const full = allTickets.find((t) => t.id === m.id);
-                    return full ? (
-                      <button key={m.id} type="button" className="subtask-item" onClick={() => onOpen(full)}>
-                        <span className={`subtask-dot prio-${full.priority}`} />
-                        <span className="subtask-title">{m.title}</span>
-                        <span className="subtask-status">{Math.round(m.score * 100)}% · {m.status}</span>
-                      </button>
-                    ) : null;
-                  })}
-                </div>
+                <>
+                  <div className="subtasks-head">
+                    <span>Related tickets</span>
+                    {related.loading && <span className="subtasks-count">…</span>}
+                  </div>
+                  <div className="subtask-list">
+                    {related.matches.map((m) => {
+                      const full = allTickets.find((t) => t.id === m.id);
+                      return full ? (
+                        <button key={m.id} type="button" className="subtask-item" onClick={() => onOpen(full)}>
+                          <span className={`subtask-dot prio-${full.priority}`} />
+                          <span className="subtask-title">{m.title}</span>
+                          <span className="subtask-status">{Math.round(m.score * 100)}% · {m.status}</span>
+                        </button>
+                      ) : null;
+                    })}
+                  </div>
+                </>
               ) : (
-                <span className="blockers-empty">Searching…</span>
+                <div className="subtasks-head"><span>Searching related tickets…</span></div>
               )}
             </div>
           )}
