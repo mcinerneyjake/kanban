@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
+import { useRelatedTickets } from '../useRelatedTickets.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -58,6 +59,8 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
     assignee: ticket?.assignee ?? null,
   });
   const [preview, setPreview] = useState(false);
+  // Create mode only: live "related tickets" dedup as the title is typed.
+  const related = useRelatedTickets(form.title, form.body, ticket === null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -134,6 +137,33 @@ export default function TicketModal({ ticket, allTickets, projects, assignees, o
             onChange={set('title')}
             autoFocus
           />
+
+          {/* Dedup: semantic matches as you type a new ticket. Click one to
+              edit it instead of creating a duplicate. */}
+          {ticket === null && (related.loading || related.matches.length > 0) && (
+            <div className="subtasks-section">
+              <div className="subtasks-head">
+                <span>Related tickets</span>
+                {related.loading && <span className="subtasks-count">…</span>}
+              </div>
+              {related.matches.length > 0 ? (
+                <div className="subtask-list">
+                  {related.matches.map((m) => {
+                    const full = allTickets.find((t) => t.id === m.id);
+                    return full ? (
+                      <button key={m.id} type="button" className="subtask-item" onClick={() => onOpen(full)}>
+                        <span className={`subtask-dot prio-${full.priority}`} />
+                        <span className="subtask-title">{m.title}</span>
+                        <span className="subtask-status">{Math.round(m.score * 100)}% · {m.status}</span>
+                      </button>
+                    ) : null;
+                  })}
+                </div>
+              ) : (
+                <span className="blockers-empty">Searching…</span>
+              )}
+            </div>
+          )}
 
           <div className="row">
             <label>
