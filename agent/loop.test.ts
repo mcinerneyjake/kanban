@@ -168,6 +168,16 @@ describe('runIntake', () => {
     expect((await listTickets()).some((t) => t.title === 'Async gated')).toBe(false);
   });
 
+  it('gates any non-read-only tool by default (fail-safe)', async () => {
+    let prompted = 0;
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'delete_ticket', '{"id":"t1"}')]),
+      assistant('done'),
+    ]);
+    await runIntake('x', { chat, index: await buildIndex(), approve: () => { prompted++; return false; } });
+    expect(prompted).toBe(1); // delete_ticket isn't read-only -> gated by default
+  });
+
   it('gates only the mutating call in a mixed turn — reads run freely', async () => {
     let prompts = 0;
     const chat = new ScriptedChat([

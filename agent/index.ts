@@ -2,12 +2,17 @@ import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
 import { RuntimeChatClient } from './llm.js';
 import { runIntake } from './loop.js';
+import { getTicket } from '../server/tickets.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with
 // a stdin approval gate on every mutating action.
 //   npm run agent -- "the dashboard crashes when I export to CSV"
-// Requires running embedding + chat models (e.g. LM Studio) and ids in .env.
+// Requires running embedding + chat models (e.g. LM Studio).
+
+// Load local config if a .env is present; tolerate its absence (config then
+// falls back to process env + the localhost defaults in models.ts/llm.ts).
+try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
 
 async function main(): Promise<void> {
   const input = process.argv.slice(2).join(' ').trim();
@@ -20,6 +25,15 @@ async function main(): Promise<void> {
   const approve = async (name: string, args: Record<string, unknown> | undefined): Promise<boolean> => {
     console.log(`\n⚠  The agent wants to ${name}:`);
     console.log(JSON.stringify(args ?? {}, null, 2));
+    // For an update, show the ticket's CURRENT state so the reviewer isn't blind.
+    if (name === 'update_ticket' && args && typeof args.id === 'string') {
+      try {
+        const current = await getTicket(args.id);
+        console.log(`Current: "${current.title}" — ${current.status}/${current.priority}`);
+      } catch {
+        console.log('(could not load the current ticket state)');
+      }
+    }
     const answer = (await rl.question('Approve? [y/N] ')).trim().toLowerCase();
     return answer === 'y' || answer === 'yes';
   };
