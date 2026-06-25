@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js';
 import Column from './Column.jsx';
 import type { SortBy } from './FilterPopover.jsx';
 import { computeDropOrder } from '../lib/orderMath.js';
+import { doneParentsWithChildren, reconcileDoneCollapse } from '../lib/collapseDefaults.js';
 
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
@@ -18,6 +19,24 @@ type Props = {
 
 export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
+  // The subset of `collapsed` we collapsed automatically because the parent is
+  // done — kept in a ref so a user expanding a done parent isn't undone, and so
+  // a parent leaving `done` can have its auto-collapse reverted. See reconcileDoneCollapse.
+  const autoCollapsedRef = useRef(new Set<string>());
+
+  // Collapse a done parent's children by default. Runs whenever the board (or a
+  // child count) changes; `collapsed` is a dependency so the reconcile sees the
+  // user's latest manual toggles and leaves them intact (the reconcile is a pure,
+  // idempotent function of these inputs, so this settles in one extra render).
+  useEffect(() => {
+    const doneParents = doneParentsWithChildren(tickets, childCounts);
+    const result = reconcileDoneCollapse(
+      { collapsed, autoCollapsed: autoCollapsedRef.current },
+      doneParents,
+    );
+    autoCollapsedRef.current = result.autoCollapsed;
+    if (result.changed) setCollapsed(result.collapsed);
+  }, [tickets, childCounts, collapsed]);
 
   const toggleCollapse = useCallback((id: string) =>
     setCollapsed((prev) => {
