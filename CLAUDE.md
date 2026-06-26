@@ -179,6 +179,15 @@ Prefer the MCP tools for all ticket operations — never write a script to mark 
 - `shared/constants.ts` — enum values for status, type, priority
 - `mcp/handlers.ts` — MCP tool definitions + dispatch logic (the testable core)
 - `mcp/server.ts` — thin MCP entrypoint: wires the handlers to a stdio transport
+- `agent/` — local-first agentic-RAG intake agent (retrieval, tools, tool-use loop, CLI); talks to an OpenAI-compatible `/v1` endpoint
+
+## LLM & agent philosophy (local-first)
+
+This project's agent (`agent/`) is **local-first by default and local-only in practice.** It talks to an OpenAI-compatible `/v1` endpoint (LM Studio, llama.cpp, Ollama) running a local model — no cloud API key, runs air-gapped. This is a deliberate product stance (privacy/residency for untrusted operational intake, zero per-call cost, offline demoability), not a stopgap.
+
+- **Default to local.** When building or extending agent features, target the local `/v1` seam (`LLM_BASE_URL` / `LLM_MODEL`). Do **not** reach for the Anthropic SDK, push a cloud deployment, or invoke the `claude-api` skill unless the user explicitly asks for the cloud path.
+- **Cloud is a swappable option, not the goal.** The provider seam is config-driven, so a cloud driver could drop in behind it — but the Anthropic chat driver was evaluated and dropped (`tkt-29788d084c21` archived). The one Anthropic integration that remains is the CI `code-review` job; leave it as-is.
+- **Cost is measured, not estimated.** Observability uses a pluggable cost model: locally that's measured **energy** ($ from kWh × regional rate), with the per-token API-price model left as a dormant seam (see `tkt-88b47600d94c`).
 
 ## TypeScript conventions
 
