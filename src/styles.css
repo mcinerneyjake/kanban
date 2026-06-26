@@ -637,6 +637,15 @@ body {
 .draft-error { margin: 0; font-size: 13px; color: var(--danger); }
 .draft-checking { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; color: var(--muted); }
 
+.modal.modal--draft {
+  height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal.modal--draft form { flex: 1; min-height: 0; }
+.modal.modal--draft .draft-panel { flex: 1; min-height: 0; }
+.modal.modal--draft .draft-input { flex: 1; }
+
 .subtask-list {
   display: flex;
   flex-direction: column;
