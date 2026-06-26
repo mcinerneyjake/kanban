@@ -53,3 +53,17 @@ export class UsageMeter {
     return { ...this.u };
   }
 }
+
+// Combine two run usages (e.g. the chat client + the embedder) into one total.
+export function mergeUsage(a: RunUsage, b: RunUsage): RunUsage {
+  return {
+    promptTokens: a.promptTokens + b.promptTokens,
+    completionTokens: a.completionTokens + b.completionTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    calls: a.calls + b.calls,
+    reportedCalls: a.reportedCalls + b.reportedCalls,
+    activeMs: a.activeMs + b.activeMs,
+    cachedTokens: a.cachedTokens + b.cachedTokens,
+    cachedReported: a.cachedReported || b.cachedReported,
+  };
+}

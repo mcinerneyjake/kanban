@@ -2,6 +2,7 @@ import { AGENT_TOOLS, dispatchTool } from './tools.js';
 import { type ChatClient, type ChatMessage } from './llm.js';
 import { type TicketIndex } from './retrieval.js';
 import { type ToolResult } from '../mcp/handlers.js';
+import { type RunOutcome } from './economics.js';
 
 // ---------------------------------------------------------------------------
 // Tool-use loop (Phase 3) + human-in-the-loop approval gate (Phase 4). Drives a
@@ -10,7 +11,7 @@ import { type ToolResult } from '../mcp/handlers.js';
 // and any tool added later) requires approval by default.
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given a raw report (a bug, a request, or a note), land it on the board correctly:
+export const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given a raw report (a bug, a request, or a note), land it on the board correctly:
 1. Extract the concrete issue(s) from the input.
 2. For each issue, ALWAYS call search_board FIRST to find existing tickets.
 3. If a clear, OPEN duplicate or closely related ticket exists, prefer update_ticket over creating a new one. Each search result includes a "status" — IGNORE archived or done tickets as update targets (they are closed); create a new ticket instead, and you may reference the related closed one.
@@ -57,6 +58,7 @@ export interface IntakeResult {
   final: string;
   messages: ChatMessage[];
   steps: number;
+  outcome: RunOutcome;
 }
 
 export interface IntakeDeps {
@@ -68,13 +70,21 @@ export interface IntakeDeps {
   approve?: ApproveFn;
 }
 
+// create/update are the "accepted" mutations counted toward the run outcome.
+function mutationKind(name: string): 'create' | 'update' | null {
+  if (name === 'create_ticket') return 'create';
+  if (name === 'update_ticket') return 'update';
+  return null;
+}
+
 // Run one tool call, gating anything that isn't read-only behind the callback.
-async function runCall(name: string, args: Record<string, unknown> | undefined, deps: IntakeDeps): Promise<ToolResult> {
+// Reports whether the action was declined so the loop can tally the outcome.
+async function runCall(name: string, args: Record<string, unknown> | undefined, deps: IntakeDeps): Promise<{ result: ToolResult; declined: boolean }> {
   const needsApproval = !READ_ONLY_TOOLS.has(name);
   if (needsApproval && deps.approve && !(await deps.approve(name, args))) {
-    return declined(name);
+    return { result: declined(name), declined: true };
   }
-  return dispatchTool(name, args, deps.index);
+  return { result: await dispatchTool(name, args, deps.index), declined: false };
 }
 
 // Run one intake conversation to completion (or until the step budget is spent).
@@ -84,6 +94,9 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     { role: 'user', content: input },
   ];
   const maxSteps = deps.maxSteps ?? 8;
+  let created = 0;
+  let updated = 0;
+  let declinedCount = 0;
 
   for (let step = 1; step <= maxSteps; step++) {
     const assistant = await deps.chat.complete(messages, AGENT_TOOLS);
@@ -92,11 +105,20 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     const calls = assistant.tool_calls ?? [];
     if (calls.length === 0) {
       const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
-      return { final, messages, steps: step };
+      const outcome: RunOutcome = {
+        created, updated, declined: declinedCount,
+        noProposal: created + updated + declinedCount === 0,
+        errored: false,
+      };
+      return { final, messages, steps: step, outcome };
     }
 
     for (const call of calls) {
-      const result = await runCall(call.function.name, parseArgs(call.function.arguments), deps);
+      const { result, declined: wasDeclined } = await runCall(call.function.name, parseArgs(call.function.arguments), deps);
+      const kind = mutationKind(call.function.name);
+      if (kind && wasDeclined) declinedCount += 1;
+      else if (kind === 'create') created += 1;
+      else if (kind === 'update') updated += 1;
       messages.push({
         role: 'tool',
         tool_call_id: call.id,

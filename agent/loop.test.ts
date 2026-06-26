@@ -235,4 +235,60 @@ describe('runIntake', () => {
     expect(seen[0].name).toBe('update_ticket');
     expect(seen[0].args).toMatchObject({ id: 't1', title: 'New' });
   });
+
+  // --- run outcome (feeds the cost epic's unit economics) ---
+
+  it('reports outcome: created when a create is approved', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Outcome created"}')]),
+      assistant('created'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 1, updated: 0, declined: 0, noProposal: false });
+  });
+
+  it('reports outcome: updated when an update is approved', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'update_ticket', '{"id":"t1","title":"x"}')]),
+      assistant('updated'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 0, updated: 1, declined: 0 });
+  });
+
+  it('reports outcome: declined when a mutation is rejected', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Nope"}')]),
+      assistant('skipped'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => false });
+    expect(result.outcome).toMatchObject({ created: 0, declined: 1, noProposal: false });
+  });
+
+  it('reports outcome: noProposal when the model answers with no mutation', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'search_board', '{"query":"x"}')]),
+      assistant('nothing to do'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex() });
+    expect(result.outcome).toMatchObject({ created: 0, updated: 0, declined: 0, noProposal: true });
+  });
+
+  it('accumulates outcome counts across multiple mutations', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"A"}'), toolCall('c2', 'create_ticket', '{"title":"B"}')]),
+      assistant('made two'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 2, noProposal: false });
+  });
+
+  it('does not count read-only tools toward the outcome', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'search_board', '{"query":"x"}'), toolCall('c2', 'create_ticket', '{"title":"C"}')]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 1, updated: 0, declined: 0 });
+  });
 });
