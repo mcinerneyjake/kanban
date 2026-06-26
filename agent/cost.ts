@@ -86,6 +86,30 @@ export class EnergyCostModel implements CostModel {
   }
 }
 
+const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+
+// Capital cost attributed to a run: the machine's purchase price spread over its
+// useful life, charged for the run's active-compute time. Often the DOMINANT
+// real cost of local inference — without it the energy-only $ is misleadingly
+// tiny. Assumed (depends on configured cost + life).
+export class HardwareCostModel implements CostModel {
+  constructor(private readonly cfg: CostConfig) {}
+
+  lines(usage: RunUsage): CostLine[] {
+    const label = 'hardware amortization';
+    const { hardwareCost: h, hardwareLifeYears: y } = this.cfg;
+    if (!isSet(y) || y.value <= 0) {
+      return [{ label, amount: null, unit: 'USD', kind: 'assumed', note: 'notional — set a positive hardware life (years)' }];
+    }
+    if (!isSet(h)) {
+      return [{ label, amount: null, unit: 'USD', kind: 'assumed', note: missingNote([['hardware cost', h]]) }];
+    }
+    const usdPerSecond = h.value / (y.value * SECONDS_PER_YEAR);
+    const usd = usdPerSecond * (usage.activeMs / 1000);
+    return [{ label, amount: usd, unit: 'USD', kind: 'assumed', note: `${h.value} over ${y.value}yr, by active-compute time` }];
+  }
+}
+
 // Cloud-equivalent cost for the local-vs-cloud comparison. Dormant until #5
 // populates the price table from CURRENT vendor pricing (never hardcode rates).
 export class ApiPriceCostModel implements CostModel {
