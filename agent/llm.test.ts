@@ -181,4 +181,32 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     await expect(client.complete([], [])).rejects.toThrow();
     expect(client.getUsage()).toMatchObject({ calls: 0, reportedCalls: 0, activeMs: 0 });
   });
+
+  it('surfaces runtime cached_tokens from prompt_tokens_details', async () => {
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 40 } } } }));
+    const client = new RuntimeChatClient(cfg);
+    await client.complete([], []);
+    expect(client.getUsage()).toMatchObject({ cachedTokens: 40, cachedReported: true });
+  });
+
+  it('leaves cachedReported false when the runtime omits prompt_tokens_details', async () => {
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } } }));
+    const client = new RuntimeChatClient(cfg);
+    await client.complete([], []);
+    expect(client.getUsage()).toMatchObject({ cachedReported: false, cachedTokens: 0 });
+  });
+
+  it('flags cachedReported on a reported cached_tokens of 0 (cache miss, still reported)', async () => {
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 0 } } } }));
+    const client = new RuntimeChatClient(cfg);
+    await client.complete([], []);
+    expect(client.getUsage()).toMatchObject({ cachedTokens: 0, cachedReported: true });
+  });
+
+  it('ignores a malformed prompt_tokens_details (cachedReported stays false)', async () => {
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 'nope' } } } }));
+    const client = new RuntimeChatClient(cfg);
+    await client.complete([], []);
+    expect(client.getUsage()).toMatchObject({ cachedReported: false });
+  });
 });

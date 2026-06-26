@@ -89,7 +89,15 @@ function chatUsageOf(v: unknown): CallTokens | undefined {
   if (!('prompt_tokens' in u) || typeof u.prompt_tokens !== 'number') return undefined;
   if (!('completion_tokens' in u) || typeof u.completion_tokens !== 'number') return undefined;
   if (!('total_tokens' in u) || typeof u.total_tokens !== 'number') return undefined;
-  return { prompt: u.prompt_tokens, completion: u.completion_tokens, total: u.total_tokens };
+  // Optional cached-prompt-token hit count (newer llama.cpp / vLLM); omitted by older runtimes.
+  let cached: number | undefined;
+  if ('prompt_tokens_details' in u) {
+    const d = u.prompt_tokens_details;
+    if (typeof d === 'object' && d !== null && 'cached_tokens' in d && typeof d.cached_tokens === 'number') {
+      cached = d.cached_tokens;
+    }
+  }
+  return { prompt: u.prompt_tokens, completion: u.completion_tokens, total: u.total_tokens, cached };
 }
 
 export class RuntimeChatClient implements ChatClient {

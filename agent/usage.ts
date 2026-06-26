@@ -13,13 +13,20 @@ export interface RunUsage {
   reportedCalls: number;
   /** Summed active-compute time across calls, in milliseconds. */
   activeMs: number;
+  /** Sum of runtime-reported cached prompt tokens (prompt_tokens_details.cached_tokens). */
+  cachedTokens: number;
+  /** True once any call reported cached_tokens — distinguishes "0 hits" from "not reported". */
+  cachedReported: boolean;
 }
 
 export function emptyUsage(): RunUsage {
-  return { promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0, reportedCalls: 0, activeMs: 0 };
+  return {
+    promptTokens: 0, completionTokens: 0, totalTokens: 0,
+    calls: 0, reportedCalls: 0, activeMs: 0, cachedTokens: 0, cachedReported: false,
+  };
 }
 
-export interface CallTokens { prompt: number; completion: number; total: number }
+export interface CallTokens { prompt: number; completion: number; total: number; cached?: number }
 
 // Accumulates timed runtime calls. Every call records its duration; token
 // figures are added only when the runtime actually reported them.
@@ -34,6 +41,10 @@ export class UsageMeter {
       this.u.completionTokens += tokens.completion;
       this.u.totalTokens += tokens.total;
       this.u.reportedCalls += 1;
+      if (tokens.cached !== undefined) {
+        this.u.cachedTokens += tokens.cached;
+        this.u.cachedReported = true;
+      }
     }
   }
 
