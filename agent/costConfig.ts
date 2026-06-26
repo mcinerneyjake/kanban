@@ -81,6 +81,7 @@ export function resolveCostConfig(env: NodeJS.ProcessEnv = process.env): CostCon
 }
 
 // A value is usable iff it was actually set (default or override). 0 is valid.
-export function isSet(s: Sourced): boolean {
+// Type predicate so consumers narrow `value` to `number` after the check.
+export function isSet(s: Sourced): s is Sourced & { value: number } {
   return s.value !== null;
 }
