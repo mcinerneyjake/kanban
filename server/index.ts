@@ -99,6 +99,12 @@ app.post('/api/intake/propose', wrap(async (req, res) => {
   }
 }));
 
+// Liveness probe for the drafting (chat) model so the create UI can fall back to
+// manual entry when no model is running. Never 503s — it reports availability.
+app.get('/api/intake/health', wrap(async (_req, res) => {
+  res.json({ available: await RuntimeChatClient.fromEnv().available() });
+}));
+
 // Schedule archiving every Sunday at 6 PM local time.
 // Exported for testing — pass a specific `now` to avoid real-clock dependency.
 export function msUntilNextSundayEvening(now = new Date()): number {
