@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { api } from '../api.js';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
-import { type Prefill } from '../lib/proposalPrefill.js';
+import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
 import Spinner from './Spinner.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
@@ -16,7 +17,7 @@ type Props = {
   assignees: string[]
   onSave: (data: FormState) => void
   onDelete: (id: string) => void
-  onOpen: (ticket: Ticket) => void
+  onOpen: (ticket: Ticket, initial?: Prefill) => void
   onClose: () => void
   initial?: Prefill
 }
@@ -66,6 +67,49 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   // Create mode only: live "related tickets" dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
   const relatedState = relatedStripState(related.matches.length > 0, related.loading, related.error);
+
+  // Create mode: the AI "draft from a note" step is the primary create path. We
+  // probe the chat model on open; when it isn't running we fall back to the
+  // manual form. A successful draft fills the form for review.
+  const [note, setNote] = useState('');
+  const [draftPhase, setDraftPhase] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [drafted, setDrafted] = useState(false);
+  const [noProposal, setNoProposal] = useState(false);
+  const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill } | null>(null);
+  const [modelStatus, setModelStatus] = useState<'checking' | 'up' | 'down'>(ticket === null ? 'checking' : 'up');
+
+  useEffect(() => {
+    if (ticket !== null) return;
+    let alive = true;
+    api.intake.health()
+      .then((h) => { if (alive) setModelStatus(h.available ? 'up' : 'down'); })
+      .catch(() => { if (alive) setModelStatus('down'); });
+    return () => { alive = false; };
+  }, [ticket]);
+
+  const draft = async () => {
+    if (!note.trim()) return;
+    setDraftPhase('loading');
+    setNoProposal(false);
+    setUpdateSuggestion(null);
+    try {
+      const result = await api.intake.propose(note.trim());
+      const proposal = result.proposal;
+      if (!proposal) { setNoProposal(true); setDraftPhase('idle'); return; }
+      const prefill = proposalToPrefill(proposal.args);
+      const targetId = proposalTargetId(proposal);
+      const target = targetId ? allTickets.find((t) => t.id === targetId) : undefined;
+      if (target) {
+        setUpdateSuggestion({ ticket: target, prefill });
+      } else {
+        setForm((f) => ({ ...f, ...prefill }));
+        setDrafted(true);
+      }
+      setDraftPhase('idle');
+    } catch {
+      setDraftPhase('error');
+    }
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -131,10 +175,74 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     onSave(form);
   };
 
+  // Create flow has three faces: probing the model, the draft-from-note step
+  // (model up), and the editable form (model down, or after a successful draft).
+  const showChecking = ticket === null && modelStatus === 'checking' && !drafted;
+  const showDraftPanel = ticket === null && modelStatus === 'up' && !drafted;
+  const showForm = ticket !== null || modelStatus === 'down' || drafted;
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <form onSubmit={submit}>
+          {showChecking && (
+            <div className="draft-checking">
+              <Spinner />
+              <span>Checking for the drafting model…</span>
+              <button type="button" className="link" onClick={onClose}>Cancel</button>
+            </div>
+          )}
+
+          {showDraftPanel && (
+            <section className="draft-panel">
+              <div className="draft-head">✨ Draft from a note</div>
+              <textarea
+                className="draft-input"
+                placeholder="Describe it here — the agent drafts a ticket for this board…"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                autoFocus
+              />
+              {draftPhase === 'error' && (
+                <p className="draft-error">
+                  Couldn't draft a ticket — is the model running?{' '}
+                  <button type="button" className="link" onClick={() => setModelStatus('down')}>Enter manually</button>
+                </p>
+              )}
+              {noProposal && (
+                <div className="draft-notice">
+                  <span>The agent didn't suggest a ticket — add more detail and try again, or</span>
+                  <button type="button" className="link" onClick={() => setModelStatus('down')}>enter manually</button>.
+                </div>
+              )}
+              {updateSuggestion && (
+                <div className="draft-notice">
+                  <span>Looks like this updates an existing ticket: <strong>“{updateSuggestion.ticket.title}”</strong>.</span>
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => onOpen(updateSuggestion.ticket, updateSuggestion.prefill)}
+                  >
+                    Open &amp; apply →
+                  </button>
+                </div>
+              )}
+              <div className="draft-actions">
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => void draft()}
+                  disabled={draftPhase === 'loading' || note.trim() === ''}
+                >
+                  {draftPhase === 'loading' ? <><Spinner /> Drafting…</> : 'Draft ticket'}
+                </button>
+                <button type="button" className="btn" onClick={onClose}>Cancel</button>
+              </div>
+            </section>
+          )}
+
+          {showForm && (
+          <>
           <input
             className="title-input"
             placeholder="Ticket title"
@@ -341,6 +449,8 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
               {ticket ? 'Save' : 'Create'}
             </button>
           </div>
+          </>
+          )}
         </form>
       </div>
     </div>
