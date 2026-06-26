@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { UsageMeter, emptyUsage } from './usage.js';
+import { UsageMeter, emptyUsage, mergeUsage } from './usage.js';
 
 describe('UsageMeter', () => {
   it('starts empty', () => {
@@ -71,5 +71,19 @@ describe('UsageMeter', () => {
     const m = new UsageMeter();
     m.record(5, { prompt: 10, completion: 2, total: 12, cached: 0 });
     expect(m.get()).toMatchObject({ cachedTokens: 0, cachedReported: true });
+  });
+});
+
+describe('mergeUsage', () => {
+  it('sums numeric fields and ORs cachedReported', () => {
+    const a = { ...emptyUsage(), promptTokens: 10, totalTokens: 12, activeMs: 100, calls: 1, reportedCalls: 1, cachedTokens: 2, cachedReported: true };
+    const b = { ...emptyUsage(), promptTokens: 5, totalTokens: 6, activeMs: 50, calls: 1, reportedCalls: 1, cachedReported: false };
+    expect(mergeUsage(a, b)).toMatchObject({
+      promptTokens: 15, totalTokens: 18, activeMs: 150, calls: 2, reportedCalls: 2, cachedTokens: 2, cachedReported: true,
+    });
+  });
+
+  it('reports cachedReported false only when neither side reported', () => {
+    expect(mergeUsage(emptyUsage(), emptyUsage()).cachedReported).toBe(false);
   });
 });

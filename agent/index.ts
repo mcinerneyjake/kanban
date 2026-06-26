@@ -1,9 +1,13 @@
 import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
-import { RuntimeChatClient } from './llm.js';
-import { runIntake } from './loop.js';
+import { RuntimeChatClient, resolveLlmConfig } from './llm.js';
+import { AGENT_TOOLS } from './tools.js';
+import { runIntake, SYSTEM_PROMPT } from './loop.js';
 import { getTicket } from '../server/tickets.js';
 import { askApproval } from './approval.js';
+import { mergeUsage } from './usage.js';
+import { resolveCostConfig } from './costConfig.js';
+import { buildSummary, renderSummary } from './summary.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with
@@ -23,6 +27,7 @@ async function main(): Promise<void> {
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let reviewMs = 0; // measured HITL gate-open time, fed to the run summary
   const approve = async (name: string, args: Record<string, unknown> | undefined): Promise<boolean> => {
     console.log(`\n⚠  The agent wants to ${name}:`);
     console.log(JSON.stringify(args ?? {}, null, 2));
@@ -36,15 +41,34 @@ async function main(): Promise<void> {
       }
     }
     // Fail-safe: a closed stdin (EOF / non-interactive) declines rather than crashing.
-    return askApproval(() => rl.question('Approve? [y/N] '));
+    const start = Date.now();
+    const ok = await askApproval(() => rl.question('Approve? [y/N] '));
+    reviewMs += Date.now() - start;
+    return ok;
   };
 
+  const embedder = RuntimeEmbedder.fromEnv();
+  const chat = RuntimeChatClient.fromEnv();
   try {
     console.log('Building the board index…');
-    const index = await TicketIndex.build(RuntimeEmbedder.fromEnv());
+    const index = await TicketIndex.build(embedder);
     console.log(`Indexed ${index.size} tickets. Running intake…`);
-    const result = await runIntake(input, { chat: RuntimeChatClient.fromEnv(), index, approve });
+    const result = await runIntake(input, { chat, index, approve });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
+
+    // Per-run cost & economics summary (assembled from the run's measured usage
+    // + the configured assumptions). Reads usage from both runtime clients.
+    const usage = mergeUsage(chat.getUsage(), embedder.getUsage());
+    const summary = buildSummary({
+      usage,
+      outcome: result.outcome,
+      reviewMs,
+      cfg: resolveCostConfig(),
+      model: resolveLlmConfig().model,
+      prefixText: SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS),
+      dynamicText: input,
+    });
+    console.log(`\n${renderSummary(summary)}`);
   } finally {
     rl.close();
   }
