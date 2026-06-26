@@ -588,7 +588,7 @@ body {
   font-size: 11px;
 }
 
-.related-spinner {
+.spinner {
   width: 11px;
   height: 11px;
   flex-shrink: 0;
@@ -596,11 +596,11 @@ body {
   border-right-color: transparent;
   border-radius: 50%;
   opacity: 0.6;
-  animation: related-spin 0.7s linear infinite;
+  animation: spin 0.7s linear infinite;
 }
-@keyframes related-spin { to { transform: rotate(360deg); } }
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .related-spinner { animation-duration: 2s; }
+  .spinner { animation-duration: 2s; }
 }
 
 /* --- Triage modal -------------------------------------------------------- */
