@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { EnergyCostModel, ApiPriceCostModel, type CostLine } from './cost.js';
+import { EnergyCostModel, HardwareCostModel, ApiPriceCostModel, type CostLine } from './cost.js';
 import { resolveCostConfig } from './costConfig.js';
 import { emptyUsage, type RunUsage } from './usage.js';
 
@@ -83,6 +83,52 @@ describe('EnergyCostModel', () => {
   it('zero active time yields zero marginal energy (still a real, non-notional 0)', () => {
     const line0 = line(new EnergyCostModel(fullCfg()).lines(usageWith({ activeMs: 0 })), 'marginal energy cost');
     expect(line0.amount).toBe(0);
+  });
+});
+
+describe('HardwareCostModel', () => {
+  it('amortizes capital over life by active-compute time', () => {
+    // life 1yr = 31,557,600 s; set cost = that many $ → exactly $1 per second of compute.
+    const cfg = resolveCostConfig({ COST_HARDWARE_COST: '31557600', COST_HARDWARE_LIFE_YEARS: '1' });
+    const l = line(new HardwareCostModel(cfg).lines(usageWith({ activeMs: 2000 })), 'hardware amortization');
+    expect(l.amount).toBeCloseTo(2, 9); // $1/s × 2 s
+    expect(l.kind).toBe('assumed');
+  });
+
+  it('is notional when hardware cost is unset (names the missing input)', () => {
+    const l = line(new HardwareCostModel(resolveCostConfig({})).lines(usageWith({ activeMs: 1000 })), 'hardware amortization');
+    expect(l.amount).toBeNull();
+    expect(l.note).toMatch(/hardware cost/i);
+  });
+
+  it('is notional (no divide-by-zero) when life is zero', () => {
+    const cfg = resolveCostConfig({ COST_HARDWARE_COST: '3000', COST_HARDWARE_LIFE_YEARS: '0' });
+    expect(line(new HardwareCostModel(cfg).lines(usageWith({ activeMs: 1000 })), 'hardware amortization').amount).toBeNull();
+  });
+
+  it('zero active time amortizes to 0 (a real 0, not notional)', () => {
+    const cfg = resolveCostConfig({ COST_HARDWARE_COST: '3000', COST_HARDWARE_LIFE_YEARS: '3' });
+    expect(line(new HardwareCostModel(cfg).lines(usageWith({ activeMs: 0 })), 'hardware amortization').amount).toBe(0);
+  });
+
+  it('scales linearly with active-compute time', () => {
+    const cfg = resolveCostConfig({ COST_HARDWARE_COST: '3000', COST_HARDWARE_LIFE_YEARS: '3' });
+    const a = line(new HardwareCostModel(cfg).lines(usageWith({ activeMs: 1000 })), 'hardware amortization').amount;
+    const b = line(new HardwareCostModel(cfg).lines(usageWith({ activeMs: 2000 })), 'hardware amortization').amount;
+    expect(a).not.toBeNull();
+    expect(b).toBeCloseTo((a ?? 0) * 2, 12);
+  });
+
+  it('capital amortization dominates marginal energy for the same run (the headline insight)', () => {
+    const cfg = resolveCostConfig({
+      COST_HARDWARE_COST: '3000', COST_HARDWARE_LIFE_YEARS: '3',
+      COST_ACTIVE_WATTS: '60', COST_IDLE_WATTS: '20', COST_ELECTRICITY_RATE: '0.2',
+    });
+    const usage = usageWith({ activeMs: 60_000 });
+    const hw = line(new HardwareCostModel(cfg).lines(usage), 'hardware amortization').amount ?? 0;
+    const energy = line(new EnergyCostModel(cfg).lines(usage), 'marginal energy cost').amount ?? 0;
+    expect(hw).toBeGreaterThan(energy);
+    expect(hw).toBeGreaterThan(0);
   });
 });
 
