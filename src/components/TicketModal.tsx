@@ -183,7 +183,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal${showForm ? '' : ' modal--draft'}`} onClick={(e) => e.stopPropagation()}>
         <form onSubmit={submit}>
           {showChecking && (
             <div className="draft-checking">
