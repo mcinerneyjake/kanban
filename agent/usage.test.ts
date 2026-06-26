@@ -53,4 +53,23 @@ describe('UsageMeter', () => {
     m.record(-5, { prompt: 2, completion: 1, total: 3 });
     expect(m.get()).toMatchObject({ activeMs: 0, totalTokens: 3, reportedCalls: 1 });
   });
+
+  it('accumulates cached tokens and flags cachedReported when reported', () => {
+    const m = new UsageMeter();
+    m.record(5, { prompt: 10, completion: 2, total: 12, cached: 4 });
+    m.record(5, { prompt: 8, completion: 1, total: 9, cached: 6 });
+    expect(m.get()).toMatchObject({ cachedTokens: 10, cachedReported: true });
+  });
+
+  it('leaves cachedReported false when no call reports cached tokens', () => {
+    const m = new UsageMeter();
+    m.record(5, { prompt: 10, completion: 2, total: 12 });
+    expect(m.get()).toMatchObject({ cachedTokens: 0, cachedReported: false });
+  });
+
+  it('treats a reported cached:0 as reported (0 hits), not unreported', () => {
+    const m = new UsageMeter();
+    m.record(5, { prompt: 10, completion: 2, total: 12, cached: 0 });
+    expect(m.get()).toMatchObject({ cachedTokens: 0, cachedReported: true });
+  });
 });
