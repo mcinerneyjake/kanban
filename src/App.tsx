@@ -1,12 +1,11 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { api, type IntakeProposal } from './api.js';
+import { api } from './api.js';
 import Board from './components/Board.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
-import TriageModal from './components/TriageModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
-import { proposalToPrefill, proposalTargetId, type Prefill } from './lib/proposalPrefill.js';
+import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
 import { useTheme } from './useTheme.js';
 import type { Ticket } from '../shared/constants.js';
@@ -21,7 +20,6 @@ export default function App() {
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
   // Optional agent-triage prefill carried into the create/edit modal.
   const [prefill, setPrefill] = useState<Prefill | null>(null);
-  const [triaging, setTriaging] = useState(false);
   const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
@@ -105,13 +103,6 @@ export default function App() {
     setPrefill(null);
   }, []);
 
-  const handleTriageApprove = useCallback((proposal: IntakeProposal) => {
-    setTriaging(false);
-    const id = proposalTargetId(proposal);
-    const target = id ? ticketsRef.current.find((t) => t.id === id) : undefined;
-    openTicket(target ?? 'new', proposalToPrefill(proposal.args));
-  }, [openTicket]);
-
   const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
       if (editing === 'new') await api.create(data);
@@ -192,9 +183,6 @@ export default function App() {
             onChange={(e) => setSearchInput(e.target.value)}
           />
           <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
-          <button className="btn" onClick={() => setTriaging(true)} title="Let the agent triage a report into a ticket">
-            ✨ Triage
-          </button>
           <button className="btn primary" onClick={() => openTicket('new')}>
             + New ticket
           </button>
@@ -209,10 +197,6 @@ export default function App() {
 
       <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
       <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
-
-      {triaging && (
-        <TriageModal onApprove={handleTriageApprove} onClose={() => setTriaging(false)} />
-      )}
 
       {editing && (
         <TicketModal
