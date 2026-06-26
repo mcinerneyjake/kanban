@@ -211,8 +211,10 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
               )}
               {noProposal && (
                 <div className="draft-notice">
-                  <span>The agent didn't suggest a ticket — add more detail and try again, or</span>
-                  <button type="button" className="link" onClick={() => setModelStatus('down')}>enter manually</button>.
+                  <span>
+                    The agent didn't suggest a ticket — add more detail and try again, or{' '}
+                    <button type="button" className="link" onClick={() => setModelStatus('down')}>enter manually</button>.
+                  </span>
                 </div>
               )}
               {updateSuggestion && (
@@ -234,7 +236,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                   onClick={() => void draft()}
                   disabled={draftPhase === 'loading' || note.trim() === ''}
                 >
-                  {draftPhase === 'loading' ? <><Spinner /> Drafting…</> : 'Draft ticket'}
+                  {draftPhase === 'loading' ? <span>Drafting…</span> : 'Draft ticket'}
                 </button>
                 <button type="button" className="btn" onClick={onClose}>Cancel</button>
               </div>
