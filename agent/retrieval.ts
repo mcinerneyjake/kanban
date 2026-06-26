@@ -1,6 +1,7 @@
 import { listTickets } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
 import { type EmbedConfig, resolveEmbedConfig } from './models.js';
+import { UsageMeter, type RunUsage, type CallTokens } from './usage.js';
 
 // ---------------------------------------------------------------------------
 // Retrieval layer (RAG) — Phase 1 of the agent. An `Embedder` seam plus an
@@ -36,16 +37,39 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
     && 'data' in v && Array.isArray(v.data) && v.data.every(isEmbeddingDatum);
 }
 
+// Embedding usage is optional + best-effort (embeddings report prompt/total, no
+// completion); omit when absent or malformed so it never breaks the response.
+function embedUsageOf(v: unknown): CallTokens | undefined {
+  if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
+  const u = v.usage;
+  if (typeof u !== 'object' || u === null) return undefined;
+  if (!('prompt_tokens' in u) || typeof u.prompt_tokens !== 'number') return undefined;
+  const total = 'total_tokens' in u && typeof u.total_tokens === 'number' ? u.total_tokens : u.prompt_tokens;
+  return { prompt: u.prompt_tokens, completion: 0, total };
+}
+
 // Local embedding servers cap inputs/tokens per request — embed in batches.
 const EMBED_BATCH_SIZE = 64;
 // Fail fast instead of hanging if the runtime is down or a model is still loading.
 const EMBED_TIMEOUT_MS = 30_000;
 
 export class RuntimeEmbedder implements Embedder {
-  constructor(private readonly cfg: EmbedConfig) {}
+  private readonly meter = new UsageMeter();
+
+  // `now` is injectable so call durations are deterministic under test.
+  constructor(
+    private readonly cfg: EmbedConfig,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): RuntimeEmbedder {
     return new RuntimeEmbedder(resolveEmbedConfig(env));
+  }
+
+  // Accumulated embedding usage + active-compute time over this embedder's
+  // lifetime. Tokens are "available" only if reportedCalls > 0.
+  getUsage(): RunUsage {
+    return this.meter.get();
   }
 
   // Embed inputs in batches, concatenating results in input order.
@@ -58,6 +82,7 @@ export class RuntimeEmbedder implements Embedder {
   }
 
   private async postBatch(inputs: string[]): Promise<number[][]> {
+    const start = this.now();
     const res = await this.fetchEmbeddings(inputs);
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 500);
@@ -67,6 +92,8 @@ export class RuntimeEmbedder implements Embedder {
     if (!isEmbeddingResponse(json)) {
       throw new Error('Unexpected /v1/embeddings response shape');
     }
+    // Record the batch's duration + token usage (when the runtime reported it).
+    this.meter.record(this.now() - start, embedUsageOf(json));
     // The API may return data out of input order; sort by index to realign.
     return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
   }

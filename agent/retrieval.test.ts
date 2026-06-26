@@ -227,4 +227,52 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))));
     await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/timed out/);
   });
+
+  it('getUsage() accumulates embedding usage + active time across batches (injected clock)', async () => {
+    const times = [0, 10, 100, 130]; let i = 0;
+    stubFetch((req) => ({ json: {
+      data: req.input.map((s, idx) => ({ index: idx, embedding: [hash(s)] })),
+      usage: { prompt_tokens: req.input.length, total_tokens: req.input.length },
+    } }));
+    const embedder = new RuntimeEmbedder(nomicCfg, () => times[i++]);
+    await embedder.embedDocuments(Array.from({ length: 70 }, (_, n) => `x-${n}`)); // 64 + 6 → 2 batches
+    expect(embedder.getUsage()).toMatchObject({
+      calls: 2, reportedCalls: 2, promptTokens: 70, totalTokens: 70, completionTokens: 0, activeMs: 40,
+    });
+  });
+
+  it('getUsage() records time but marks tokens unavailable when usage is omitted', async () => {
+    const times = [0, 8]; let i = 0;
+    stubFetch(echo); // echo returns no usage field
+    const embedder = new RuntimeEmbedder(nomicCfg, () => times[i++]);
+    await embedder.embedQuery('hello');
+    expect(embedder.getUsage()).toMatchObject({ calls: 1, reportedCalls: 0, totalTokens: 0, activeMs: 8 });
+  });
+
+  it('getUsage() falls back to prompt_tokens for total when total is missing', async () => {
+    const times = [0, 5]; let i = 0;
+    stubFetch((req) => ({ json: {
+      data: req.input.map((s, idx) => ({ index: idx, embedding: [hash(s)] })),
+      usage: { prompt_tokens: 3 },
+    } }));
+    const embedder = new RuntimeEmbedder(nomicCfg, () => times[i++]);
+    await embedder.embedDocuments(['a', 'b', 'c']);
+    expect(embedder.getUsage()).toMatchObject({
+      promptTokens: 3, totalTokens: 3, completionTokens: 0, calls: 1, reportedCalls: 1, activeMs: 5,
+    });
+  });
+
+  it('does not count a failed (non-OK) batch in usage', async () => {
+    stubFetch(() => ({ status: 400, text: 'nope' }));
+    const embedder = new RuntimeEmbedder(nomicCfg);
+    await expect(embedder.embedQuery('x')).rejects.toThrow();
+    expect(embedder.getUsage()).toMatchObject({ calls: 0, reportedCalls: 0, activeMs: 0 });
+  });
+
+  it('records nothing for an empty document set', async () => {
+    stubFetch(echo);
+    const embedder = new RuntimeEmbedder(nomicCfg);
+    await embedder.embedDocuments([]);
+    expect(embedder.getUsage()).toMatchObject({ calls: 0, reportedCalls: 0, totalTokens: 0, activeMs: 0 });
+  });
 });
