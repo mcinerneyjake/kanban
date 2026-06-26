@@ -1,4 +1,5 @@
 import { type ChatTool } from './tools.js';
+import { UsageMeter, type RunUsage, type CallTokens } from './usage.js';
 
 // ---------------------------------------------------------------------------
 // Chat client for the agent loop (Phase 3). Talks to an OpenAI-compatible
@@ -79,14 +80,39 @@ function isChatCompletion(v: unknown): v is ChatCompletion {
   return isAssistantMessage(first.message);
 }
 
+// Token usage is optional + best-effort: read it from the raw payload only when
+// well-formed, so a runtime that omits or malforms it never breaks the response.
+function chatUsageOf(v: unknown): CallTokens | undefined {
+  if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
+  const u = v.usage;
+  if (typeof u !== 'object' || u === null) return undefined;
+  if (!('prompt_tokens' in u) || typeof u.prompt_tokens !== 'number') return undefined;
+  if (!('completion_tokens' in u) || typeof u.completion_tokens !== 'number') return undefined;
+  if (!('total_tokens' in u) || typeof u.total_tokens !== 'number') return undefined;
+  return { prompt: u.prompt_tokens, completion: u.completion_tokens, total: u.total_tokens };
+}
+
 export class RuntimeChatClient implements ChatClient {
-  constructor(private readonly cfg: LlmConfig) {}
+  private readonly meter = new UsageMeter();
+
+  // `now` is injectable so call durations are deterministic under test.
+  constructor(
+    private readonly cfg: LlmConfig,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): RuntimeChatClient {
     return new RuntimeChatClient(resolveLlmConfig(env));
   }
 
+  // Accumulated token usage + active-compute time over this client's lifetime
+  // (one client per run). Tokens are "available" only if reportedCalls > 0.
+  getUsage(): RunUsage {
+    return this.meter.get();
+  }
+
   async complete(messages: ChatMessage[], tools: ChatTool[]): Promise<ChatMessage> {
+    const start = this.now();
     const res = await this.fetchCompletion(messages, tools);
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 500);
@@ -94,6 +120,8 @@ export class RuntimeChatClient implements ChatClient {
     }
     const json: unknown = await res.json();
     if (!isChatCompletion(json)) throw new Error('Unexpected /chat/completions response shape');
+    // Record the call's duration + token usage (when the runtime reported it).
+    this.meter.record(this.now() - start, chatUsageOf(json));
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
   }

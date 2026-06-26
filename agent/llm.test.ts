@@ -146,4 +146,39 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     await new RuntimeChatClient(cfg).available();
     expect(auth).toBeNull();
   });
+
+  it('getUsage() accumulates tokens + active time across calls (injected clock)', async () => {
+    const times = [100, 105, 200, 230]; let i = 0;
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } } }));
+    const client = new RuntimeChatClient(cfg, () => times[i++]);
+    await client.complete([{ role: 'user', content: 'a' }], []);
+    await client.complete([{ role: 'user', content: 'b' }], []);
+    expect(client.getUsage()).toMatchObject({
+      promptTokens: 20, completionTokens: 8, totalTokens: 28, calls: 2, reportedCalls: 2, activeMs: 35,
+    });
+  });
+
+  it('getUsage() records time but marks tokens unavailable when usage is omitted', async () => {
+    const times = [0, 7]; let i = 0;
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }] } }));
+    const client = new RuntimeChatClient(cfg, () => times[i++]);
+    await client.complete([], []);
+    expect(client.getUsage()).toMatchObject({ totalTokens: 0, calls: 1, reportedCalls: 0, activeMs: 7 });
+  });
+
+  it('tolerates a malformed usage block — still returns, not counted as reported', async () => {
+    const times = [0, 3]; let i = 0;
+    stubFetch(() => ({ json: { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 5 } } }));
+    const client = new RuntimeChatClient(cfg, () => times[i++]);
+    const reply = await client.complete([], []);
+    expect(reply.content).toBe('ok');
+    expect(client.getUsage()).toMatchObject({ calls: 1, reportedCalls: 0, totalTokens: 0, activeMs: 3 });
+  });
+
+  it('does not count a failed (non-OK) call in usage', async () => {
+    stubFetch(() => ({ status: 500, text: 'boom' }));
+    const client = new RuntimeChatClient(cfg);
+    await expect(client.complete([], [])).rejects.toThrow();
+    expect(client.getUsage()).toMatchObject({ calls: 0, reportedCalls: 0, activeMs: 0 });
+  });
 });
