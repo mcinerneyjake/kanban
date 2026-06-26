@@ -120,4 +120,30 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))));
     await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/timed out/);
   });
+
+  it('available() returns true and probes /models when the runtime responds', async () => {
+    let url = '';
+    stubFetch((u) => { url = u; return { json: { data: [] } }; });
+    expect(await new RuntimeChatClient(cfg).available()).toBe(true);
+    expect(url).toBe('http://test/v1/models');
+  });
+
+  it('available() returns false on a non-OK status', async () => {
+    stubFetch(() => ({ status: 503, text: 'down' }));
+    expect(await new RuntimeChatClient(cfg).available()).toBe(false);
+  });
+
+  it('available() returns false when the runtime is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))));
+    expect(await new RuntimeChatClient(cfg).available()).toBe(false);
+  });
+
+  it('available() sends a bearer header only when an api key is configured', async () => {
+    let auth: string | null = 'unset';
+    stubFetch((_u, init) => { auth = new Headers(init.headers).get('authorization'); return { json: { data: [] } }; });
+    await new RuntimeChatClient({ ...cfg, apiKey: 'sk-9' }).available();
+    expect(auth).toBe('Bearer sk-9');
+    await new RuntimeChatClient(cfg).available();
+    expect(auth).toBeNull();
+  });
 });

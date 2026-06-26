@@ -41,6 +41,7 @@ export const api = {
       send('/api/intake/search', 'POST', { query, limit }),
     propose: (report: string): Promise<ProposeResult> =>
       send('/api/intake/propose', 'POST', { report }),
+    health: (): Promise<{ available: boolean }> => get('/api/intake/health'),
   },
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),
   update: (id: string, data: Partial<Ticket>): Promise<Ticket> => send(`/api/tickets/${id}`, 'PATCH', data),

@@ -10,6 +10,8 @@ import { type ChatTool } from './tools.js';
 const DEFAULT_BASE_URL = 'http://localhost:1234/v1';
 // Local models can be slow to first token; give them generous headroom.
 const CHAT_TIMEOUT_MS = 120_000;
+// A liveness probe should fail fast — far shorter than a generation request.
+const PING_TIMEOUT_MS = 5_000;
 
 export interface LlmConfig {
   baseUrl: string;
@@ -94,6 +96,22 @@ export class RuntimeChatClient implements ChatClient {
     if (!isChatCompletion(json)) throw new Error('Unexpected /chat/completions response shape');
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
+  }
+
+  // Liveness probe for the runtime — a cheap GET to the OpenAI-compatible
+  // /models endpoint. Returns false on any failure (down, timeout, non-200) so
+  // callers can branch without a try/catch.
+  async available(): Promise<boolean> {
+    try {
+      const headers: Record<string, string> = {};
+      if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
+      const res = await fetch(`${this.cfg.baseUrl}/models`, {
+        headers, signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   private async fetchCompletion(messages: ChatMessage[], tools: ChatTool[]): Promise<Response> {

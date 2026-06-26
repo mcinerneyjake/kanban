@@ -576,3 +576,28 @@ describe('POST /api/intake/propose', () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe('GET /api/intake/health', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reports available:true when the chat runtime responds', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))));
+    const res = await request(app).get('/api/intake/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: true });
+  });
+
+  it('reports available:false when the runtime is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
+    const res = await request(app).get('/api/intake/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false });
+  });
+
+  it('reports available:false (still 200, never 503) when the runtime errors', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('nope', { status: 500 }))));
+    const res = await request(app).get('/api/intake/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false });
+  });
+});
