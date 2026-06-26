@@ -5,6 +5,7 @@ import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
 import { type Prefill } from '../lib/proposalPrefill.js';
+import Spinner from './Spinner.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -150,7 +151,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                 <>
                   <div className="subtasks-head">
                     <span>Related tickets</span>
-                    {related.loading && <span className="related-spinner" aria-hidden="true" />}
+                    {related.loading && <Spinner />}
                   </div>
                   <div className="subtask-list">
                     {related.matches.map((m) => {
@@ -167,7 +168,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                 </>
               ) : relatedState === 'searching' ? (
                 <div className="subtasks-head">
-                  <span className="related-spinner" aria-hidden="true" />
+                  <Spinner />
                   <span>Searching related tickets…</span>
                 </div>
               ) : (
