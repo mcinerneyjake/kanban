@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
-import { STATUS_IDS, TYPES, PRIORITIES, type Ticket } from '../shared/constants.js';
+import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, type Ticket, type DashboardSummary } from '../shared/constants.js';
 
 // ---------------------------------------------------------------------------
 // Service layer: the ONLY module that touches the filesystem. Routes call
@@ -315,6 +315,43 @@ export async function searchTickets(q: string): Promise<Ticket[]> {
   return tickets.filter(
     (t) => t.title.toLowerCase().includes(term) || t.body.toLowerCase().includes(term),
   );
+}
+
+// Number of rows shown in the dashboard's "recently updated" widget.
+const RECENT_LIMIT = 8;
+
+// Pure aggregation over a ticket list — the read-side rollup behind the
+// dashboard. Archived tickets are excluded (they're off the active board);
+// passing a `project` scopes every count to that project. Kept pure (no IO) so
+// it's trivially testable; summarizeBoard() supplies the live ticket list.
+export function summarize(tickets: Ticket[], project: string | null = null): DashboardSummary {
+  const scoped = tickets.filter(
+    (t) => t.status !== 'archived' && (project === null || t.project === project),
+  );
+  const byStatus = BOARD_STATUSES.map((s) => ({
+    status: s.id,
+    count: scoped.filter((t) => t.status === s.id).length,
+  }));
+  const byPriority = PRIORITIES.map((priority) => ({
+    priority,
+    count: scoped.filter((t) => t.priority === priority).length,
+  }));
+  const byType = TYPES.map((type) => ({
+    type,
+    count: scoped.filter((t) => t.type === type).length,
+  }));
+  // ISO timestamps sort lexicographically = chronologically; newest first.
+  const recentlyUpdated = [...scoped]
+    .sort((a, b) => b.updated.localeCompare(a.updated))
+    .slice(0, RECENT_LIMIT)
+    .map(({ id, title, status, priority, project: p, updated }) => ({
+      id, title, status, priority, project: p, updated,
+    }));
+  return { project, total: scoped.length, byStatus, byPriority, byType, recentlyUpdated };
+}
+
+export async function summarizeBoard(project: string | null = null): Promise<DashboardSummary> {
+  return summarize(await listTickets(), project);
 }
 
 export async function deleteTicket(id: string): Promise<void> {

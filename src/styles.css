@@ -18,6 +18,11 @@
   --error-border: #ffbdad;
   --modal-bg: #fff;
   --preview-bg: #fafbfc;
+  --st-backlog: #97a0af;
+  --st-todo: #0052cc;
+  --st-in-progress: #ffab00;
+  --st-qa: #6554c0;
+  --st-done: #36b37e;
 }
 
 [data-theme="dark"] {
@@ -40,6 +45,11 @@
   --error-border: #6d2020;
   --modal-bg: #161b22;
   --preview-bg: #0d1117;
+  --st-backlog: #8b949e;
+  --st-todo: #58a6ff;
+  --st-in-progress: #d29922;
+  --st-qa: #a371f7;
+  --st-done: #3fb950;
 }
 
 * { box-sizing: border-box; }
@@ -54,7 +64,15 @@ body {
 /* Flex column so the archive lane can pin to the bottom of the viewport
    (margin-top:auto below). min-height fills short boards; a tall board grows
    past it and scrolls, with the archive trailing at the end as usual. */
+.layout {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
 .app {
+  flex: 1;
+  min-width: 0;
   padding: 16px 24px;
   display: flex;
   flex-direction: column;
@@ -744,3 +762,148 @@ body {
   font-size: 13px;
   color: var(--muted);
 }
+
+/* --- Sidebar (hover-to-expand rail) -------------------------------------- */
+/* Footprint reserved in the flex row; the panel itself is fixed and overlays
+   content as it expands, so hovering never reflows the board. */
+.sidebar-rail { width: 56px; flex-shrink: 0; }
+
+.sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100vh;
+  width: 56px;
+  z-index: 40;
+  background: var(--col-bg);
+  border-right: 1px solid var(--border);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: nowrap;
+  transition: width 0.15s ease, padding 0.15s ease, box-shadow 0.15s ease;
+}
+/* Expand on hover, or when a control inside it has focus (keeps the project
+   dropdown usable without the rail snapping shut). */
+.sidebar:hover, .sidebar:focus-within {
+  width: 210px;
+  padding: 12px;
+  box-shadow: 2px 0 14px rgba(0, 0, 0, 0.18);
+}
+
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; }
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.sidebar:hover .sidebar-item,
+.sidebar:focus-within .sidebar-item { padding: 8px 10px; }
+.sidebar-item:hover:not(.active) { color: var(--text); background: var(--btn-bg); }
+.sidebar-item.active {
+  background: var(--card-bg);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.sidebar-icon { font-size: 18px; line-height: 1; width: 24px; text-align: center; flex-shrink: 0; }
+
+/* Labels fade in on expand; the dashboard config is hidden until then. */
+.sidebar-text { opacity: 0; transition: opacity 0.12s ease; }
+.sidebar:hover .sidebar-text,
+.sidebar:focus-within .sidebar-text { opacity: 1; }
+
+.sidebar-spacer { flex: 1; }
+.sidebar-theme { margin-top: 4px; }
+
+/* --- Dashboard ------------------------------------------------------------ */
+.dashboard { display: flex; flex-direction: column; gap: 16px; }
+
+/* Auto-refresh toggle inside the Config popover. */
+.dash-autorefresh {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dash-total { font-size: 14px; color: var(--muted); }
+.dash-total strong { color: var(--text); }
+
+.dash-empty, .dash-widget-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+.dash-empty { padding: 24px 0; }
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.dash-widget {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.dash-widget--wide { grid-column: 1 / -1; }
+.dash-widget-title {
+  margin: 0 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Donut + legend */
+.donut-wrap { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.donut { width: 150px; height: 150px; flex-shrink: 0; }
+.donut-total { font-size: 28px; font-weight: 700; fill: var(--text); }
+.donut-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.donut-legend li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.legend-label { color: var(--text); }
+.legend-count { color: var(--muted); margin-left: auto; padding-left: 12px; }
+
+/* Priority bars */
+.bar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.bar-row { display: flex; align-items: center; gap: 10px; }
+.bar-label { width: 64px; font-size: 13px; text-transform: capitalize; color: var(--muted); }
+.bar-track { flex: 1; height: 14px; background: var(--col-bg); border-radius: 7px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 7px; min-width: 2px; transition: width 0.3s ease; }
+.bar-count { width: 24px; text-align: right; font-size: 13px; color: var(--text); }
+
+/* Recently updated */
+.recent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+.recent-list li:last-child .recent-row { border-bottom: none; }
+.recent-row:hover { background: var(--col-bg); }
+.recent-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-status { font-weight: 600; white-space: nowrap; }
+.recent-date { color: var(--muted); white-space: nowrap; }

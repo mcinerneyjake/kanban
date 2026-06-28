@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, searchTickets, HttpError } from './tickets.js';
+import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, searchTickets, summarize, summarizeBoard, HttpError } from './tickets.js';
+import type { Ticket } from '../shared/constants.js';
 
 let tmpDir: string;
 
@@ -532,5 +533,94 @@ describe('assignee field', () => {
     const t = await createTicket({ title: 'Preserve assignee', assignee: 'Alice' });
     const updated = await updateTicket(t.id, { title: 'Renamed' });
     expect(updated.assignee).toBe('Alice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('summarize (pure aggregation)', () => {
+  const mk = (over: Partial<Ticket>): Ticket => ({
+    id: over.id ?? 't', title: over.title ?? 'T', type: over.type ?? 'task',
+    priority: over.priority ?? 'medium', status: over.status ?? 'backlog', order: over.order ?? 0,
+    created: over.created ?? '2026-01-01T00:00:00.000Z', updated: over.updated ?? '2026-01-01T00:00:00.000Z',
+    body: '', project: over.project ?? null, blockers: [], parent: null, dueDate: null, assignee: null,
+  });
+
+  const find = <T extends Record<string, unknown>>(rows: T[], key: keyof T, val: unknown) =>
+    rows.find((r) => r[key] === val);
+
+  it('returns all-zero buckets and empty recents for an empty board', () => {
+    const s = summarize([]);
+    expect(s.total).toBe(0);
+    expect(s.project).toBeNull();
+    expect(s.byStatus.every((b) => b.count === 0)).toBe(true);
+    expect(s.byPriority.every((b) => b.count === 0)).toBe(true);
+    expect(s.byType.every((b) => b.count === 0)).toBe(true);
+    expect(s.recentlyUpdated).toEqual([]);
+  });
+
+  it('counts by status, priority, and type', () => {
+    const s = summarize([
+      mk({ id: 'a', status: 'todo', priority: 'high', type: 'bug' }),
+      mk({ id: 'b', status: 'todo', priority: 'low', type: 'feature' }),
+      mk({ id: 'c', status: 'done', priority: 'high', type: 'bug' }),
+    ]);
+    expect(s.total).toBe(3);
+    expect(find(s.byStatus, 'status', 'todo')?.count).toBe(2);
+    expect(find(s.byStatus, 'status', 'done')?.count).toBe(1);
+    expect(find(s.byPriority, 'priority', 'high')?.count).toBe(2);
+    expect(find(s.byType, 'type', 'bug')?.count).toBe(2);
+  });
+
+  it('excludes archived tickets from every count', () => {
+    const s = summarize([
+      mk({ id: 'a', status: 'done' }),
+      mk({ id: 'b', status: 'archived' }),
+    ]);
+    expect(s.total).toBe(1);
+    expect(s.byStatus.reduce((n, b) => n + b.count, 0)).toBe(1);
+    expect(s.recentlyUpdated).toHaveLength(1);
+  });
+
+  it('scopes counts to a project when given', () => {
+    const s = summarize([
+      mk({ id: 'a', project: 'kanban' }),
+      mk({ id: 'b', project: 'other' }),
+      mk({ id: 'c', project: null }),
+    ], 'kanban');
+    expect(s.project).toBe('kanban');
+    expect(s.total).toBe(1);
+  });
+
+  it('orders recentlyUpdated newest-first and caps at 8', () => {
+    const many = Array.from({ length: 10 }, (_, i) =>
+      mk({ id: `t${i}`, updated: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z` }));
+    const s = summarize(many);
+    expect(s.recentlyUpdated).toHaveLength(8);
+    expect(s.recentlyUpdated[0].id).toBe('t9'); // latest date
+    expect(s.recentlyUpdated[0].updated > s.recentlyUpdated[1].updated).toBe(true);
+  });
+
+  it('recentlyUpdated rows omit the body', () => {
+    const s = summarize([mk({ id: 'a' })]);
+    expect(s.recentlyUpdated[0]).not.toHaveProperty('body');
+  });
+});
+
+describe('summarizeBoard (reads the live board)', () => {
+  it('aggregates tickets from disk', async () => {
+    await writeRaw('aaaaaaaaaaaa', makeRaw('One', 1, { status: 'todo', priority: 'high' }));
+    await writeRaw('bbbbbbbbbbbb', makeRaw('Two', 2, { status: 'done', priority: 'high' }));
+    const s = await summarizeBoard();
+    expect(s.total).toBe(2);
+    expect(s.byPriority.find((b) => b.priority === 'high')?.count).toBe(2);
+  });
+
+  it('filters to a single project', async () => {
+    await writeRaw('cccccccccccc', makeRaw('K', 1, { project: 'kanban' }));
+    await writeRaw('dddddddddddd', makeRaw('O', 2, { project: 'other' }));
+    const s = await summarizeBoard('kanban');
+    expect(s.total).toBe(1);
+    expect(s.project).toBe('kanban');
   });
 });

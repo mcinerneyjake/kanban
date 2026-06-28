@@ -10,6 +10,7 @@ import {
   updateTicket,
   deleteTicket,
   archiveStaleTickets,
+  summarizeBoard,
   HttpError,
 } from './tickets.js';
 import { getTicketIndex } from '../agent/indexCache.js';
@@ -36,6 +37,15 @@ const wrap = (fn: AsyncHandler) => (req: Request, res: Response, _next: NextFunc
 
 app.get('/api/projects', wrap(async (_req, res) => {
   res.json(await listProjects());
+}));
+
+// Read-side aggregation for the dashboard view. `?project=` scopes every count
+// to one project; omitted = all projects. Archived tickets are excluded.
+app.get('/api/dashboard', wrap(async (req, res) => {
+  const project = typeof req.query.project === 'string' && req.query.project.trim()
+    ? req.query.project.trim()
+    : null;
+  res.json(await summarizeBoard(project));
 }));
 
 app.get('/api/tickets', wrap(async (req, res) => {
