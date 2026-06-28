@@ -62,6 +62,43 @@ describe('GET /api/tickets', () => {
   });
 });
 
+describe('GET /api/dashboard', () => {
+  // Seeds a ticket with an explicit project line in its frontmatter.
+  async function seedWithProject(id: string, project: string) {
+    const content = [
+      '---', `title: '${id}'`, 'type: task', 'priority: medium', 'status: todo',
+      'order: 1', `project: ${project}`,
+      "created: '2026-01-01T00:00:00.000Z'", "updated: '2026-01-01T00:00:00.000Z'", '---', '',
+    ].join('\n');
+    await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+  }
+
+  it('returns an all-zero summary for an empty board', async () => {
+    const res = await request(app).get('/api/dashboard');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.project).toBeNull();
+    expect(Array.isArray(res.body.byStatus)).toBe(true);
+  });
+
+  it('aggregates all tickets when no project is given', async () => {
+    await seedTicket('abc123456789', 'First');
+    await seedTicket('def123456789', 'Second');
+    const res = await request(app).get('/api/dashboard');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+  });
+
+  it('scopes the summary to ?project=', async () => {
+    await seedWithProject('aaaaaaaaaaaa', 'kanban');
+    await seedWithProject('bbbbbbbbbbbb', 'other');
+    const res = await request(app).get('/api/dashboard?project=kanban');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.project).toBe('kanban');
+  });
+});
+
 describe('GET /api/tickets/:id', () => {
   it('returns the ticket when it exists', async () => {
     await seedTicket('abc123456789', 'My ticket');

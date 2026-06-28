@@ -1,13 +1,17 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { api } from './api.js';
 import Board from './components/Board.jsx';
+import Dashboard from './components/Dashboard.jsx';
+import Sidebar, { type View } from './components/Sidebar.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
+import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
 import { useTheme } from './useTheme.js';
+import { useDashboardConfig } from './useDashboardConfig.js';
 import type { Ticket } from '../shared/constants.js';
 
 // Single source of UI state. Tickets are reloaded from the server after every
@@ -24,6 +28,10 @@ export default function App() {
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [view, setView] = useState<View>('board');
+  const dash = useDashboardConfig();
+  // Bumped on every ticket reload so the dashboard re-fetches its aggregates.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const params = encode(filter);
@@ -37,7 +45,9 @@ export default function App() {
   }, [searchInput]);
 
   const load = useCallback(() => {
-    api.list().then(setTickets).catch((e: Error) => setError(e.message));
+    api.list()
+      .then((t) => { setTickets(t); setRefreshKey((k) => k + 1); })
+      .catch((e: Error) => setError(e.message));
   }, []);
 
   const projects = useMemo(
@@ -168,50 +178,77 @@ export default function App() {
   }, [load]);
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <h1>Kanban</h1>
-        <div className="topbar-actions">
-          <button className="theme-toggle" onClick={toggle} title="Toggle theme">
-            {theme === 'dark' ? '☀️' : '🌙'}
-          </button>
-          <input
-            className="search-input"
-            type="search"
-            placeholder="Search tickets…"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+    <div className="layout">
+      <Sidebar
+        view={view}
+        onViewChange={setView}
+        theme={theme}
+        onToggleTheme={toggle}
+      />
+
+      <div className="app">
+        <header className="topbar">
+          <h1>Kanban</h1>
+          <div className="topbar-actions">
+            {view === 'board' ? (
+              <>
+                <input
+                  className="search-input"
+                  type="search"
+                  placeholder="Search tickets…"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                />
+                <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
+              </>
+            ) : (
+              <DashboardConfigPopover projects={projects} dash={dash} />
+            )}
+            <button className="btn primary" onClick={() => openTicket('new')}>
+              + New ticket
+            </button>
+          </div>
+        </header>
+
+        {error && (
+          <div className="error" onClick={() => setError(null)}>
+            {error} — click to dismiss
+          </div>
+        )}
+
+        {view === 'board' ? (
+          <>
+            <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+            <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
+          </>
+        ) : (
+          <Dashboard
+            project={dash.project}
+            visible={dash.visible}
+            autoRefresh={dash.autoRefresh}
+            refreshKey={refreshKey}
+            onOpen={(id) => {
+              const t = ticketsRef.current.find((x) => x.id === id);
+              if (t) openTicket(t);
+            }}
           />
-          <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
-          <button className="btn primary" onClick={() => openTicket('new')}>
-            + New ticket
-          </button>
-        </div>
-      </header>
+        )}
 
-      {error && (
-        <div className="error" onClick={() => setError(null)}>
-          {error} — click to dismiss
-        </div>
-      )}
-
-      <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
-      <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
-
-      {editing && (
-        <TicketModal
-          key={editing === 'new' ? 'new' : editing.id}
-          ticket={editing === 'new' ? null : editing}
-          initial={prefill ?? undefined}
-          allTickets={tickets}
-          projects={projects}
-          assignees={assignees}
-          onSave={handleSave}
-          onDelete={handleDelete}
-          onOpen={openTicket}
-          onClose={closeTicket}
-        />
-      )}
+        {editing && (
+          <TicketModal
+            key={editing === 'new' ? 'new' : editing.id}
+            ticket={editing === 'new' ? null : editing}
+            initial={prefill ?? undefined}
+            allTickets={tickets}
+            projects={projects}
+            assignees={assignees}
+            onSave={handleSave}
+            onDelete={handleDelete}
+            onOpen={openTicket}
+            onClose={closeTicket}
+          />
+        )}
+      </div>
     </div>
   );
 }

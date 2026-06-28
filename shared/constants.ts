@@ -55,3 +55,26 @@ export type Ticket = {
   dueDate: string | null
   assignee: string | null
 }
+
+// --- Dashboard aggregation -------------------------------------------------
+// Shape returned by the /api/dashboard aggregation endpoint, shared so the
+// server (producer) and the React client (consumer) can't drift. Counts exclude
+// archived tickets; ordering follows the canonical enum order so the client can
+// render without re-sorting.
+
+export type StatusCount = { status: StatusId; count: number }
+export type PriorityCount = { priority: Priority; count: number }
+export type TypeCount = { type: TicketType; count: number }
+
+// A trimmed ticket for the "recently updated" widget — just the fields the row
+// needs, so the endpoint doesn't ship every ticket body.
+export type RecentTicket = Pick<Ticket, 'id' | 'title' | 'status' | 'priority' | 'project' | 'updated'>
+
+export type DashboardSummary = {
+  project: string | null // null = all projects
+  total: number
+  byStatus: StatusCount[]
+  byPriority: PriorityCount[]
+  byType: TypeCount[]
+  recentlyUpdated: RecentTicket[]
+}
