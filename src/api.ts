@@ -36,6 +36,7 @@ export interface ProposeResult { proposal: IntakeProposal | null; summary: strin
 
 export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
+  get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),
   intake: {

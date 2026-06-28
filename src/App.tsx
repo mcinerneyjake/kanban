@@ -10,6 +10,7 @@ import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
+import { resolveTicket } from './lib/resolveTicket.js';
 import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
 import type { Ticket } from '../shared/constants.js';
@@ -228,8 +229,12 @@ export default function App() {
             autoRefresh={dash.autoRefresh}
             refreshKey={refreshKey}
             onOpen={(id) => {
-              const t = ticketsRef.current.find((x) => x.id === id);
-              if (t) openTicket(t);
+              // The dashboard can surface tickets (via polling/project filter)
+              // that aren't in App's list yet, so fall back to a fetch rather
+              // than dead-clicking when the id isn't found locally.
+              resolveTicket(id, ticketsRef.current, api.get)
+                .then(openTicket)
+                .catch((e) => setError(e instanceof Error ? e.message : String(e)));
             }}
           />
         )}
