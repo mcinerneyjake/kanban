@@ -92,6 +92,44 @@ function switchTarget(sub, args) {
   return null;
 }
 
+// Destructive git flags that no part of the ticket workflow needs, blocked on
+// ANY branch. The broad `git …` allow-rules in .claude/settings.json are only
+// safe because this hook rejects the dangerous shapes they would otherwise admit
+// (force-push, force-add over .gitignore, force branch-delete, hard reset,
+// untracked-file deletion, force checkout). Returns a reason or null.
+export function destructiveGitReason(sub, args) {
+  const has = (...flags) => args.some((a) => flags.includes(a));
+  switch (sub) {
+    case 'push':
+      if (has('-f', '--force') || args.some((a) => a === '--force-with-lease' || a.startsWith('--force-with-lease=')))
+        return 'git push --force rewrites remote history. Force-push is never part of the workflow — push normally and open a PR.';
+      return null;
+    case 'add':
+    case 'stage':
+      if (has('-f', '--force'))
+        return 'git add -f overrides .gitignore and can stage ignored files (e.g. secrets / build artifacts). Stage only intended, non-ignored paths.';
+      return null;
+    case 'branch':
+      if (has('-D'))
+        return 'git branch -D force-deletes a branch, discarding unmerged commits. Use -d (safe delete) instead.';
+      return null;
+    case 'reset':
+      if (has('--hard'))
+        return 'git reset --hard irreversibly discards working-tree changes. Not part of the workflow.';
+      return null;
+    case 'clean':
+      if (args.some((a) => /^-[a-z]*f/i.test(a)))
+        return 'git clean -f permanently deletes untracked files. Not part of the workflow.';
+      return null;
+    case 'checkout':
+      if (has('-f', '--force'))
+        return 'git checkout -f discards local changes. Use git switch / git restore explicitly instead.';
+      return null;
+    default:
+      return null;
+  }
+}
+
 // Decide whether a (possibly compound) command should be blocked. `getBranch`
 // is injected so the logic is pure and testable; it returns the current branch
 // name or null when it can't be determined. Returns { blocked, reason }.
@@ -113,6 +151,9 @@ export function decide(command, getBranch) {
     const git = parseGit(segment);
     if (!git) continue;
     const { sub, args } = git;
+
+    const destructive = destructiveGitReason(sub, args);
+    if (destructive) return { blocked: true, reason: destructive };
 
     if ((sub === 'add' || sub === 'stage') && stagesEverything(args)) {
       return {
