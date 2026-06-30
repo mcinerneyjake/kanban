@@ -17,7 +17,7 @@
     "test:watch": "vitest",
     "review": "node scripts/review.mjs",
     "seed": "node scripts/seed.mjs",
-    "lint": "eslint src server shared mcp agent",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "test:e2e": "playwright test",
