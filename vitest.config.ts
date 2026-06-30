@@ -24,6 +24,9 @@ export default defineConfig({
       // without pinning the suite to its current high-water mark (~97%/94%).
       // A floor, not a target — see CLAUDE.md testing guidance.
       thresholds: {
+        // perFile so an untested new function can't hide behind the aggregate
+        // (~97%) average — each included layer must independently clear the floor.
+        perFile: true,
         lines: 80,
         functions: 80,
         branches: 75,
