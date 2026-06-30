@@ -3,8 +3,8 @@ import {
   listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError,
 } from '../server/tickets.js';
 import {
-  BOARD_STATUSES, isStatusId, isTicketType, isPriority,
-  type Ticket,
+  BOARD_STATUSES, STATUS_IDS, isStatusId, isTicketType, isPriority,
+  type Ticket, type StatusId,
 } from '../shared/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -50,6 +50,16 @@ function isStringArray(val: unknown): val is string[] {
   return Array.isArray(val) && val.every((item) => typeof item === 'string');
 }
 
+// Validate a status string against the per-call allowed set, returning the
+// narrowed StatusId. Shared by the create/update field extractor and the
+// list_tickets status filter so the two validation paths can't drift.
+function validatedStatus(value: string, allowedStatuses: readonly string[]): StatusId {
+  if (!isStatusId(value) || !allowedStatuses.includes(value)) {
+    throw new HttpError(400, `Invalid status: ${value} (allowed: ${allowedStatuses.join(', ')})`);
+  }
+  return value;
+}
+
 type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
 // `allowedStatuses` is the per-operation status set (create vs update) — passed
@@ -73,12 +83,7 @@ function extractTicketFields(
     if (!isPriority(args.priority)) throw new HttpError(400, `Invalid priority: ${args.priority}`);
     out.priority = args.priority;
   }
-  if (typeof args.status === 'string') {
-    const msg = `Invalid status: ${args.status} (allowed: ${allowedStatuses.join(', ')})`;
-    if (!isStatusId(args.status)) throw new HttpError(400, msg);
-    if (!allowedStatuses.includes(args.status)) throw new HttpError(400, msg);
-    out.status = args.status;
-  }
+  if (typeof args.status === 'string') out.status = validatedStatus(args.status, allowedStatuses);
   if (typeof args.body === 'string') out.body = args.body;
   if (typeof args.project === 'string') out.project = args.project;
   else if (args.project === null) out.project = null;
@@ -93,14 +98,101 @@ function extractTicketFields(
 }
 
 // ---------------------------------------------------------------------------
+// list_tickets projection + filtering. The list view returns a LIGHTWEIGHT
+// summary of every ticket — never the full markdown body, which can be many KB
+// each (long `## Implementation summary` blocks) and belongs to get_ticket.
+// This keeps the result well under the MCP tool-result token limit and matches
+// the tool's advertised contract. The service layer (listTickets) is left
+// returning full Ticket[] so the agent's retrieval/embedding path is untouched.
+// ---------------------------------------------------------------------------
+
+type TicketSummary = Pick<Ticket, 'id' | 'title' | 'status' | 'priority' | 'type' | 'project'> & {
+  summary: string
+}
+
+const SUMMARY_MAX = 100;
+
+// One-glance gist: the first non-empty body line, with only *proper* leading
+// markdown markers stripped — a heading (`#`..`######`) or list/quote marker
+// (`-`/`*`/`>`) that is followed by whitespace. Content like "#1 priority" or
+// "-5C offset" is preserved (no following space → not a marker). Capped at
+// SUMMARY_MAX, counting by code point (Array.from) so the cut never splits a
+// surrogate pair. Loops and returns early — no full-body transform.
+function summarize(body: string): string {
+  for (const raw of body.split('\n')) {
+    const line = raw.trim().replace(/^(?:#{1,6}\s+|[-*>]\s+)+/, '').trim();
+    if (line.length === 0) continue;
+    const chars = Array.from(line);
+    return chars.length > SUMMARY_MAX ? `${chars.slice(0, SUMMARY_MAX - 1).join('')}…` : line;
+  }
+  return '';
+}
+
+function toSummary(t: Ticket): TicketSummary {
+  return {
+    id: t.id,
+    title: t.title,
+    status: t.status,
+    priority: t.priority,
+    type: t.type,
+    project: t.project,
+    summary: summarize(t.body),
+  };
+}
+
+type ListFilters = { status: StatusId | null; project: string | null; query: string | null }
+
+// Trim a string filter arg; a non-string or blank value → null (no filter),
+// matching the trim convention of the HTTP /api/tickets route.
+function normalizeFilter(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+// The status filter is validated against ALL valid statuses (STATUS_IDS,
+// including `archived` so archived tickets can be listed) — matching the tool's
+// advertised enum. A present-but-invalid status (wrong type, or outside the
+// enum) is REJECTED rather than coerced to "no filter", so a malformed scope
+// can never silently return the whole board.
+function extractListFilters(args: Record<string, unknown> | undefined): ListFilters {
+  let status: StatusId | null = null;
+  if (args?.status !== undefined && args.status !== null) {
+    if (typeof args.status !== 'string') {
+      throw new HttpError(400, `Invalid status: ${String(args.status)} (allowed: ${STATUS_IDS.join(', ')})`);
+    }
+    status = validatedStatus(args.status, STATUS_IDS);
+  }
+  return { status, project: normalizeFilter(args?.project), query: normalizeFilter(args?.query) };
+}
+
+// AND-combine the optional filters. query is a case-insensitive title substring.
+function applyListFilters(tickets: Ticket[], f: ListFilters): Ticket[] {
+  const q = f.query?.toLowerCase();
+  return tickets.filter((t) =>
+    (f.status === null || t.status === f.status) &&
+    (f.project === null || t.project === f.project) &&
+    (q === undefined || t.title.toLowerCase().includes(q)),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
 
 export const TOOLS: Tool[] = [
   {
     name: 'list_tickets',
-    description: 'List all kanban tickets with their id, title, status, priority, type, and description. Use this first to find a ticket by title before working on it.',
-    inputSchema: { type: 'object', properties: {}, required: [] },
+    description: 'List kanban tickets as a lightweight summary — id, title, status, priority, type, project, and a one-line summary of each body (NOT the full body; call get_ticket for that). Optionally filter by status, project, or a case-insensitive title substring (query). Use this first to find a ticket before working on it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: STATUS_IDS, description: 'Only return tickets with this status (includes archived)' },
+        project: { type: 'string', description: 'Only return tickets in this project' },
+        query: { type: 'string', description: 'Case-insensitive substring match on the ticket title' },
+      },
+      required: [],
+    },
   },
   {
     name: 'get_ticket',
@@ -184,8 +276,14 @@ export async function handleToolCall(
 ): Promise<ToolResult> {
   try {
     switch (name) {
-      case 'list_tickets':
-        return { content: [textContent(JSON.stringify(await listTickets(), null, 2))] };
+      case 'list_tickets': {
+        const filters = extractListFilters(args); // throws on a present-but-invalid status
+        const summaries = applyListFilters(await listTickets(), filters).map(toSummary);
+        // Compact (no indent): this is a potentially large array, and the extra
+        // whitespace from pretty-printing is pure token cost for an LLM reader.
+        // Single-object results (get_ticket etc.) stay pretty-printed below.
+        return { content: [textContent(JSON.stringify(summaries))] };
+      }
 
       case 'get_ticket': {
         const id = extractId(args);
