@@ -20,7 +20,7 @@ If no tickets are `todo`, just show the summary and wait for instructions.
 
 ## MCP server
 
-The kanban MCP server is wired in `.mcp.json` at the project root (project scope) and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. If the tools are not available in a session, check that `.mcp.json` has the `kanban` entry, that the server is approved (Claude Code prompts to trust project MCP servers on first load), and restart the session — MCP servers load at startup and are not hot-reloaded. Note: MCP servers declared in `.claude/settings.json` are ignored — that file does not support an `mcpServers` key.
+The kanban MCP server is wired in `.mcp.json` at the project root (project scope) and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. The server is **auto-enabled** via `enabledMcpjsonServers: ["kanban"]` in `.claude/settings.json` (no trust prompt), and the five non-destructive tools are allowlisted there so they run **without permission prompts** (`delete_ticket` is intentionally left to prompt). If the tools are not available in a session, check that `.mcp.json` has the `kanban` entry and restart the session — MCP servers load at startup and are not hot-reloaded. Note: MCP server **definitions** in `.claude/settings.json` are ignored — that file does not support an `mcpServers` key (it does support `enabledMcpjsonServers`, which enables servers defined in `.mcp.json`).
 
 ## Ticket workflow
 
@@ -31,7 +31,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 3. Implement the work described in the ticket's `body`
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
-6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then run a `/code-review` pass (and `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and proceed to step 7.
+6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then at the manual-review pause **ask whether the user wants a `/code-review`** (run it only if they opt in — it costs tokens — plus `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and proceed to step 7.
 7. Append an `## Implementation summary` to the ticket body via `update_ticket`. Do **not** set `status: "done"` yet — that happens after the PR merges (see **Branch, commit & PR workflow → 4. Merge**).
 
 The implementation summary **must** include a test line — either:
@@ -95,6 +95,16 @@ Every ticket lands on its own branch and merges to `main` via a **squash-merged 
 
 > **Enforced locally:** a PreToolUse hook (`.claude/hooks/guard-bash.mjs`, wired in `.claude/settings.json`) blocks `git add -A`/`--all`/`.`, commits on `main`, and pushes to `main` before they run — these rules are no longer honor-system. (GitHub branch protection backstops the same at merge time — see the end of this section.)
 
+### Permissions (prompt-free workflow)
+
+The workflow commands run **prompt-free**: `.claude/settings.json` allowlists the non-destructive MCP tools (`list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`) and the workflow shell commands. Safety is **layered**, not a function of the allowlist alone:
+
+- **git rules are intentionally broad** (`git add`/`commit`/`push`/…) but safe because the **`guard-bash` hook** inspects each actual command and blocks the dangerous shapes — `git add -A`/`-f`, `commit -a`, commits/pushes to `main`, force-push, `branch -D`, `reset --hard`, `clean -f`, `checkout -f` (proven by `guard-bash.test.mjs`).
+- **`gh`/`npm`/`npx` rules have no such runtime hook**, so they are pinned to **specific subcommands** (`npm run lint`, `gh pr merge`, `npx vitest run *`, …) — never a wildcarded subcommand like `npm run *`.
+- **`delete_ticket` and destructive shapes stay excluded** — they still prompt.
+
+`.claude/settings.audit.test.mjs` enforces this in the gate: it pins the non-git allows to a reviewed set, rejects explicit dangerous tokens, keeps `delete_ticket` gated, and asserts the `guard-bash` backstop is wired — **failing CI** if any of those drift. (It does not — and cannot — prove a broad git glob is safe at runtime; that is the hook's job, which is why the two are coupled.)
+
 ### 1. Branch (at `start_ticket`)
 
 When a ticket goes in-progress, cut its branch from an up-to-date `main` **before editing**:
@@ -112,7 +122,7 @@ Example: `chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket`.
 
 ### 2. Commit (once implementation is complete)
 
-Ask **"Ready to commit?"** — do not commit until confirmed. Then:
+Ask **"Ready to commit?"** — do not commit until confirmed. At this gate, also **offer a `/code-review`** (run it only if the user opts in — it costs tokens — and address findings before committing). Then:
 
 1. `git add` only the files changed for this ticket (never `git add -A` — the `guard-bash` hook blocks it).
 2. `git commit` with a message in this shape, passed via heredoc to avoid shell-escaping issues:
@@ -165,6 +175,8 @@ Ask **"Ready to merge?"** — never merge without explicit approval. Then:
 gh pr merge --squash --delete-branch
 git switch main && git pull
 ```
+
+No `--admin` needed: the `main` rulesets require the `gate` / `branch-name` / `review` checks but **0 approvals**, so a normal squash-merge lands once CI is green (a red check still blocks it).
 
 This squashes the branch to a single commit on `main` and deletes the branch locally and remotely. After the merge completes, call `update_ticket` to set `status: "done"` — this is the moment the ticket is officially closed.
 

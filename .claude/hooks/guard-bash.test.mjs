@@ -95,6 +95,36 @@ describe('decide — compound commands & branch tracking', () => {
   });
 });
 
+describe('decide — destructive git flags (blocked on any branch)', () => {
+  it('blocks force-push variants', () => {
+    expect(blocked('git push --force origin feat/x', 'feat/x')).toBe(true);
+    expect(blocked('git push -f origin feat/x', 'feat/x')).toBe(true);
+    expect(blocked('git push --force-with-lease origin feat/x', 'feat/x')).toBe(true);
+  });
+
+  it('blocks git add -f / --force (can stage gitignored secrets)', () => {
+    expect(blocked('git add -f .env', 'feat/x')).toBe(true);
+    expect(blocked('git add --force dist/bundle.js', 'feat/x')).toBe(true);
+  });
+
+  it('blocks git branch -D (force delete) but allows -d', () => {
+    expect(blocked('git branch -D feat/x', 'main')).toBe(true);
+    expect(blocked('git branch -d feat/x', 'main')).toBe(false);
+  });
+
+  it('blocks git reset --hard, git clean -f, git checkout -f', () => {
+    expect(blocked('git reset --hard HEAD~1', 'feat/x')).toBe(true);
+    expect(blocked('git clean -fd', 'feat/x')).toBe(true);
+    expect(blocked('git checkout -f main', 'feat/x')).toBe(true);
+  });
+
+  it('still allows the normal workflow shapes', () => {
+    expect(blocked('git push -u origin feat/x', 'feat/x')).toBe(false);
+    expect(blocked('git add src/App.tsx', 'feat/x')).toBe(false);
+    expect(blocked('git checkout -b feat/y', 'main')).toBe(false);
+  });
+});
+
 describe('decide — edge cases', () => {
   it('does not block when the branch is undeterminable', () => {
     expect(decide('git commit -m "x"', () => null).blocked).toBe(false);

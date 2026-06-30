@@ -40,7 +40,7 @@ export default tseslint.config(
   // All run under Node (ESM); `*.{js,mjs,ts,cjs}` is depth-1 so it never shadows
   // the browser globals on src/**.
   {
-    files: ['scripts/**/*.{js,mjs}', '.claude/hooks/**/*.mjs', '**/*.config.{js,ts,mjs}', '*.{js,mjs,ts,cjs}'],
+    files: ['scripts/**/*.{js,mjs}', '.claude/**/*.{js,mjs}', '**/*.config.{js,ts,mjs}', '*.{js,mjs,ts,cjs}'],
     languageOptions: { globals: globals.node },
   },
   // Playwright e2e specs drive a browser from a Node process, so they touch both.
