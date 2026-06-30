@@ -86,16 +86,123 @@ describe('TOOLS schema', () => {
 });
 
 describe('list_tickets', () => {
-  it('returns all tickets (happy path)', async () => {
-    await seed({ title: 'A' });
+  it('returns a lightweight summary — no full body, includes a one-line summary (happy path)', async () => {
+    await seed({ title: 'A', body: '## Heading\n\nFirst real line.' });
     await seed({ title: 'B' });
     const tickets = asRecordArray(await handleToolCall('list_tickets', undefined));
     expect(tickets).toHaveLength(2);
+    for (const t of tickets) {
+      expect(t).not.toHaveProperty('body');
+      expect(t).toHaveProperty('summary');
+      expect(t).toMatchObject({ id: expect.any(String), title: expect.any(String), status: expect.any(String) });
+    }
+  });
+
+  it('summary is the first non-empty body line, markdown-stripped', async () => {
+    await seed({ title: 'MD', body: '## Title line\n\nbody text' });
+    const [t] = asRecordArray(await handleToolCall('list_tickets', { query: 'MD' }));
+    expect(t.summary).toBe('Title line');
+  });
+
+  it('summary caps a long first line at 100 chars with an ellipsis', async () => {
+    await seed({ title: 'Cap', body: 'y'.repeat(200) });
+    const [t] = asRecordArray(await handleToolCall('list_tickets', { query: 'Cap' }));
+    expect(t.summary).toBe(`${'y'.repeat(99)}…`);
+  });
+
+  it('filters by status', async () => {
+    await seed({ title: 'todo one', status: 'todo' });
+    await seed({ title: 'backlog one', status: 'backlog' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { status: 'todo' }));
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0].title).toBe('todo one');
+  });
+
+  it('filters by project', async () => {
+    await seed({ title: 'in proj', project: 'Alpha' });
+    await seed({ title: 'no proj' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { project: 'Alpha' }));
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0].title).toBe('in proj');
+  });
+
+  it('filters by query (case-insensitive title substring)', async () => {
+    await seed({ title: 'Fix the Login bug' });
+    await seed({ title: 'Add dashboard' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { query: 'login' }));
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0].title).toBe('Fix the Login bug');
+  });
+
+  it('combines filters with AND', async () => {
+    await seed({ title: 'match', status: 'todo', project: 'Alpha' });
+    await seed({ title: 'match', status: 'todo', project: 'Beta' });
+    await seed({ title: 'match', status: 'backlog', project: 'Alpha' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { status: 'todo', project: 'Alpha' }));
+    expect(tickets).toHaveLength(1);
+  });
+
+  it('rejects an invalid status filter (does not silently return everything)', async () => {
+    await seed({ title: 'A' });
+    const res = await handleToolCall('list_tickets', { status: 'nope' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid status');
+  });
+
+  it('rejects a non-string status filter rather than coercing it to no-filter', async () => {
+    await seed({ title: 'A' });
+    await seed({ title: 'B' });
+    const res = await handleToolCall('list_tickets', { status: ['todo'] });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid status');
+  });
+
+  it('accepts archived as a status filter and returns archived tickets', async () => {
+    await seed({ title: 'live', status: 'todo' });
+    await seed({ title: 'gone', status: 'archived' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { status: 'archived' }));
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0].title).toBe('gone');
+  });
+
+  it('trims surrounding whitespace on the query filter', async () => {
+    await seed({ title: 'Trimmable Login' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { query: '  login  ' }));
+    expect(tickets).toHaveLength(1);
+  });
+
+  it('treats a blank project/query filter as no filter', async () => {
+    await seed({ title: 'one' });
+    await seed({ title: 'two' });
+    const tickets = asRecordArray(await handleToolCall('list_tickets', { project: '   ', query: '' }));
+    expect(tickets).toHaveLength(2);
+  });
+
+  it('summary preserves leading content that is not a real markdown marker', async () => {
+    await seed({ title: 'NotMarker', body: '#1 priority issue' });
+    const [t] = asRecordArray(await handleToolCall('list_tickets', { query: 'NotMarker' }));
+    expect(t.summary).toBe('#1 priority issue');
+  });
+
+  it('summary strips a real list marker', async () => {
+    await seed({ title: 'ListItem', body: '- do the thing' });
+    const [t] = asRecordArray(await handleToolCall('list_tickets', { query: 'ListItem' }));
+    expect(t.summary).toBe('do the thing');
   });
 
   it('returns an empty array when the board is empty (edge)', async () => {
     const tickets = asRecordArray(await handleToolCall('list_tickets', undefined));
     expect(tickets).toHaveLength(0);
+  });
+
+  // Guard the agent-RAG safeguard: the TOOL projection drops the body, but the
+  // SERVICE must still return full bodies — agent/retrieval embeds t.body.
+  it('leaves the service returning full bodies (agent retrieval path intact)', async () => {
+    await seed({ title: 'Has body', body: 'real body content' });
+    const viaTool = asRecordArray(await handleToolCall('list_tickets', undefined));
+    expect(viaTool[0]).not.toHaveProperty('body');
+    const viaService = await listTickets();
+    expect(viaService[0].body).toBe('real body content');
   });
 });
 
