@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 // Frontend dev server proxies /api to the Express server so we avoid CORS
 // and can open a single URL (http://localhost:5173) during development.
@@ -11,4 +11,4 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
     },
   },
-})
+});
