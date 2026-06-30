@@ -93,6 +93,8 @@ Never call `create_ticket` before the user has confirmed (or accepted the inferr
 
 Every ticket lands on its own branch and merges to `main` via a **squash-merged PR** — never a direct push to `main`. There are three human-approval gates: **"Ready to commit?"**, **"Ready to open PR?"**, **"Ready to merge?"**. Never cross a gate without explicit confirmation.
 
+> **Enforced locally:** a PreToolUse hook (`.claude/hooks/guard-bash.mjs`, wired in `.claude/settings.json`) blocks `git add -A`/`--all`/`.`, commits on `main`, and pushes to `main` before they run — these rules are no longer honor-system. (GitHub branch protection backstops the same at merge time — see the end of this section.)
+
 ### 1. Branch (at `start_ticket`)
 
 When a ticket goes in-progress, cut its branch from an up-to-date `main` **before editing**:
@@ -112,7 +114,7 @@ Example: `chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket`.
 
 Ask **"Ready to commit?"** — do not commit until confirmed. Then:
 
-1. `git add` only the files changed for this ticket (never `git add -A`).
+1. `git add` only the files changed for this ticket (never `git add -A` — the `guard-bash` hook blocks it).
 2. `git commit` with a message in this shape, passed via heredoc to avoid shell-escaping issues:
    ```bash
    git commit -m "$(cat <<'EOF'
@@ -190,6 +192,8 @@ This project's agent (`agent/`) is **local-first by default and local-only in pr
 - **Cost is measured, not estimated.** Observability uses a pluggable cost model: locally that's measured **energy** ($ from kWh × regional rate), with the per-token API-price model left as a dormant seam (see `tkt-88b47600d94c`).
 
 ## TypeScript conventions
+
+These are **lint-enforced** (`eslint.config.js`): `consistent-type-assertions` (`assertionStyle: never`, so `as const` stays allowed), `no-non-null-assertion`, and `no-explicit-any`. A violation fails `npm run lint` — the gate, not just the docs.
 
 - **No type casting** (`as Foo`, `as string`, `as any`). Use type predicates (`(x): x is string => Boolean(x)`), proper generics, or fix the upstream type instead.
 - **No non-null assertions** (`foo!`, `bar!.baz`). Restructure so TypeScript can narrow the type itself — e.g. check `if (foo && bar)` at the closure level so the truthy branch carries the narrowed type.
