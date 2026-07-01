@@ -32,10 +32,11 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
   const view = pipelineView(data.pipeline, status);
   if (!view.started) return null; // don't show a wall of grey for un-started tickets
 
-  const toggleReview = async (reviewed: boolean) => {
+  // Confirm-only: Review is recorded once, at the awaiting frontier, then locks.
+  const markReviewed = async () => {
     setToggling(true);
     try {
-      await api.review(ticketId, reviewed);
+      await api.review(ticketId, true);
       setReload((r) => r + 1); // force an immediate refetch, don't wait for the poll
     } catch {
       // best-effort; the poll will reconcile
@@ -61,14 +62,16 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
           // frontier — not merely because the ticket is in-progress. While Gate
           // runs it's a dim, static, non-clickable checkmark.
           const awaiting = isReview && n.state === 'active';
-          const clickable = isReview && status === 'in-progress' && (awaiting || reviewed);
+          // Clickable ONLY while Review is the awaiting frontier. Once completed
+          // it locks — a done milestone isn't un-done (no un-review by clicking).
+          const clickable = awaiting && status === 'in-progress';
           // Show the checkmark control ONLY when Review is the frontier or already
           // done. A skipped/pending Review renders as a plain node (dashed dot for
           // skipped) — never a ✓, which would falsely read as "reviewed".
           const showCheck = isReview && (awaiting || reviewed);
           const nodeClass = awaiting ? 'is-awaiting-review' : `is-${n.state}`;
           const title = isReview
-            ? (reviewed ? (clickable ? 'Reviewed — click to undo' : 'Reviewed')
+            ? (reviewed ? 'Reviewed'
               : awaiting ? 'Confirm your review'
               : n.state === 'skipped' ? 'Review skipped' : 'Awaiting the gate')
             // State-aware: a status-derived node (e.g. Started) is `reached` with
@@ -86,9 +89,9 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
                 <button
                   type="button"
                   className={`tracker-dot tracker-dot--check${reviewed ? ' is-checked' : ''}${awaiting ? ' is-awaiting' : ''}`}
-                  onClick={clickable ? () => void toggleReview(!reviewed) : undefined}
+                  onClick={clickable ? () => void markReviewed() : undefined}
                   disabled={!clickable || toggling}
-                  aria-label={reviewed ? 'Undo review' : 'Mark reviewed'}
+                  aria-label="Mark reviewed"
                   aria-pressed={reviewed}
                 >
                   ✓
