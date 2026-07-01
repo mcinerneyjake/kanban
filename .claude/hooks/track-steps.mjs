@@ -29,10 +29,12 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// The shell milestones this hook can emit. MUST stay a subset of shared/
-// constants.ts STEP_IDS — track-steps.test.mjs asserts parity so the two can't
-// drift. (started/qa/done are service-emitted, so they are absent here.)
-export const HOOK_STEPS = ['branch', 'typecheck', 'lint', 'test', 'commit', 'pr_opened'];
+// The milestones this hook can emit. MUST stay a subset of shared/constants.ts
+// STEP_IDS — track-steps.test.mjs asserts parity so the two can't drift.
+// (started/qa/done are service-emitted, so they are absent here.) `review` is
+// derived: a successful `git commit` implies the "Ready to commit?" review gate
+// was passed, so the hook records `review` alongside `commit` (see recordsFor).
+export const HOOK_STEPS = ['branch', 'typecheck', 'lint', 'test', 'commit', 'pr_opened', 'review'];
 
 // Strip leading subshell/group punctuation and simple VAR=val env prefixes,
 // returning a command segment's token list (mirrors guard-bash's parsing so
@@ -91,6 +93,19 @@ export function stateFromExit(exitCode) {
   return exitCode === 0 ? 'passed' : 'failed';
 }
 
+// The milestone records to append for a completed command. A successful
+// `git commit` implies the "Ready to commit?" review gate was passed — so a
+// `review` (reached) record is emitted just before the `commit`, with no
+// separate step for the human/agent to remember. Pure + exported for testing.
+export function recordsFor(steps, exitState) {
+  const records = [];
+  for (const step of steps) {
+    if (step === 'commit' && exitState === 'passed') records.push({ step: 'review', state: 'reached' });
+    records.push({ step, state: exitState });
+  }
+  return records;
+}
+
 // Same path-traversal guard as the service (server/events.ts): a crafted id can
 // never escape the events dir.
 const ID_RE = /^[a-zA-Z0-9-]+$/;
@@ -136,7 +151,7 @@ function main() {
         const exitCode = payload?.tool_response?.exit_code;
         const state = stateFromExit(typeof exitCode === 'number' ? exitCode : 0);
         const at = new Date().toISOString();
-        for (const step of steps) record(ticketId, step, state, at);
+        for (const r of recordsFor(steps, state)) record(ticketId, r.step, r.state, at);
       }
     }
   } catch {

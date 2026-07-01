@@ -2,6 +2,7 @@ import { type Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   listTickets, getTicket, createTicket, updateTicket, deleteTicket, HttpError,
 } from '../server/tickets.js';
+import { appendEvent, getTicketEvents } from '../server/events.js';
 import {
   BOARD_STATUSES, STATUS_IDS, isStatusId, isTicketType, isPriority,
   type Ticket, type StatusId,
@@ -254,6 +255,15 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'record_review',
+    description: 'Record the manual review milestone (the "Ready to commit?" gate) for a ticket — marks its Review step complete in the tracker. The commit hook records this automatically on a successful commit; use this tool to mark it explicitly (e.g. when the user confirms their review before you commit).',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Ticket ID' } },
+      required: ['id'],
+    },
+  },
+  {
     name: 'delete_ticket',
     description: 'Permanently delete a ticket by ID.',
     inputSchema: {
@@ -301,6 +311,15 @@ export async function handleToolCall(
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
         return { content: [textContent(JSON.stringify(await updateTicket(id, { status: 'in-progress' }), null, 2))] };
+      }
+
+      case 'record_review': {
+        const id = extractId(args);
+        if (!id) throw new HttpError(400, 'Missing required field: id');
+        // Writes the events file directly via the service layer — no HTTP, so
+        // it works whether or not the web server is running.
+        await appendEvent({ ticketId: id, step: 'review', state: 'reached' });
+        return { content: [textContent(JSON.stringify(await getTicketEvents(id), null, 2))] };
       }
 
       case 'create_ticket':

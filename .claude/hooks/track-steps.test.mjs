@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { commandToMilestones, extractTicketId, stateFromExit, HOOK_STEPS } from './track-steps.mjs';
-import { STEP_IDS, MANUAL_STEPS } from '../../shared/constants.js';
+import { commandToMilestones, extractTicketId, stateFromExit, recordsFor, HOOK_STEPS } from './track-steps.mjs';
+import { STEP_IDS } from '../../shared/constants.js';
 
 describe('commandToMilestones', () => {
   it('maps each recognized single command to its milestone', () => {
@@ -68,17 +68,43 @@ describe('catalog parity with shared/constants.ts', () => {
     for (const step of HOOK_STEPS) expect(STEP_IDS).toContain(step);
   });
 
-  it('hook steps + status steps + manual steps exactly cover the shared catalog', () => {
-    // Every catalog step must be accounted for by exactly one producer: the hook,
-    // a status transition, or an explicit MANUAL_STEPS human action (e.g. the
-    // review checkmark). This still fails on an UNINTENTIONAL new step that
-    // nothing produces.
+  it('hook steps + status steps exactly cover the shared catalog', () => {
+    // Every catalog step must be accounted for by exactly one producer: the hook
+    // (shell milestones + the commit-derived review) or a status transition. This
+    // still fails on an UNINTENTIONAL new step that nothing produces.
     const statusSteps = ['started', 'qa', 'done'];
-    expect(new Set([...HOOK_STEPS, ...statusSteps, ...MANUAL_STEPS])).toEqual(new Set(STEP_IDS));
+    expect(new Set([...HOOK_STEPS, ...statusSteps])).toEqual(new Set(STEP_IDS));
   });
 
-  it('manual steps are disjoint from the automated (hook + status) steps', () => {
-    const automated = new Set([...HOOK_STEPS, 'started', 'qa', 'done']);
-    for (const step of MANUAL_STEPS) expect(automated.has(step)).toBe(false);
+  it('the hook emits `review` (derived from commit)', () => {
+    expect(HOOK_STEPS).toContain('review');
+  });
+});
+
+describe('recordsFor — commit implies review', () => {
+  it('records `review` (reached) just before a successful commit', () => {
+    expect(recordsFor(['commit'], 'passed')).toEqual([
+      { step: 'review', state: 'reached' },
+      { step: 'commit', state: 'passed' },
+    ]);
+  });
+
+  it('does NOT record review when the commit failed', () => {
+    expect(recordsFor(['commit'], 'failed')).toEqual([{ step: 'commit', state: 'failed' }]);
+  });
+
+  it('leaves non-commit milestones untouched', () => {
+    expect(recordsFor(['typecheck', 'lint'], 'passed')).toEqual([
+      { step: 'typecheck', state: 'passed' },
+      { step: 'lint', state: 'passed' },
+    ]);
+  });
+
+  it('inserts review before commit within a compound command', () => {
+    expect(recordsFor(['test', 'commit'], 'passed')).toEqual([
+      { step: 'test', state: 'passed' },
+      { step: 'review', state: 'reached' },
+      { step: 'commit', state: 'passed' },
+    ]);
   });
 });

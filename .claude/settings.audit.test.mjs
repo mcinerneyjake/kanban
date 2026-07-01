@@ -29,6 +29,7 @@ const REQUIRED_MCP = [
   'mcp__kanban__start_ticket',
   'mcp__kanban__create_ticket',
   'mcp__kanban__update_ticket',
+  'mcp__kanban__record_review',
 ];
 
 // The complete reviewed set of non-git Bash rules. git rules are exempt (hook-

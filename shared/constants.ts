@@ -93,13 +93,6 @@ export const STEPS = [
 export const STEP_IDS = STEPS.map((s) => s.id);
 export type StepId = (typeof STEPS)[number]['id']
 
-// Steps emitted by an explicit HUMAN action rather than the hook or a status
-// transition. `review` fires when the manual review is confirmed — via the
-// "Mark reviewed" button (POST /api/tickets/:id/review) or the agent recording
-// the chat confirmation. The catalog-parity test uses this so every step has a
-// known producer and unintentional drift still fails.
-export const MANUAL_STEPS: readonly StepId[] = ['review'];
-
 // `reached` = a status milestone was hit (no pass/fail semantics); `passed` /
 // `failed` = a command milestone resolved via its exit code.
 export const STEP_STATES = ['reached', 'passed', 'failed'] as const;
