@@ -966,6 +966,7 @@ body {
 .tracker-node.is-reached::before,
 .tracker-node.is-passed::before,
 .tracker-node.is-active::before,
+.tracker-node.is-skipped::before,
 .tracker-node.is-awaiting-review::before { background: var(--st-done); }
 
 .tracker-dot {
@@ -996,8 +997,13 @@ body {
 .tracker-node.is-active .tracker-label { color: var(--text); font-weight: 600; }
 .tracker-node.is-failed .tracker-dot { background: var(--danger); border-color: var(--danger); }
 .tracker-node.is-failed .tracker-label { color: var(--danger); }
-/* Review — the one manual gate: a clickable checkmark. Empty + pulsing while
-   awaiting, green once reviewed (click again to undo while in-progress). */
+/* skipped: a node the pipeline passed without recording (docs-only gate, etc.) —
+   hollow dashed + muted, on the green connector so the pipeline reads monotonic. */
+.tracker-node.is-skipped .tracker-dot { background: var(--card-bg); border-style: dashed; border-color: var(--muted); }
+.tracker-node.is-skipped .tracker-label { color: var(--muted); }
+/* Review — the one manual gate: a clickable checkmark. Dim + static until it's
+   the frontier, then accent + pulsing (awaiting), green once reviewed (click
+   again to undo while in-progress). */
 .tracker-dot--check {
   width: 15px;
   height: 15px;
@@ -1013,15 +1019,16 @@ body {
   color: var(--st-in-progress);
   cursor: pointer;
   z-index: 1;
-  animation: tracker-pulse 1.2s ease-in-out infinite;
 }
+.tracker-dot--check.is-awaiting { animation: tracker-pulse 1.2s ease-in-out infinite; }
 .tracker-dot--check:hover:not(:disabled) { background: var(--st-in-progress); color: #fff; }
 .tracker-dot--check.is-checked {
   border-color: var(--st-done);
   background: var(--st-done);
   color: #fff;
-  animation: none;
 }
+/* not-yet-your-turn (pending) or passed-over (skipped) review: dim, static. */
+.tracker-dot--check:disabled:not(.is-checked) { border-color: var(--muted); color: var(--muted); opacity: 0.6; }
 .tracker-dot--check:disabled { cursor: default; }
 .tracker-node.is-awaiting-review .tracker-label { color: var(--text); font-weight: 600; }
 @keyframes tracker-pulse {

@@ -57,22 +57,37 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
         {view.nodes.map((n) => {
           const isReview = n.key === 'review';
           const reviewed = isReview && (n.state === 'reached' || n.state === 'passed');
-          // Review is the one manual gate: toggleable while in-progress.
-          const clickable = isReview && status === 'in-progress';
-          const nodeClass = clickable && !reviewed ? 'is-awaiting-review' : `is-${n.state}`;
+          // Review only "awaits" (pulses, invites a click) when it is the actual
+          // frontier — not merely because the ticket is in-progress. While Gate
+          // runs it's a dim, static, non-clickable checkmark.
+          const awaiting = isReview && n.state === 'active';
+          const clickable = isReview && status === 'in-progress' && (awaiting || reviewed);
+          // Show the checkmark control ONLY when Review is the frontier or already
+          // done. A skipped/pending Review renders as a plain node (dashed dot for
+          // skipped) — never a ✓, which would falsely read as "reviewed".
+          const showCheck = isReview && (awaiting || reviewed);
+          const nodeClass = awaiting ? 'is-awaiting-review' : `is-${n.state}`;
+          const title = isReview
+            ? (reviewed ? (clickable ? 'Reviewed — click to undo' : 'Reviewed')
+              : awaiting ? 'Confirm your review'
+              : n.state === 'skipped' ? 'Review skipped' : 'Awaiting the gate')
+            // State-aware: a status-derived node (e.g. Started) is `reached` with
+            // no event timestamp — it's Done, not Pending. Only truly-pending
+            // nodes read "Pending".
+            : n.state === 'skipped' ? 'Skipped'
+              : n.state === 'failed' ? 'Failed'
+              : n.at ? formatTime(n.at)
+              : n.state === 'reached' || n.state === 'passed' ? 'Done'
+              : n.state === 'active' ? 'In progress'
+              : 'Pending';
           return (
-            <li
-              key={n.key}
-              className={`tracker-node ${nodeClass}`}
-              title={clickable ? (reviewed ? 'Reviewed — click to undo' : 'Confirm your review')
-                : n.at ? formatTime(n.at) : 'Pending'}
-            >
-              {isReview && (clickable || reviewed) ? (
+            <li key={n.key} className={`tracker-node ${nodeClass}`} title={title}>
+              {showCheck ? (
                 <button
                   type="button"
-                  className={`tracker-dot tracker-dot--check${reviewed ? ' is-checked' : ''}`}
-                  onClick={() => void toggleReview(!reviewed)}
-                  disabled={toggling || !clickable}
+                  className={`tracker-dot tracker-dot--check${reviewed ? ' is-checked' : ''}${awaiting ? ' is-awaiting' : ''}`}
+                  onClick={clickable ? () => void toggleReview(!reviewed) : undefined}
+                  disabled={!clickable || toggling}
                   aria-label={reviewed ? 'Undo review' : 'Mark reviewed'}
                   aria-pressed={reviewed}
                 >

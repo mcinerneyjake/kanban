@@ -71,6 +71,22 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     expect(v.progress.done).toBe(4); // started, branch, gate, review
   });
 
+  it('marks pending nodes before the furthest milestone as skipped (monotonic pipeline)', () => {
+    // Gate + Review never registered, but Commit did (e.g. a docs-only ticket:
+    // branch + commit, gate skipped, review never clicked).
+    const v = pipelineView(build({ branch: 'passed', commit: 'passed' }), 'in-progress');
+    expect(stateOf(v, 'gate')).toBe('skipped');
+    expect(stateOf(v, 'review')).toBe('skipped');
+    expect(stateOf(v, 'commit')).toBe('passed');
+    expect(stateOf(v, 'pr_opened')).toBe('active'); // frontier is past commit
+    // nodes AFTER the frontier stay pending, not skipped
+    expect(stateOf(v, 'qa')).toBe('pending');
+    expect(stateOf(v, 'done')).toBe('pending');
+    // progress counts only actual completions — skipped gate/review are NOT
+    // counted (they never finished): started (status) + branch + commit = 3
+    expect(v.progress.done).toBe(3);
+  });
+
   it('stalls the Gate node and names the failing check when one fails', () => {
     const v = pipelineView(build({ branch: 'passed', typecheck: 'passed', lint: 'failed' }), 'in-progress');
     expect(v.failed).toBe(true);
