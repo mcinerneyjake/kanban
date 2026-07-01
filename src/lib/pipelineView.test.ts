@@ -42,14 +42,14 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     const v = pipelineView(build({ branch: 'passed' }), 'in-progress');
     expect(v.current).toBe('Implementing…');
     expect(stateOf(v, 'gate')).toBe('active');
-    expect(v.progress.done).toBe(2); // started (status) + branch
+    expect(v.progress.done).toBe(3); // reach = the active Gate frontier (started, branch, gate)
   });
 
   it('labels the phase "Gate" once any gate check has landed (partial gate)', () => {
     const v = pipelineView(build({ branch: 'passed', typecheck: 'passed' }), 'in-progress');
     expect(v.current).toBe('Gate'); // gate started but not complete
     expect(stateOf(v, 'gate')).toBe('active');
-    expect(v.progress.done).toBe(2); // gate is not "done" until all three pass
+    expect(v.progress.done).toBe(3); // reach = the active Gate frontier
   });
 
   it('awaits Review once the whole gate passes (the manual gate before commit)', () => {
@@ -57,7 +57,7 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     expect(stateOf(v, 'gate')).toBe('passed');
     expect(stateOf(v, 'review')).toBe('active'); // frontier is Review, awaiting confirmation
     expect(v.current).toBe('Review');
-    expect(v.progress.done).toBe(3); // started, branch, gate
+    expect(v.progress.done).toBe(4); // reach = the active Review frontier
   });
 
   it('advances to Commit once review is confirmed', () => {
@@ -68,7 +68,7 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     expect(stateOf(v, 'review')).toBe('reached');
     expect(stateOf(v, 'commit')).toBe('active');
     expect(v.current).toBe('Commit');
-    expect(v.progress.done).toBe(4); // started, branch, gate, review
+    expect(v.progress.done).toBe(5); // reach = the active Commit frontier
   });
 
   it('marks pending nodes before the furthest milestone as skipped (monotonic pipeline)', () => {
@@ -82,9 +82,9 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     // nodes AFTER the frontier stay pending, not skipped
     expect(stateOf(v, 'qa')).toBe('pending');
     expect(stateOf(v, 'done')).toBe('pending');
-    // progress counts only actual completions — skipped gate/review are NOT
-    // counted (they never finished): started (status) + branch + commit = 3
-    expect(v.progress.done).toBe(3);
+    // progress = furthest reach (the active PR frontier), running THROUGH the
+    // skipped gate/review on the green line: started…pr = 6 of 8
+    expect(v.progress.done).toBe(6);
   });
 
   it('stalls the Gate node and names the failing check when one fails', () => {

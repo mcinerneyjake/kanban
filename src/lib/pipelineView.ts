@@ -110,10 +110,13 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
     return { key: g.key, label: g.label, state, at: g.at };
   });
 
-  // Progress counts only milestones actually completed (reached/passed) — NOT
-  // skipped ones. A ticket that skipped middle steps shouldn't read as if they
-  // finished; the skipped nodes still show visually (dashed on the green line).
-  const done = nodes.filter((n) => n.state === 'reached' || n.state === 'passed').length;
+  // Progress = how far the pipeline has ADVANCED — the furthest node the green
+  // connector reaches: the active frontier while in-progress, else the last
+  // completed one. This makes the compact card bar match the stepper's green
+  // line in the detail view (skipped middle nodes sit on that line, so the reach
+  // runs through them). It is a position, not a completed-count.
+  const reachedIdx = activeIdx >= 0 ? activeIdx : lastDoneIdx;
+  const done = reachedIdx + 1;
   const started =
     status === 'in-progress' || status === 'qa' || status === 'done' ||
     pipeline.some((p) => p.state !== 'pending');
