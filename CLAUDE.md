@@ -31,7 +31,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 3. Implement the work described in the ticket's `body`
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
-6. **Self-review (`qa`)** — for non-trivial tickets, set `status: "qa"` via `update_ticket`, then at the manual-review pause **ask whether the user wants a `/code-review`** (run it only if they opt in — it costs tokens — plus `/verify` when runtime behavior should be confirmed). Address findings before continuing. Trivial or docs-only tickets may skip `qa` and proceed to step 7.
+6. **Self-review** — for non-trivial tickets, at the manual-review pause **ask whether the user wants a `/code-review`** (run it only if they opt in — it costs tokens — plus `/verify` when runtime behavior should be confirmed). Address findings before continuing. The ticket **stays `in-progress`** through self-review and commit — it moves to `qa` only when the PR opens (the single `qa` trigger; see **Branch, commit & PR workflow → 3. PR**). This keeps the status flow in-step with the tracker pipeline (`… Review · Commit · PR · QA · Done`). Trivial or docs-only tickets may skip self-review and proceed to step 7.
 7. Append an `## Implementation summary` to the ticket body via `update_ticket`. Do **not** set `status: "done"` yet — that happens after the PR merges (see **Branch, commit & PR workflow → 4. Merge**).
 
 The implementation summary **must** include a test line — either:
@@ -45,7 +45,7 @@ A ticket is **Done** only when all of these hold (the gate is executable, not ad
 - [ ] `npm run typecheck` passes — or N/A (docs-only, no code touched)
 - [ ] `npm run lint` passes — or N/A (docs-only, no code touched)
 - [ ] `npm test` passes, with tests added per the Testing table below — or an explicit skip reason
-- [ ] Self-review (`qa`) completed for non-trivial tickets
+- [ ] Self-review completed for non-trivial tickets (status stays `in-progress`; `qa` is set at PR-open)
 - [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` line
 - [ ] Status transitioned to `done` via `update_ticket` **after PR merge**
 
@@ -153,7 +153,7 @@ The PR body must reference the ticket id and include the `## Implementation summ
 
 **Branch protection:** `main` is protected by a GitHub ruleset that enforces all three CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level.
 
-When the PR opens, call `update_ticket` to set `status: "qa"` — the ticket enters review whether or not it went through the self-review step. It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
+When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
 
 ### 4. Merge (after CI is green)
 
