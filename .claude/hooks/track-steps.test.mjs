@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { commandToMilestones, extractTicketId, stateFromExit, HOOK_STEPS } from './track-steps.mjs';
-import { STEP_IDS } from '../../shared/constants.js';
+import { STEP_IDS, MANUAL_STEPS } from '../../shared/constants.js';
 
 describe('commandToMilestones', () => {
   it('maps each recognized single command to its milestone', () => {
@@ -68,8 +68,17 @@ describe('catalog parity with shared/constants.ts', () => {
     for (const step of HOOK_STEPS) expect(STEP_IDS).toContain(step);
   });
 
-  it('hook steps + status steps exactly cover the shared catalog', () => {
+  it('hook steps + status steps + manual steps exactly cover the shared catalog', () => {
+    // Every catalog step must be accounted for by exactly one producer: the hook,
+    // a status transition, or an explicit MANUAL_STEPS human action (e.g. the
+    // review checkmark). This still fails on an UNINTENTIONAL new step that
+    // nothing produces.
     const statusSteps = ['started', 'qa', 'done'];
-    expect(new Set([...HOOK_STEPS, ...statusSteps])).toEqual(new Set(STEP_IDS));
+    expect(new Set([...HOOK_STEPS, ...statusSteps, ...MANUAL_STEPS])).toEqual(new Set(STEP_IDS));
+  });
+
+  it('manual steps are disjoint from the automated (hook + status) steps', () => {
+    const automated = new Set([...HOOK_STEPS, 'started', 'qa', 'done']);
+    for (const step of MANUAL_STEPS) expect(automated.has(step)).toBe(false);
   });
 });

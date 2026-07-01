@@ -907,3 +907,179 @@ body {
 .recent-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-status { font-weight: 600; white-space: nowrap; }
 .recent-date { color: var(--muted); white-space: nowrap; }
+
+/* --- Ticket tracking UI (Phase 2, tkt-7783b68ac77e) --- */
+.tracker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 4px 0 10px;
+  background: var(--preview-bg);
+}
+.tracker--error { color: var(--muted); font-size: 13px; }
+.tracker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.tracker-current {
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--st-in-progress);
+}
+.tracker-current.is-failed { color: var(--danger); }
+
+.tracker-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+}
+.tracker-node {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+/* connector into each node; coloured when the node is reached/passed/active */
+.tracker-node::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border);
+  z-index: 0;
+}
+.tracker-node:first-child::before { display: none; }
+.tracker-node.is-reached::before,
+.tracker-node.is-passed::before,
+.tracker-node.is-active::before,
+.tracker-node.is-awaiting-review::before { background: var(--st-done); }
+
+.tracker-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--card-bg);
+  border: 2px solid var(--border);
+  z-index: 1;
+}
+.tracker-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tracker-node.is-reached .tracker-dot,
+.tracker-node.is-passed .tracker-dot { background: var(--st-done); border-color: var(--st-done); }
+.tracker-node.is-active .tracker-dot {
+  background: var(--st-in-progress);
+  border-color: var(--st-in-progress);
+  animation: tracker-pulse 1.2s ease-in-out infinite;
+}
+.tracker-node.is-active .tracker-label { color: var(--text); font-weight: 600; }
+.tracker-node.is-failed .tracker-dot { background: var(--danger); border-color: var(--danger); }
+.tracker-node.is-failed .tracker-label { color: var(--danger); }
+/* Review — the one manual gate: a clickable checkmark. Empty + pulsing while
+   awaiting, green once reviewed (click again to undo while in-progress). */
+.tracker-dot--check {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  border-radius: 50%;
+  border: 2px solid var(--st-in-progress);
+  background: var(--card-bg);
+  color: var(--st-in-progress);
+  cursor: pointer;
+  z-index: 1;
+  animation: tracker-pulse 1.2s ease-in-out infinite;
+}
+.tracker-dot--check:hover:not(:disabled) { background: var(--st-in-progress); color: #fff; }
+.tracker-dot--check.is-checked {
+  border-color: var(--st-done);
+  background: var(--st-done);
+  color: #fff;
+  animation: none;
+}
+.tracker-dot--check:disabled { cursor: default; }
+.tracker-node.is-awaiting-review .tracker-label { color: var(--text); font-weight: 600; }
+@keyframes tracker-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 171, 0, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(255, 171, 0, 0); }
+}
+
+.tracker-log { margin-top: 12px; }
+.tracker-log-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tracker-log-row {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tracker-log-step { color: var(--text); }
+.tracker-log-state { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.tracker-log-row.is-reached .tracker-log-state,
+.tracker-log-row.is-passed .tracker-log-state { color: var(--st-done); }
+.tracker-log-row.is-failed .tracker-log-state { color: var(--danger); }
+.tracker-log-row.is-cleared .tracker-log-state { color: var(--muted); font-style: italic; }
+
+/* Board-card glance indicator (in-progress cards only) */
+.card-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.card-progress-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.card-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--st-in-progress);
+  transition: width 0.3s ease;
+}
+.card-progress.is-failed .card-progress-fill { background: var(--danger); }
+.card-progress-label {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-progress.is-failed .card-progress-label { color: var(--danger); }

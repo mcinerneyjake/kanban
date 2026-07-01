@@ -1,5 +1,6 @@
 import { memo, useState } from 'react';
 import type { Ticket, TicketType } from '../../shared/constants.js';
+import CardProgress from './CardProgress.js';
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' };
 
@@ -141,6 +142,9 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed
           );
         })()}
       </div>
+      {(ticket.status === 'in-progress' || ticket.status === 'qa') && (
+        <CardProgress ticketId={ticket.id} status={ticket.status} />
+      )}
     </div>
   );
 }

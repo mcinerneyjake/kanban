@@ -13,7 +13,7 @@ import {
   summarizeBoard,
   HttpError,
 } from './tickets.js';
-import { getTicketEvents } from './events.js';
+import { getTicketEvents, appendEvent, REVIEW_CLEARED } from './events.js';
 import { getTicketIndex } from '../agent/indexCache.js';
 import { RuntimeChatClient } from '../agent/llm.js';
 import { proposeIntake } from '../agent/propose.js';
@@ -67,6 +67,19 @@ app.get('/api/tickets/:id', wrap(async (req, res) => {
 app.get('/api/tickets/:id/events', wrap(async (req, res) => {
   const { id } = req.params;
   if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter');
+  res.json(await getTicketEvents(id));
+}));
+
+// Toggle the manual "Ready to commit?" review milestone (the one human-triggered
+// step). `{ reviewed: false }` un-reviews via a cleared marker; anything else
+// confirms. A deliberate exception to "the server only reads": a person clicking
+// the checkmark — or the agent recording the chat confirmation — is inherently
+// interactive, so the server is definitionally up.
+app.post('/api/tickets/:id/review', wrap(async (req, res) => {
+  const { id } = req.params;
+  if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter');
+  const reviewed = req.body?.reviewed !== false;
+  await appendEvent({ ticketId: id, step: 'review', state: 'reached', ...(reviewed ? {} : { detail: REVIEW_CLEARED }) });
   res.json(await getTicketEvents(id));
 }));
 
