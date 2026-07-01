@@ -3,25 +3,33 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, searchTickets, summarize, summarizeBoard, HttpError } from './tickets.js';
+import { readEvents } from './events.js';
 import type { Ticket } from '../shared/constants.js';
 
 let tmpDir: string;
+// updateTicket emits status-milestone telemetry; redirect it to a temp dir so
+// the suite never writes to the real events/ dir.
+let eventsTmpDir: string;
 
 beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-test-'));
+  eventsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-test-events-'));
   process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  process.env.EVENTS_DIR_OVERRIDE = eventsTmpDir;
 });
 
 afterAll(async () => {
   delete process.env.TICKETS_DIR_OVERRIDE;
+  delete process.env.EVENTS_DIR_OVERRIDE;
   await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.rm(eventsTmpDir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  const files = await fs.readdir(tmpDir);
-  await Promise.all(
-    files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))),
-  );
+  for (const dir of [tmpDir, eventsTmpDir]) {
+    const files = await fs.readdir(dir);
+    await Promise.all(files.map((f) => fs.unlink(path.join(dir, f))));
+  }
 });
 
 // Awaits a promise expected to reject with HttpError and returns the error.
@@ -622,5 +630,40 @@ describe('summarizeBoard (reads the live board)', () => {
     const s = await summarizeBoard('kanban');
     expect(s.total).toBe(1);
     expect(s.project).toBe('kanban');
+  });
+});
+
+describe('updateTicket — status-milestone telemetry', () => {
+  it('records a `started` event on the transition into in-progress', async () => {
+    const t = await createTicket({ title: 'A', status: 'todo' });
+    await updateTicket(t.id, { status: 'in-progress' });
+    const events = await readEvents(t.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ step: 'started', state: 'reached' });
+  });
+
+  it('maps qa and done transitions to their steps', async () => {
+    const t = await createTicket({ title: 'A', status: 'in-progress' });
+    await updateTicket(t.id, { status: 'qa' });
+    await updateTicket(t.id, { status: 'done' });
+    expect((await readEvents(t.id)).map((e) => e.step)).toEqual(['qa', 'done']);
+  });
+
+  it('emits nothing for a body/priority-only patch (no status change)', async () => {
+    const t = await createTicket({ title: 'A', status: 'in-progress' });
+    await updateTicket(t.id, { body: 'new body', priority: 'high' });
+    expect(await readEvents(t.id)).toEqual([]);
+  });
+
+  it('emits nothing when the status patch is a no-op', async () => {
+    const t = await createTicket({ title: 'A', status: 'in-progress' });
+    await updateTicket(t.id, { status: 'in-progress' });
+    expect(await readEvents(t.id)).toEqual([]);
+  });
+
+  it('emits nothing for a transition into an untracked status (todo)', async () => {
+    const t = await createTicket({ title: 'A', status: 'backlog' });
+    await updateTicket(t.id, { status: 'todo' });
+    expect(await readEvents(t.id)).toEqual([]);
   });
 });

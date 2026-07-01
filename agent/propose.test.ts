@@ -37,9 +37,12 @@ let tmpDir: string;
 beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-propose-test-'));
   process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  // Status-changing ops emit telemetry; keep it out of the real events/ dir.
+  process.env.EVENTS_DIR_OVERRIDE = tmpDir;
 });
 afterAll(async () => {
   delete process.env.TICKETS_DIR_OVERRIDE;
+  delete process.env.EVENTS_DIR_OVERRIDE;
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 beforeEach(async () => {

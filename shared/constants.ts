@@ -66,6 +66,70 @@ export type StatusCount = { status: StatusId; count: number }
 export type PriorityCount = { priority: Priority; count: number }
 export type TypeCount = { type: TicketType; count: number }
 
+// --- Workflow-step telemetry ----------------------------------------------
+// The canonical "package tracking" pipeline: the ordered milestones a ticket
+// passes through while Claude works it. Rendered in full (future UI) with each
+// node lit up as events arrive. Shared so the emitters (service + hook) and the
+// reader/UI can't drift. See tkt-512f9b15ddb8.
+//
+// Detectability split: `started`/`qa`/`done` are STATUS transitions, emitted
+// server-side by updateTicket; the rest are shell commands, emitted by the
+// PostToolUse hook. Implementation itself has no scan event — it's the
+// UI-derived gap between `branch` and the first gate.
+
+export const STEPS = [
+  { id: 'started', label: 'Started' },
+  { id: 'branch', label: 'Branch cut' },
+  { id: 'typecheck', label: 'Typecheck' },
+  { id: 'lint', label: 'Lint' },
+  { id: 'test', label: 'Tests' },
+  { id: 'commit', label: 'Committed' },
+  { id: 'pr_opened', label: 'PR opened' },
+  { id: 'qa', label: 'QA' },
+  { id: 'done', label: 'Done' },
+] as const;
+
+export const STEP_IDS = STEPS.map((s) => s.id);
+export type StepId = (typeof STEPS)[number]['id']
+
+// `reached` = a status milestone was hit (no pass/fail semantics); `passed` /
+// `failed` = a command milestone resolved via its exit code.
+export const STEP_STATES = ['reached', 'passed', 'failed'] as const;
+export type StepState = (typeof STEP_STATES)[number]
+
+// Status transitions that map to a tracked milestone. Other statuses
+// (backlog/todo/archived) emit nothing.
+export const STATUS_STEP: Partial<Record<StatusId, StepId>> = {
+  'in-progress': 'started',
+  qa: 'qa',
+  done: 'done',
+};
+
+// One append-only telemetry record.
+export type TicketEvent = {
+  ticketId: string
+  step: StepId
+  state: StepState
+  at: string
+  detail?: string
+}
+
+// A reduced pipeline node for the tracking view: the latest state per step, or
+// `pending` when no event has arrived for it yet.
+export type PipelineStep = {
+  step: StepId
+  label: string
+  state: StepState | 'pending'
+  at: string | null
+}
+
+export function isStepId(val: string): val is StepId {
+  return STEP_IDS.find((s) => s === val) !== undefined;
+}
+export function isStepState(val: string): val is StepState {
+  return STEP_STATES.find((s) => s === val) !== undefined;
+}
+
 // A trimmed ticket for the "recently updated" widget — just the fields the row
 // needs, so the endpoint doesn't ship every ticket body.
 export type RecentTicket = Pick<Ticket, 'id' | 'title' | 'status' | 'priority' | 'project' | 'updated'>

@@ -11,15 +11,22 @@ import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/indexCache.js';
 
 let tmpDir: string;
+// The PATCH route drives updateTicket, which emits status-milestone telemetry;
+// redirect it to a temp dir so tests never touch the real events/ dir.
+let eventsTmpDir: string;
 
 beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-'));
+  eventsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-events-'));
   process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  process.env.EVENTS_DIR_OVERRIDE = eventsTmpDir;
 });
 
 afterAll(async () => {
   delete process.env.TICKETS_DIR_OVERRIDE;
+  delete process.env.EVENTS_DIR_OVERRIDE;
   await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.rm(eventsTmpDir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -27,6 +34,8 @@ beforeEach(async () => {
   await Promise.all(
     files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))),
   );
+  const eventFiles = await fs.readdir(eventsTmpDir);
+  await Promise.all(eventFiles.map((f) => fs.unlink(path.join(eventsTmpDir, f))));
 });
 
 async function seedTicket(id: string, title = 'Test ticket', body = '') {
@@ -636,5 +645,32 @@ describe('GET /api/intake/health', () => {
     const res = await request(app).get('/api/intake/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: false });
+  });
+});
+
+describe('GET /api/tickets/:id/events', () => {
+  it('returns an all-pending pipeline and no events for a never-worked ticket', async () => {
+    await seedTicket('tkt-fresh');
+    const res = await request(app).get('/api/tickets/tkt-fresh/events');
+    expect(res.status).toBe(200);
+    expect(res.body.ticketId).toBe('tkt-fresh');
+    expect(res.body.events).toEqual([]);
+    expect(res.body.pipeline.every((p: { state: string }) => p.state === 'pending')).toBe(true);
+  });
+
+  it('reflects a status transition emitted via the PATCH route', async () => {
+    await seedTicket('tkt-work', 'Work', '');
+    const patch = await request(app).patch('/api/tickets/tkt-work').send({ status: 'in-progress' });
+    expect(patch.status).toBe(200);
+    const res = await request(app).get('/api/tickets/tkt-work/events');
+    expect(res.status).toBe(200);
+    expect(res.body.events).toHaveLength(1);
+    const started = res.body.pipeline.find((p: { step: string }) => p.step === 'started');
+    expect(started.state).toBe('reached');
+  });
+
+  it('rejects an id that fails the path-traversal guard with 400', async () => {
+    const res = await request(app).get('/api/tickets/bad.id/events');
+    expect(res.status).toBe(400);
   });
 });

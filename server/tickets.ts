@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
-import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, type Ticket, type DashboardSummary } from '../shared/constants.js';
+import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, STATUS_STEP, type Ticket, type StatusId, type DashboardSummary } from '../shared/constants.js';
+import { appendEvent } from './events.js';
 
 // ---------------------------------------------------------------------------
 // Service layer: the ONLY module that touches the filesystem. Routes call
@@ -254,6 +255,21 @@ function collectDescendants(id: string, all: Ticket[]): Set<string> {
   return descendants;
 }
 
+// Best-effort workflow telemetry: a status transition INTO a tracked milestone
+// (in-progress/qa/done) records a `reached` event for the tracking UI. This is
+// the single choke point both the MCP process and the HTTP PATCH path flow
+// through, so the event fires no matter who drives. A telemetry failure must
+// never break the ticket write, hence the swallow.
+async function emitStatusStep(id: string, status: StatusId): Promise<void> {
+  const step = STATUS_STEP[status];
+  if (!step) return;
+  try {
+    await appendEvent({ ticketId: id, step, state: 'reached' });
+  } catch (err) {
+    console.error('[events] failed to record status step', err);
+  }
+}
+
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
   validateEnums(patch);
   // `order` is typed number, but HTTP callers pass an untyped body — guard the
@@ -290,6 +306,9 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
   };
   if (!merged.title.trim()) throw new HttpError(400, 'Title is required');
   await writeTicket(merged);
+  // Emit only on a real status change — updateTicket is also called for body /
+  // priority / reorder patches, which must not record a milestone.
+  if (merged.status !== existing.status) await emitStatusStep(id, merged.status);
   return merged;
 }
 
