@@ -380,4 +380,21 @@ export async function deleteTicket(id: string): Promise<void> {
   } catch {
     throw new HttpError(404, `Ticket not found: ${id}`);
   }
+  // Best-effort referential cleanup: strip the deleted id from every other
+  // ticket's *blocker* edges so no dangling blocker reference is left behind.
+  // This is housekeeping, not part of delete's contract — the ticket is already
+  // gone — so a sweep failure is logged, never propagated (a caller must not see
+  // "delete failed" for a ticket that was in fact deleted; the display tolerates
+  // a stale edge, and computeActiveBlockerCounts skips ids that resolve to no
+  // ticket). Rewrites go via writeTicket with `updated` untouched so cleanup
+  // isn't surfaced as an edit. (Parent edges are not swept here — see the
+  // parent-on-delete follow-up ticket.)
+  try {
+    const referencing = (await listTickets()).filter((t) => t.blockers.includes(id));
+    await Promise.all(
+      referencing.map((t) => writeTicket({ ...t, blockers: t.blockers.filter((b) => b !== id) })),
+    );
+  } catch (err) {
+    console.error(`[delete] blocker cleanup for ${id} failed:`, err);
+  }
 }

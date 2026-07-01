@@ -11,13 +11,14 @@ type Props = {
   tickets: Ticket[]
   sort: SortBy
   childCounts: Record<string, number>
+  activeBlockerCounts: Record<string, number>
   onMove: (id: string, status: Ticket['status'], order: number) => void
   onReparent: (id: string, newParentId: string) => void
   onOpen: (ticket: Ticket) => void
   onArchiveAll: () => void
 }
 
-export default function Board({ tickets, sort, childCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
+export default function Board({ tickets, sort, childCounts, activeBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
   // The subset of `collapsed` we collapsed automatically because the parent is
   // done — kept in a ref so a user expanding a done parent isn't undone, and so
@@ -112,6 +113,7 @@ export default function Board({ tickets, sort, childCounts, onMove, onReparent, 
             tickets={ordered}
             depths={depths}
             childCounts={childCounts}
+            activeBlockerCounts={activeBlockerCounts}
             collapsed={collapsed}
             onDrop={handleDrop}
             onReparent={onReparent}

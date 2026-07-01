@@ -7,6 +7,7 @@ import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
 import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
+import { ticketsBlockedBy } from '../lib/blockers.js';
 import Spinner from './Spinner.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
@@ -169,6 +170,9 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
   );
   const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter((t): t is Ticket => t !== undefined);
+  // Reverse edge: tickets that list this one as a blocker — i.e. what it blocks.
+  // Derived (never stored) and read-only; only meaningful for a saved ticket.
+  const blockedTickets = ticket ? ticketsBlockedBy(ticket.id, allTickets) : [];
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -409,6 +413,21 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
               <span className="blockers-empty">None</span>
             )}
           </div>
+
+          {blockedTickets.length > 0 && (
+            <div className="blockers-section">
+              <div className="blockers-head">
+                <span>Blocks</span>
+              </div>
+              <div className="blocker-tags">
+                {blockedTickets.map((t) => (
+                  <span key={t.id} className={`blocker-tag${t.status === 'done' ? ' done' : ''}`}>
+                    {t.title}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="body-head">
             <span>Description</span>

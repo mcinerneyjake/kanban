@@ -540,6 +540,12 @@ body {
   color: var(--text);
 }
 
+/* A dependent that is already done — the dependency is satisfied, so mute it. */
+.blocker-tag.done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
 .blocker-remove {
   background: none;
   border: none;
