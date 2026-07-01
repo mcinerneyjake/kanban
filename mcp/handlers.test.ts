@@ -72,9 +72,9 @@ async function seed(fields: Parameters<typeof createTicket>[0] = {}): Promise<st
 // ---------------------------------------------------------------------------
 
 describe('TOOLS schema', () => {
-  it('exposes exactly the six kanban tools', () => {
+  it('exposes exactly the seven kanban tools', () => {
     expect(new Set(TOOLS.map((t) => t.name))).toEqual(
-      new Set(['list_tickets', 'get_ticket', 'update_ticket', 'start_ticket', 'create_ticket', 'delete_ticket']),
+      new Set(['list_tickets', 'get_ticket', 'update_ticket', 'start_ticket', 'create_ticket', 'record_review', 'delete_ticket']),
     );
   });
 
@@ -395,5 +395,36 @@ describe('unknown tool', () => {
     const res = await handleToolCall('frobnicate', {});
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('Unknown tool: frobnicate');
+  });
+});
+
+describe('record_review', () => {
+  it('marks the review step reached and returns the pipeline', async () => {
+    const id = await seed();
+    const res = await handleToolCall('record_review', { id });
+    expect(res.isError).toBeFalsy();
+    const body = asRecord(res);
+    expect(body.ticketId).toBe(id);
+    const pipeline = body.pipeline;
+    if (!Array.isArray(pipeline)) throw new Error('expected a pipeline array');
+    const review = pipeline.find((p) => isRecord(p) && p.step === 'review');
+    expect(isRecord(review) ? review.state : null).toBe('reached');
+  });
+
+  it('errors when id is missing', async () => {
+    const res = await handleToolCall('record_review', {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('id');
+  });
+
+  it('errors on an invalid ticket id', async () => {
+    const res = await handleToolCall('record_review', { id: 'bad.id' });
+    expect(res.isError).toBe(true);
+  });
+
+  it('is advertised in TOOLS with a required id', () => {
+    const tool = TOOLS.find((t) => t.name === 'record_review');
+    expect(tool).toBeDefined();
+    expect(tool?.inputSchema.required).toEqual(['id']);
   });
 });
