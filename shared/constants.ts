@@ -79,11 +79,12 @@ export type TypeCount = { type: TicketType; count: number }
 
 export const STEPS = [
   { id: 'started', label: 'Started' },
-  { id: 'branch', label: 'Branch cut' },
+  { id: 'branch', label: 'Branch' },
   { id: 'typecheck', label: 'Typecheck' },
   { id: 'lint', label: 'Lint' },
   { id: 'test', label: 'Tests' },
-  { id: 'commit', label: 'Committed' },
+  { id: 'review', label: 'Review' },
+  { id: 'commit', label: 'Commit' },
   { id: 'pr_opened', label: 'PR opened' },
   { id: 'qa', label: 'QA' },
   { id: 'done', label: 'Done' },
@@ -91,6 +92,13 @@ export const STEPS = [
 
 export const STEP_IDS = STEPS.map((s) => s.id);
 export type StepId = (typeof STEPS)[number]['id']
+
+// Steps emitted by an explicit HUMAN action rather than the hook or a status
+// transition. `review` fires when the manual review is confirmed — via the
+// "Mark reviewed" button (POST /api/tickets/:id/review) or the agent recording
+// the chat confirmation. The catalog-parity test uses this so every step has a
+// known producer and unintentional drift still fails.
+export const MANUAL_STEPS: readonly StepId[] = ['review'];
 
 // `reached` = a status milestone was hit (no pass/fail semantics); `passed` /
 // `failed` = a command milestone resolved via its exit code.
@@ -128,6 +136,14 @@ export function isStepId(val: string): val is StepId {
 }
 export function isStepState(val: string): val is StepState {
   return STEP_STATES.find((s) => s === val) !== undefined;
+}
+
+// The `GET /api/tickets/:id/events` payload. Shared so the server (producer)
+// and the React client (consumer) can't drift.
+export type TicketEventsResponse = {
+  ticketId: string
+  pipeline: PipelineStep[]
+  events: TicketEvent[]
 }
 
 // A trimmed ticket for the "recently updated" widget — just the fields the row

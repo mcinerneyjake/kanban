@@ -111,6 +111,22 @@ describe('reducePipeline', () => {
     const lint = reducePipeline(events).find((p) => p.step === 'lint');
     expect(lint).toMatchObject({ state: 'passed', at: '2026-07-01T00:00:05.000Z' });
   });
+
+  it('reverts a step to pending when the latest event is a `cleared` marker (un-review)', () => {
+    const events: TicketEvent[] = [
+      { ticketId: 't', step: 'review', state: 'reached', at: '2026-07-01T00:00:00.000Z' },
+      { ticketId: 't', step: 'review', state: 'reached', at: '2026-07-01T00:00:05.000Z', detail: 'cleared' },
+    ];
+    expect(reducePipeline(events).find((p) => p.step === 'review')?.state).toBe('pending');
+  });
+
+  it('re-reviews after a clear (latest wins)', () => {
+    const events: TicketEvent[] = [
+      { ticketId: 't', step: 'review', state: 'reached', at: '2026-07-01T00:00:00.000Z', detail: 'cleared' },
+      { ticketId: 't', step: 'review', state: 'reached', at: '2026-07-01T00:00:05.000Z' },
+    ];
+    expect(reducePipeline(events).find((p) => p.step === 'review')?.state).toBe('reached');
+  });
 });
 
 describe('getTicketEvents', () => {

@@ -674,3 +674,37 @@ describe('GET /api/tickets/:id/events', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('POST /api/tickets/:id/review', () => {
+  const reviewState = (body: { pipeline: { step: string; state: string }[] }) =>
+    body.pipeline.find((p) => p.step === 'review')?.state;
+
+  it('marks review reached and returns the updated pipeline', async () => {
+    await seedTicket('tkt-rev');
+    const res = await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
+    expect(res.status).toBe(200);
+    expect(reviewState(res.body)).toBe('reached');
+  });
+
+  it('un-reviews with { reviewed: false }, reverting review to pending', async () => {
+    await seedTicket('tkt-rev');
+    await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
+    const res = await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: false });
+    expect(res.status).toBe(200);
+    expect(reviewState(res.body)).toBe('pending');
+    // both actions are retained in the append-only log
+    expect(res.body.events.filter((e: { step: string }) => e.step === 'review')).toHaveLength(2);
+  });
+
+  it('defaults to reviewed when no body is sent', async () => {
+    await seedTicket('tkt-rev');
+    const res = await request(app).post('/api/tickets/tkt-rev/review');
+    expect(res.status).toBe(200);
+    expect(reviewState(res.body)).toBe('reached');
+  });
+
+  it('rejects an invalid id with 400', async () => {
+    const res = await request(app).post('/api/tickets/bad.id/review').send({ reviewed: true });
+    expect(res.status).toBe(400);
+  });
+});

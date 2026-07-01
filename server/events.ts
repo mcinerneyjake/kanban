@@ -8,6 +8,7 @@ import {
   type StepId,
   type TicketEvent,
   type PipelineStep,
+  type TicketEventsResponse,
 } from '../shared/constants.js';
 import { HttpError } from './tickets.js';
 
@@ -120,30 +121,34 @@ export async function readEvents(ticketId: string): Promise<TicketEvent[]> {
   return events;
 }
 
+// Marker used to un-set a toggleable milestone (only `review`). Appended rather
+// than deleting the prior line, so the log stays append-only and race-free with
+// the hook's concurrent writes; the reducer maps a cleared-latest back to
+// pending. The timeline keeps the honest "reviewed … then cleared …" history.
+export const REVIEW_CLEARED = 'cleared';
+
 // Reduce the raw event stream to the tracking-view pipeline: every canonical
 // step in order, showing the LATEST event's state (last write wins — so a
-// failed-then-passed retry lands on `passed`), or `pending` if none arrived.
+// failed-then-passed retry lands on `passed`), or `pending` if none arrived. A
+// latest event tagged `cleared` (an un-review) reverts that step to pending.
 export function reducePipeline(events: TicketEvent[]): PipelineStep[] {
   const latest = new Map<StepId, TicketEvent>();
   for (const e of events) latest.set(e.step, e);
   return STEPS.map((s) => {
     const e = latest.get(s.id);
+    const active = e && e.detail !== REVIEW_CLEARED ? e : undefined;
     return {
       step: s.id,
       label: s.label,
-      state: e ? e.state : 'pending',
-      at: e ? e.at : null,
+      state: active ? active.state : 'pending',
+      at: active ? active.at : null,
     };
   });
 }
 
 // Read-side aggregation for the tracking endpoint: raw events + the reduced
 // pipeline. Validates the id (throws 400 on a bad shape).
-export async function getTicketEvents(ticketId: string): Promise<{
-  ticketId: string
-  pipeline: PipelineStep[]
-  events: TicketEvent[]
-}> {
+export async function getTicketEvents(ticketId: string): Promise<TicketEventsResponse> {
   const events = await readEvents(ticketId);
   return { ticketId, pipeline: reducePipeline(events), events };
 }

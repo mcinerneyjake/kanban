@@ -1,4 +1,4 @@
-import type { Ticket, DashboardSummary } from '../shared/constants.js';
+import type { Ticket, DashboardSummary, TicketEventsResponse } from '../shared/constants.js';
 
 // Rejects with the server's {error} message (or a generic status string) when
 // the HTTP response is not ok. Does not intercept network-level fetch()
@@ -39,6 +39,9 @@ export const api = {
   get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+  events: (id: string): Promise<TicketEventsResponse> => get(`/api/tickets/${id}/events`),
+  review: (id: string, reviewed = true): Promise<TicketEventsResponse> =>
+    send(`/api/tickets/${id}/review`, 'POST', { reviewed }),
   intake: {
     search: (query: string, limit?: number): Promise<{ results: IntakeMatch[] }> =>
       send('/api/intake/search', 'POST', { query, limit }),

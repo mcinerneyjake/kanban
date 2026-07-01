@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
+import PipelineTracker from './PipelineTracker.js';
 import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
 import Spinner from './Spinner.js';
 
@@ -252,6 +253,10 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
             onChange={set('title')}
             autoFocus
           />
+
+          {/* Live workflow tracker — only for an existing ticket (needs an id).
+              Renders null itself for un-started tickets. */}
+          {ticket && <PipelineTracker ticketId={ticket.id} status={ticket.status} />}
 
           {/* Dedup: semantic matches as you type a new ticket. Click one to
               edit it instead of creating a duplicate. */}
