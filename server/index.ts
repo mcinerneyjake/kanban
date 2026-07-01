@@ -13,6 +13,7 @@ import {
   summarizeBoard,
   HttpError,
 } from './tickets.js';
+import { getTicketEvents } from './events.js';
 import { getTicketIndex } from '../agent/indexCache.js';
 import { RuntimeChatClient } from '../agent/llm.js';
 import { proposeIntake } from '../agent/propose.js';
@@ -57,6 +58,16 @@ app.get('/api/tickets/:id', wrap(async (req, res) => {
   const { id } = req.params;
   if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter');
   res.json(await getTicket(id));
+}));
+
+// Read-only workflow-milestone timeline for a ticket (the "package tracking"
+// view). Writers (the service status emitter + the PostToolUse hook) persist
+// events to disk directly; this endpoint only reads. A never-worked or unknown
+// ticket returns an all-`pending` pipeline with no events (200, not 404).
+app.get('/api/tickets/:id/events', wrap(async (req, res) => {
+  const { id } = req.params;
+  if (typeof id !== 'string') throw new HttpError(400, 'Invalid :id parameter');
+  res.json(await getTicketEvents(id));
 }));
 
 app.post('/api/tickets', wrap(async (req, res) => {

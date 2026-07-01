@@ -15,6 +15,7 @@ export default defineConfig({
       include: [
         'server/tickets.ts',
         'server/index.ts',
+        'server/events.ts',
         'mcp/handlers.ts',
         'shared/constants.ts',
         'src/lib/**/*.ts',
