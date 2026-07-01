@@ -22,10 +22,14 @@ const DISPLAY: readonly DisplayGroup[] = [
   { key: 'done', label: 'Done', steps: ['done'] },
 ];
 
-// A node's display state. Extends the pipeline states with `active`: the node
-// the agent (or the awaited human, e.g. review) is currently working toward,
-// only while the ticket is in-progress.
-export type NodeState = 'pending' | 'reached' | 'passed' | 'failed' | 'active'
+// A node's display state. Extends the pipeline states with `active` (the node
+// the agent — or the awaited human, e.g. review — is working toward, only while
+// in-progress) and `skipped` (a node that never registered but sits BEFORE the
+// furthest-reached milestone, so the pipeline passed it: a docs-only gate, a
+// husky-run gate the hook couldn't see, an un-clicked review). Rendering it as
+// `skipped` rather than `pending` keeps the pipeline monotonic — no grey "still
+// upcoming" node before a green one.
+export type NodeState = 'pending' | 'reached' | 'passed' | 'failed' | 'active' | 'skipped'
 
 export interface TrackerNode {
   key: string
@@ -97,14 +101,22 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   groups.forEach((g, i) => { if (isComplete(g.state)) lastDoneIdx = i; });
   const activeIdx = live && lastDoneIdx + 1 < groups.length ? lastDoneIdx + 1 : -1;
 
-  const nodes: TrackerNode[] = groups.map((g, i) => ({
-    key: g.key,
-    label: g.label,
-    state: i === activeIdx ? 'active' : g.state,
-    at: g.at,
-  }));
+  const nodes: TrackerNode[] = groups.map((g, i) => {
+    let state: NodeState = g.state;
+    if (i === activeIdx) state = 'active';
+    // A still-pending node before the furthest-reached one was passed over —
+    // show it as skipped, not pending, so the pipeline reads monotonically.
+    else if (g.state === 'pending' && i < lastDoneIdx) state = 'skipped';
+    return { key: g.key, label: g.label, state, at: g.at };
+  });
 
-  const done = groups.filter((g) => isComplete(g.state)).length;
+  // Progress = how far the pipeline has ADVANCED — the furthest node the green
+  // connector reaches: the active frontier while in-progress, else the last
+  // completed one. This makes the compact card bar match the stepper's green
+  // line in the detail view (skipped middle nodes sit on that line, so the reach
+  // runs through them). It is a position, not a completed-count.
+  const reachedIdx = activeIdx >= 0 ? activeIdx : lastDoneIdx;
+  const done = reachedIdx + 1;
   const started =
     status === 'in-progress' || status === 'qa' || status === 'done' ||
     pipeline.some((p) => p.state !== 'pending');
