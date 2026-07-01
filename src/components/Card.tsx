@@ -38,13 +38,14 @@ type Props = {
   columnId?: Ticket['status']
   depth?: number
   childCount?: number
+  activeBlockerCount?: number
   isCollapsed?: boolean
   onDrop?: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onReparent?: (id: string, newParentId: string) => void
   onToggleCollapse?: (id: string) => void
 }
 
-function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
+function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlockerCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop);
   const [dropMode, setDropMode] = useState<DropMode>(null);
 
@@ -118,9 +119,9 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, isCollapsed
             {isCollapsed ? '▸' : '▾'} {childCount}
           </span>
         )}
-        {ticket.blockers.length > 0 && (
-          <span className="badge blocked" title={`Blocked by ${plural(ticket.blockers.length, 'ticket')}`}>
-            ⛔ {ticket.blockers.length}
+        {activeBlockerCount > 0 && (
+          <span className="badge blocked" title={`Blocked by ${plural(activeBlockerCount, 'ticket')}`}>
+            ⛔ {activeBlockerCount}
           </span>
         )}
         {ticket.assignee && (

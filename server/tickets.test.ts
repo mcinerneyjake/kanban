@@ -290,6 +290,50 @@ describe('deleteTicket', () => {
     const err = await httpError(deleteTicket('tkt-ghost'));
     expect(err.status).toBe(404);
   });
+
+  it('prunes the deleted id from other tickets that were blocked by it', async () => {
+    const blocker = await createTicket({ title: 'Blocker' });
+    const dependent = await updateTicket(
+      (await createTicket({ title: 'Dependent' })).id,
+      { blockers: [blocker.id] },
+    );
+    expect(dependent.blockers).toEqual([blocker.id]);
+
+    await deleteTicket(blocker.id);
+
+    expect((await getTicket(dependent.id)).blockers).toEqual([]);
+  });
+
+  it('leaves other blocker ids intact when pruning', async () => {
+    const b1 = await createTicket({ title: 'B1' });
+    const b2 = await createTicket({ title: 'B2' });
+    const dep = await createTicket({ title: 'Dep' });
+    await updateTicket(dep.id, { blockers: [b1.id, b2.id] });
+
+    await deleteTicket(b1.id);
+
+    expect((await getTicket(dep.id)).blockers).toEqual([b2.id]);
+  });
+
+  it('does not bump `updated` on a ticket it prunes (housekeeping, not an edit)', async () => {
+    const blocker = await createTicket({ title: 'Blocker' });
+    const dep = await createTicket({ title: 'Dep' });
+    const before = await updateTicket(dep.id, { blockers: [blocker.id] });
+
+    await deleteTicket(blocker.id);
+
+    expect((await getTicket(dep.id)).updated).toBe(before.updated);
+  });
+
+  it('no-ops for tickets that never referenced the deleted id', async () => {
+    const unrelated = await createTicket({ title: 'Unrelated' });
+    const before = await getTicket(unrelated.id);
+    const victim = await createTicket({ title: 'Victim' });
+
+    await deleteTicket(victim.id);
+
+    expect(await getTicket(unrelated.id)).toEqual(before);
+  });
 });
 
 describe('listProjects', () => {

@@ -10,6 +10,7 @@ import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
+import { computeActiveBlockerCounts } from './lib/blockers.js';
 import { resolveTicket } from './lib/resolveTicket.js';
 import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
@@ -90,6 +91,11 @@ export default function App() {
   // tickets (not filtered). Done children drop off an open parent's count;
   // a done parent shows its full original count. See computeChildCounts.
   const childCounts = useMemo(() => computeChildCounts(tickets), [tickets]);
+
+  // Keyed by ticket id → count of *active* blockers behind the ⛔ card badge.
+  // Computed from all tickets (not filtered) so a blocker in a hidden column
+  // still counts; done/archived/dangling blockers drop off. See computeActiveBlockerCounts.
+  const activeBlockerCounts = useMemo(() => computeActiveBlockerCounts(tickets), [tickets]);
 
   // ticketsRef lets stable callbacks read the current ticket list without listing
   // tickets as a dependency. Synced in an effect (not during render) so the ref is
@@ -219,8 +225,8 @@ export default function App() {
 
         {view === 'board' ? (
           <>
-            <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
-            <ArchiveLane tickets={archivedTickets} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
+            <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+            <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : (
           <Dashboard

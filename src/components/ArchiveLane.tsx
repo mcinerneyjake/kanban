@@ -3,12 +3,13 @@ import Card from './Card.jsx';
 
 type Props = {
   tickets: Ticket[]
+  activeBlockerCounts: Record<string, number>
   show: boolean
   onToggle: () => void
   onOpen: (ticket: Ticket) => void
 }
 
-export default function ArchiveLane({ tickets, show, onToggle, onOpen }: Props) {
+export default function ArchiveLane({ tickets, activeBlockerCounts, show, onToggle, onOpen }: Props) {
   return (
     <div className="archive-lane">
       <button className="archive-toggle" onClick={onToggle} aria-expanded={show}>
@@ -23,7 +24,7 @@ export default function ArchiveLane({ tickets, show, onToggle, onOpen }: Props) 
             <span className="archive-empty">No archived tickets yet.</span>
           ) : (
             tickets.map((t) => (
-              <Card key={t.id} ticket={t} onOpen={onOpen} />
+              <Card key={t.id} ticket={t} activeBlockerCount={activeBlockerCounts[t.id] ?? 0} onOpen={onOpen} />
             ))
           )}
         </div>

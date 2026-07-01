@@ -9,6 +9,7 @@ type Props = {
   tickets: Ticket[]
   depths: Record<string, number>
   childCounts: Record<string, number>
+  activeBlockerCounts: Record<string, number>
   collapsed: Set<string>
   onDrop: (id: string, status: Ticket['status'], beforeId: string | null) => void
   onReparent: (id: string, newParentId: string) => void
@@ -19,7 +20,7 @@ type Props = {
 
 // A drop target. Dropping on the column's empty space appends; dropping on a
 // card (handled in Card) inserts above that card.
-export default function Column({ column, tickets, depths, childCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse, onArchiveAll }: Props) {
+export default function Column({ column, tickets, depths, childCounts, activeBlockerCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse, onArchiveAll }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -86,6 +87,7 @@ export default function Column({ column, tickets, depths, childCounts, collapsed
             columnId={column.id}
             depth={depths[t.id] ?? 0}
             childCount={childCounts[t.id] ?? 0}
+            activeBlockerCount={activeBlockerCounts[t.id] ?? 0}
             isCollapsed={collapsed.has(t.id)}
             onDrop={onDrop}
             onReparent={onReparent}
