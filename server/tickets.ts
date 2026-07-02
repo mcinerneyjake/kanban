@@ -141,13 +141,22 @@ function serialize(ticket: Ticket): string {
 }
 
 // Write via temp file + atomic rename: a crash mid-write leaves the original
-// ticket intact instead of a half-written file.
+// ticket intact instead of a half-written file. The temp name carries a
+// per-call random suffix (not just the pid) so two overlapping writes to the
+// SAME ticket id can't share one temp path and interleave their write/rename
+// (which would ENOENT one rename or persist the wrong body). Clean up the temp
+// on rename failure so a failed write never leaks a stray .tmp beside the file.
 async function writeTicket(ticket: Ticket) {
   await ensureDir();
   const file = ticketPath(ticket.id);
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(tmp, serialize(ticket), 'utf8');
-  await fs.rename(tmp, file);
+  try {
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
 }
 
 function validateEnums(patch: TicketPatch) {
