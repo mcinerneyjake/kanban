@@ -8,7 +8,9 @@ import { doneParentsWithChildren, reconcileDoneCollapse } from '../lib/collapseD
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
 type Props = {
-  tickets: Ticket[]
+  tickets: Ticket[]       // filtered/visible list — what the columns render
+  allTickets: Ticket[]    // full list — used for drag-drop order math so hidden
+                          // cards can't be collided with (see handleDrop)
   sort: SortBy
   childCounts: Record<string, number>
   activeBlockerCounts: Record<string, number>
@@ -18,7 +20,7 @@ type Props = {
   onArchiveAll: () => void
 }
 
-export default function Board({ tickets, sort, childCounts, activeBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
+export default function Board({ tickets, allTickets, sort, childCounts, activeBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
   // The subset of `collapsed` we collapsed automatically because the parent is
   // done — kept in a ref so a user expanding a done parent isn't undone, and so
@@ -46,16 +48,18 @@ export default function Board({ tickets, sort, childCounts, activeBlockerCounts,
       else next.add(id);
       return next;
     }), []);
-  // Always order-based — used for drag-drop insertion math.
-  const inColumn = (status: Ticket['status']) =>
-    tickets
+  // Order-based column. `source` is the FULL list for drag-drop math (so
+  // midpoints/appends account for cards hidden by the active filter) and the
+  // filtered list for display.
+  const columnFrom = (source: Ticket[], status: Ticket['status']) =>
+    source
       .filter((t) => t.status === status)
       .sort((a, b) => a.order - b.order);
 
   // Applied only for display; drag math always uses inColumn.
   // Children are grouped directly under their parent when both share the same column.
   const displayColumn = (status: Ticket['status']): { ordered: Ticket[]; depths: Record<string, number> } => {
-    const base = inColumn(status);
+    const base = columnFrom(tickets, status); // filtered — display only
     const sorted = (() => {
       switch (sort) {
         case 'priority': return [...base].sort((a, b) => PRIO_RANK[a.priority] - PRIO_RANK[b.priority]);
@@ -98,7 +102,11 @@ export default function Board({ tickets, sort, childCounts, activeBlockerCounts,
   // beforeId === <id>  -> insert immediately above that card
   const handleDrop = (id: string, status: Ticket['status'], beforeId: string | null) => {
     if (beforeId === id) return; // dropped onto itself: no-op
-    const column = inColumn(status).filter((t) => t.id !== id);
+    // Compute against the FULL column (allTickets), not the visible one: a drop
+    // between two visible cards must take the midpoint with the *actual* neighbor
+    // in the full ordering (which may be a filtered-out card), and an append must
+    // land after every card in the column, not just the last visible one.
+    const column = columnFrom(allTickets, status).filter((t) => t.id !== id);
     onMove(id, status, computeDropOrder(column, beforeId));
   };
 

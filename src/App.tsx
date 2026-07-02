@@ -267,7 +267,7 @@ export default function App() {
 
         {view === 'board' ? (
           <>
-            <Board tickets={filteredTickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+            <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
             <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : (
