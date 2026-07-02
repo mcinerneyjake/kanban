@@ -13,8 +13,10 @@ import { appendEvent } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Tests can redirect file I/O to a temp directory via this env var.
-function getTicketsDir() {
+// Tests can redirect file I/O to a temp directory via this env var. Exported so
+// the ticket watcher watches the same directory the service writes to (honouring
+// the override).
+export function getTicketsDir() {
   return process.env.TICKETS_DIR_OVERRIDE ?? path.join(__dirname, '..', 'tickets');
 }
 
