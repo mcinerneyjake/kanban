@@ -205,6 +205,16 @@ function newId(): string {
   return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
+// gray-matter caches parsed files by content — but ONLY when no options are
+// passed, and it writes the (un-parsed) file into the cache BEFORE parsing. So a
+// file with bad YAML throws on the first parse, then the next identical parse
+// returns the cached *empty* success: a corrupt ticket would 500 once, then
+// silently reappear as an empty ghost on the next board load. Passing any
+// options object bypasses the cache entirely (see gray-matter index.js), so
+// parsing is consistent — corrupt content throws every time and is handled the
+// same way on every read. Empty object = defaults, just no caching.
+const NO_CACHE: Parameters<typeof matter>[1] = {};
+
 
 // --- Public API ------------------------------------------------------------
 
@@ -215,8 +225,16 @@ export async function listTickets(): Promise<Ticket[]> {
   for (const file of files) {
     if (!file.endsWith('.md')) continue;
     const raw = await fs.readFile(path.join(getTicketsDir(), file), 'utf8');
-    const { data, content } = matter(raw);
-    tickets.push(normalize(file.slice(0, -3), data, content));
+    try {
+      const { data, content } = matter(raw, NO_CACHE); // NO_CACHE → consistent throw on bad YAML
+      tickets.push(normalize(file.slice(0, -3), data, content));
+    } catch (err) {
+      // A hand-edited file with unparseable frontmatter (e.g. an unclosed quote →
+      // gray-matter throws YAMLException) must not take the whole board down.
+      // normalize() already tolerates type-level junk; skip + warn covers
+      // parse-level junk so the rest of the board stays up.
+      console.warn(`[tickets] skipping unparseable ticket file ${file}:`, err instanceof Error ? err.message : err);
+    }
   }
   return tickets.sort((a, b) => a.order - b.order);
 }
@@ -234,8 +252,14 @@ export async function getTicket(id: string): Promise<Ticket> {
   } catch {
     throw new HttpError(404, `Ticket not found: ${id}`);
   }
-  const { data, content } = matter(raw);
-  return normalize(id, data, content);
+  try {
+    const { data, content } = matter(raw, NO_CACHE); // see NO_CACHE: consistent throw on bad YAML
+    return normalize(id, data, content);
+  } catch (err) {
+    // The file exists but its frontmatter won't parse — surface a clear error
+    // naming the ticket instead of leaking a raw YAMLException/500 stack.
+    throw new HttpError(500, `Ticket ${id} has unparseable frontmatter: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {

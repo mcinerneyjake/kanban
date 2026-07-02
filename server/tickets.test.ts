@@ -786,3 +786,39 @@ describe('write-path type + create-status validation', () => {
     expect(archived.status).toBe('archived');
   });
 });
+
+describe('corrupt ticket file resilience', () => {
+  const CORRUPT = "---\ntitle: 'unclosed\n---\n"; // unclosed quote → gray-matter throws
+
+  it('listTickets skips an unparseable file, keeps the rest of the board, and warns', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
+    const good = await createTicket({ title: 'Good one' });
+    await writeRaw('tkt-bad', CORRUPT);
+    const all = await listTickets();                    // must not throw
+    expect(all.map((t) => t.id)).toContain(good.id);
+    expect(all.map((t) => t.id)).not.toContain('tkt-bad');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('getTicket surfaces a 500 naming the ticket for unparseable frontmatter', async () => {
+    await writeRaw('tkt-bad', CORRUPT);
+    const err = await httpError(getTicket('tkt-bad'));
+    expect(err.status).toBe(500);
+    expect(err.message).toContain('tkt-bad');
+  });
+
+  it('stays consistent across repeated reads (gray-matter content cache is bypassed)', async () => {
+    // Regression guard for the NO_CACHE fix: gray-matter caches the un-parsed
+    // file before parsing (only when no options are passed), so a corrupt file
+    // would throw once then return a cached empty success — a 500 that decays
+    // into a silent empty ghost on the next read. Both reads must behave the same.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
+    await writeRaw('tkt-bad', CORRUPT);
+    expect((await listTickets()).map((t) => t.id)).not.toContain('tkt-bad');
+    expect((await listTickets()).map((t) => t.id)).not.toContain('tkt-bad'); // 2nd read too
+    expect((await httpError(getTicket('tkt-bad'))).status).toBe(500);
+    expect((await httpError(getTicket('tkt-bad'))).status).toBe(500);        // still 500, not a ghost
+    warn.mockRestore();
+  });
+});
