@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api.js';
+import ErrorBanner from './ErrorBanner.jsx';
 import { donutSegments } from '../lib/donutSegments.js';
 import { type WidgetVisibility } from '../useDashboardConfig.js';
 import {
@@ -88,7 +89,7 @@ export default function Dashboard({ project, visible, autoRefresh, refreshKey, o
 
   return (
     <div className="dashboard">
-      {error && <div className="error" onClick={() => setError(null)}>{error} — click to dismiss</div>}
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {loading && !summary ? (
         <div className="dash-empty">Loading…</div>
