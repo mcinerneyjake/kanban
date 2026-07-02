@@ -1,35 +1,26 @@
 import { useEffect, useState } from 'react';
+import { WIDGETS, parseVisibility, type WidgetKey, type WidgetVisibility } from './lib/dashboardVisibility.js';
 
 // Dashboard view configuration, lifted out of the Dashboard component so the
 // sidebar can own the controls while the dashboard consumes the values. Widget
 // visibility persists across sessions; project filter and auto-refresh reset on
 // reload (they're session-scoped exploration, not durable preferences).
+//
+// The widget model + the pure persistence parse live in ./lib/dashboardVisibility
+// (unit-tested); re-exported here so existing consumers keep their import path.
+export { WIDGETS };
+export type { WidgetKey, WidgetVisibility };
 
-export const WIDGETS = [
-  { key: 'status', label: 'Status' },
-  { key: 'priority', label: 'Priority' },
-  { key: 'recent', label: 'Recently updated' },
-] as const;
-
-export type WidgetKey = (typeof WIDGETS)[number]['key']
-export type WidgetVisibility = Record<WidgetKey, boolean>
-
-const ALL_VISIBLE: WidgetVisibility = { status: true, priority: true, recent: true };
 const WIDGETS_KEY = 'dashboard-widgets';
 
+// Thin localStorage wrapper around the pure parse; tolerates storage being
+// unavailable (e.g. disabled/blocked) by falling back to defaults.
 function loadVisibility(): WidgetVisibility {
   try {
-    const raw = localStorage.getItem(WIDGETS_KEY);
-    if (!raw) return ALL_VISIBLE;
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      const obj: Record<string, unknown> = { ...parsed };
-      // A widget is shown unless explicitly stored as false, so a newly added
-      // widget defaults to visible against an older persisted object.
-      return { status: obj.status !== false, priority: obj.priority !== false, recent: obj.recent !== false };
-    }
-  } catch { /* corrupt value — fall through to defaults */ }
-  return ALL_VISIBLE;
+    return parseVisibility(localStorage.getItem(WIDGETS_KEY));
+  } catch {
+    return { status: true, priority: true, recent: true };
+  }
 }
 
 export interface DashboardConfig {
