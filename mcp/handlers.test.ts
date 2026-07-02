@@ -339,9 +339,38 @@ describe('update_ticket', () => {
     expect(updated.blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
     expect(updated.parent).toBe(parentId);
     expect(updated.body).toBe('New body text');
-    // ignores a non-string-array blockers value rather than persisting garbage
-    const after = asRecord(await handleToolCall('update_ticket', { id, blockers: [1, 2] }));
-    expect(after.blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
+    // rejects a non-string-array blockers value (400) rather than silently
+    // dropping it — and the existing blockers are left untouched.
+    const rejected = await handleToolCall('update_ticket', { id, blockers: [1, 2] });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0].text).toContain('blockers must be an array of strings');
+    expect(asRecord(await handleToolCall('get_ticket', { id })).blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
+  });
+
+  it('rejects present-but-wrong-typed fields with 400, not a silent no-op (parity with #82)', async () => {
+    const id = await seed();
+    for (const [args, needle] of [
+      [{ id, title: 42 }, 'title must be a string'],
+      [{ id, body: {} }, 'body must be a string'],
+      [{ id, status: 5 }, 'Invalid status'],
+      [{ id, project: 42 }, 'project must be a string or null'],
+      [{ id, parent: 7 }, 'parent must be a string or null'],
+      [{ id, dueDate: 5 }, 'dueDate must be a string or null'],
+      [{ id, assignee: true }, 'assignee must be a string or null'],
+    ] as const) {
+      const res = await handleToolCall('update_ticket', args);
+      expect(res.isError, `${JSON.stringify(args)}`).toBe(true);
+      expect(res.content[0].text).toContain(needle);
+    }
+    // the ticket is untouched — none of the rejected writes landed
+    const now = asRecord(await handleToolCall('get_ticket', { id }));
+    expect(now.title).toBe('Seed');
+  });
+
+  it('record_review rejects a nonexistent ticket id instead of ghost-writing an events file', async () => {
+    const res = await handleToolCall('record_review', { id: 'tkt-does-not-exist' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not found');
   });
 
   it('clears the parent when passed null (edge)', async () => {
