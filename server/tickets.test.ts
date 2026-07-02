@@ -711,3 +711,25 @@ describe('updateTicket — status-milestone telemetry', () => {
     expect(await readEvents(t.id)).toEqual([]);
   });
 });
+
+describe('concurrent same-id writes (temp-file uniqueness)', () => {
+  it('resolves two overlapping updates on one id without a 500 and leaves a consistent file', async () => {
+    const t = await createTicket({ title: 'Race', body: 'start' });
+    // Fire both writes without awaiting in between so their writeFile/rename
+    // interleave. A pid-only temp name would let them share one temp path and
+    // ENOENT one rename; the per-call random suffix keeps them independent.
+    const [a, b] = await Promise.all([
+      updateTicket(t.id, { body: 'first' }),
+      updateTicket(t.id, { body: 'second' }),
+    ]);
+    expect(a.id).toBe(t.id);
+    expect(b.id).toBe(t.id);
+    // Both resolved; the persisted file is whichever rename landed last — either
+    // way it's one of the two bodies, never a half-written or missing file.
+    const persisted = await getTicket(t.id);
+    expect(['first', 'second']).toContain(persisted.body);
+    // No stray .tmp left beside the ticket file.
+    const leftovers = (await fs.readdir(tmpDir)).filter((f) => f.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+});
