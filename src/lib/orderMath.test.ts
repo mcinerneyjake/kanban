@@ -69,3 +69,24 @@ describe('computeDropOrder — float precision edge case', () => {
     expect(result).toBeLessThanOrEqual(hi);
   });
 });
+
+describe('computeDropOrder — full column includes filter-hidden neighbors (tkt-7392631f72d8)', () => {
+  // Board passes the FULL column (allTickets) so a card hidden by the active
+  // filter still participates in the ordering. These pin why that matters: the
+  // same drop computed against the visible-only column would collide.
+
+  it('inserts between a visible card and a hidden predecessor without colliding', () => {
+    // Column order: visible a(2), HIDDEN h(3), visible b(4). User drops above b.
+    const full = [card('a', 2), card('h', 3), card('b', 4)];
+    expect(computeDropOrder(full, 'b')).toBe(3.5); // midpoint of h(3) and b(4)
+    // For contrast, the buggy visible-only column [a(2), b(4)] would yield 3 —
+    // a duplicate of the hidden card's order.
+    expect(computeDropOrder([card('a', 2), card('b', 4)], 'b')).toBe(3); // (documents the old collision)
+  });
+
+  it('appends after a hidden last card, not after the last visible one', () => {
+    // Visible a(1), b(2); a hidden h(9) is actually last in the column.
+    const full = [card('a', 1), card('b', 2), card('h', 9)];
+    expect(computeDropOrder(full, null)).toBe(10); // h(9) + 1 — lands truly last
+  });
+});
