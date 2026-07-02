@@ -52,7 +52,12 @@ export default function FilterPopover({ filter, projects, assignees, onChange }:
     const onMouse = (e: MouseEvent) => {
       if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // Escape on an open native <select> should close its dropdown, not the
+    // whole popover — the keydown bubbles to document, so skip closing when the
+    // target is a <select> and let the control handle its own Escape.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target instanceof HTMLSelectElement)) setOpen(false);
+    };
     document.addEventListener('mousedown', onMouse);
     document.addEventListener('keydown', onKey);
     return () => {
