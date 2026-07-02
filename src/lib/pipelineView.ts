@@ -36,6 +36,14 @@ export interface TrackerNode {
   label: string
   state: NodeState
   at: string | null
+  // Review-gate interactivity, derived here (not in PipelineTracker) so the
+  // frontier-vs-status branching that once hid the pulse bug is unit-tested.
+  // All false on non-review nodes.
+  awaiting: boolean   // Review is the active frontier — pulses, invites a click
+  reviewed: boolean   // Review is complete (reached/passed)
+  showCheck: boolean  // render the ✓ control at all (awaiting || reviewed)
+  clickable: boolean  // the ✓ is actionable (awaiting && ticket in-progress);
+                      // a completed review locks — never re-clickable
 }
 
 export interface TrackerView {
@@ -107,7 +115,16 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
     // A still-pending node before the furthest-reached one was passed over —
     // show it as skipped, not pending, so the pipeline reads monotonically.
     else if (g.state === 'pending' && i < lastDoneIdx) state = 'skipped';
-    return { key: g.key, label: g.label, state, at: g.at };
+    // Review gate interactivity. `awaiting` is true ONLY when Review is the
+    // active frontier (state==='active'), which the frontier logic sets only
+    // while in-progress — not merely because the ticket is in-progress. Once
+    // Review completes it locks (reviewed, not clickable).
+    const isReview = g.key === 'review';
+    const reviewed = isReview && isComplete(state);
+    const awaiting = isReview && state === 'active';
+    const clickable = awaiting && status === 'in-progress';
+    const showCheck = isReview && (awaiting || reviewed);
+    return { key: g.key, label: g.label, state, at: g.at, awaiting, reviewed, showCheck, clickable };
   });
 
   // Progress = how far the pipeline has ADVANCED — the furthest node the green
