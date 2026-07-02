@@ -57,16 +57,13 @@ type Props = {
 export default function Dashboard({ project, visible, autoRefresh, refreshKey, onOpen }: Props) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Starts true so the first fetch shows the loading state; only flipped false.
-  const [loading, setLoading] = useState(true);
 
   // setState only ever runs inside the async callbacks (never synchronously in
   // render/effect), matching App.load() and keeping the effect side-effect-free.
   const load = useCallback(() => {
     api.dashboard(project || undefined)
       .then((s) => { setSummary(s); setError(null); })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e: Error) => setError(e.message));
   }, [project]);
 
   // Refresh on mount, on project change, and whenever App signals a ticket
@@ -86,12 +83,15 @@ export default function Dashboard({ project, visible, autoRefresh, refreshKey, o
     : [];
   const priorityMax = summary ? Math.max(1, ...summary.byPriority.map((p) => p.count)) : 1;
   const allHidden = !visible.status && !visible.priority && !visible.recent;
+  // Loading = the first fetch hasn't resolved yet (no summary, no error). Once
+  // either lands, the placeholder gives way; later refreshes swap data in place.
+  const isLoading = summary === null && error === null;
 
   return (
     <div className="dashboard">
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
-      {loading && !summary ? (
+      {isLoading ? (
         <div className="dash-empty">Loading…</div>
       ) : summary && (
         <>
