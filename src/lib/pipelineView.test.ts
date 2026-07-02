@@ -112,3 +112,58 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     expect(v.nodes.some((n) => n.state === 'active')).toBe(false);
   });
 });
+
+describe('pipelineView — review-gate interactivity flags', () => {
+  const review = (v: ReturnType<typeof pipelineView>) => {
+    const n = v.nodes.find((x) => x.key === 'review');
+    if (!n) throw new Error('no review node');
+    return n;
+  };
+  const gatePassed = { branch: 'passed', typecheck: 'passed', lint: 'passed', test: 'passed' } as const;
+
+  it('all flags false while Gate is still running (Review not yet the frontier)', () => {
+    const v = pipelineView(build({ branch: 'passed', typecheck: 'passed' }), 'in-progress');
+    expect(review(v)).toMatchObject({
+      state: 'pending', awaiting: false, reviewed: false, showCheck: false, clickable: false,
+    });
+  });
+
+  it('awaiting + clickable + showCheck when Review is the frontier (gate passed, in-progress)', () => {
+    const v = pipelineView(build(gatePassed), 'in-progress');
+    expect(review(v)).toMatchObject({
+      state: 'active', awaiting: true, reviewed: false, showCheck: true, clickable: true,
+    });
+  });
+
+  it('locks once reviewed: reviewed + showCheck, but NOT awaiting and NOT clickable', () => {
+    const v = pipelineView(build({ ...gatePassed, review: 'reached' }), 'in-progress');
+    expect(review(v)).toMatchObject({
+      state: 'reached', awaiting: false, reviewed: true, showCheck: true, clickable: false,
+    });
+  });
+
+  it('a skipped Review shows no ✓ control and is not clickable', () => {
+    const v = pipelineView(build({ branch: 'passed', commit: 'passed' }), 'in-progress');
+    expect(review(v)).toMatchObject({
+      state: 'skipped', awaiting: false, reviewed: false, showCheck: false, clickable: false,
+    });
+  });
+
+  it('never clickable outside in-progress, even when reviewed (qa/done)', () => {
+    const all: Partial<Record<PipelineStep['step'], PipelineStep['state']>> = {};
+    for (const s of STEPS) all[s.id] = s.id === 'review' ? 'reached' : 'passed';
+    for (const status of ['qa', 'done'] as const) {
+      const n = review(pipelineView(build(all), status));
+      expect(n.reviewed).toBe(true);   // it WAS reviewed
+      expect(n.clickable).toBe(false); // but not in-progress → not actionable
+      expect(n.awaiting).toBe(false);
+    }
+  });
+
+  it('leaves non-review nodes non-interactive (e.g. the active Gate frontier)', () => {
+    const v = pipelineView(build({ branch: 'passed', typecheck: 'passed' }), 'in-progress');
+    const gate = v.nodes.find((n) => n.key === 'gate');
+    expect(gate?.state).toBe('active');
+    expect(gate).toMatchObject({ awaiting: false, reviewed: false, showCheck: false, clickable: false });
+  });
+});

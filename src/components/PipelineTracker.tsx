@@ -56,19 +56,11 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
 
       <ol className="tracker-steps">
         {view.nodes.map((n) => {
+          // Review-gate interactivity is derived in pipelineView (unit-tested)
+          // and consumed here — pulse when awaiting, ✓ control when showCheck,
+          // actionable (with a live toggle guard) when clickable.
+          const { awaiting, reviewed, showCheck, clickable } = n;
           const isReview = n.key === 'review';
-          const reviewed = isReview && (n.state === 'reached' || n.state === 'passed');
-          // Review only "awaits" (pulses, invites a click) when it is the actual
-          // frontier — not merely because the ticket is in-progress. While Gate
-          // runs it's a dim, static, non-clickable checkmark.
-          const awaiting = isReview && n.state === 'active';
-          // Clickable ONLY while Review is the awaiting frontier. Once completed
-          // it locks — a done milestone isn't un-done (no un-review by clicking).
-          const clickable = awaiting && status === 'in-progress';
-          // Show the checkmark control ONLY when Review is the frontier or already
-          // done. A skipped/pending Review renders as a plain node (dashed dot for
-          // skipped) — never a ✓, which would falsely read as "reviewed".
-          const showCheck = isReview && (awaiting || reviewed);
           const nodeClass = awaiting ? 'is-awaiting-review' : `is-${n.state}`;
           const title = isReview
             ? (reviewed ? 'Reviewed'
