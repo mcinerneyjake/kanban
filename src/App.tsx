@@ -7,6 +7,7 @@ import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
+import ErrorBanner from './components/ErrorBanner.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
@@ -262,11 +263,7 @@ export default function App() {
           </div>
         </header>
 
-        {error && (
-          <div className="error" onClick={() => setError(null)}>
-            {error} — click to dismiss
-          </div>
-        )}
+        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
         {view === 'board' ? (
           <>
