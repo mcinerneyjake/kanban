@@ -142,3 +142,68 @@ describe('decide — edge cases', () => {
     expect(blocked("printf 'git add -A'", 'feat/x')).toBe(false);
   });
 });
+
+describe('decide — hardened bypasses (tkt-0b9b9543907f)', () => {
+  it('blocks +refspec force-push (main and feature branches)', () => {
+    expect(blocked('git push origin +main', 'feat/x')).toBe(true);
+    expect(blocked('git push origin +feat/x', 'feat/x')).toBe(true);
+    expect(blocked('git push origin +refs/heads/main', 'feat/x')).toBe(true);
+  });
+
+  it('blocks clustered force flags (-uf / -fu)', () => {
+    expect(blocked('git push -uf origin feat/x', 'feat/x')).toBe(true);
+    expect(blocked('git push -fu origin feat/x', 'feat/x')).toBe(true);
+    // a non-force cluster is still fine
+    expect(blocked('git push -u origin feat/x', 'feat/x')).toBe(false);
+  });
+
+  it('blocks `git push origin HEAD` while on main, allows it on a feature branch', () => {
+    expect(blocked('git push origin HEAD', 'main')).toBe(true);
+    expect(blocked('git push origin @', 'main')).toBe(true);
+    expect(blocked('git push origin HEAD', 'feat/x')).toBe(false);
+  });
+
+  it('blocks branch force-delete in all shapes, allows safe -d', () => {
+    for (const cmd of ['git branch -D x', 'git branch --delete --force x', 'git branch -d -f x', 'git branch -df x', 'git branch -Df x']) {
+      expect(blocked(cmd, 'feat/x'), cmd).toBe(true);
+    }
+    expect(blocked('git branch -d x', 'feat/x')).toBe(false);
+    expect(blocked('git branch --delete x', 'feat/x')).toBe(false);
+  });
+
+  it('blocks git clean force via long flag and clusters, allows dry-run', () => {
+    for (const cmd of ['git clean --force', 'git clean -f', 'git clean -xdf', 'git clean -ffd']) {
+      expect(blocked(cmd, 'feat/x'), cmd).toBe(true);
+    }
+    expect(blocked('git clean -n', 'feat/x')).toBe(false);
+  });
+
+  it('blocks `git switch - && git commit` (previous branch could be main)', () => {
+    expect(blocked('git switch - && git commit -m x', 'feat/x')).toBe(true);
+    expect(blocked('git checkout - && git commit -m x', 'feat/x')).toBe(true);
+    // switching to a named feature branch then committing is still fine
+    expect(blocked('git switch feat/y && git commit -m x', 'main')).toBe(false);
+  });
+});
+
+describe('decide — no false positives on quoted / heredoc data', () => {
+  it('does not split on && or newlines inside quotes / $( … )', () => {
+    // The CLAUDE.md heredoc commit whose body mentions `git add -A` — one command.
+    const heredoc = [
+      'git commit -m "$(cat <<\'EOF\'',
+      'Subject line',
+      '',
+      'Body that references git add -A and a && chain in prose.',
+      'EOF',
+      ')"',
+    ].join('\n');
+    expect(blocked(heredoc, 'feat/x')).toBe(false);
+    // A quoted JS string containing `&& git commit` is data, not a command.
+    expect(blocked(`node -e 'const s = "git switch - && git commit -m x"'`, 'main')).toBe(false);
+  });
+
+  it('still splits and blocks real chained commands', () => {
+    expect(blocked('git add server/x.ts && git add -A', 'feat/x')).toBe(true);
+    expect(blocked('git switch main && git commit -m x', 'feat/x')).toBe(true);
+  });
+});

@@ -70,12 +70,17 @@ function commitStagesAll(args) {
 // True when a push would land on main: an explicit main refspec/target, or a
 // bare push while on main (no explicit non-main target and not a delete/tags op).
 function pushesMain(args, branch) {
-  const positionals = args.filter((a) => !a.startsWith('-'));
+  // Strip a leading `+` (force-refspec syntax) so `+main` is still seen as main.
+  const positionals = args.filter((a) => !a.startsWith('-')).map((a) => a.replace(/^\+/, ''));
   const flags = args.filter((a) => a.startsWith('-'));
   const targetsMain = positionals.some(
     (a) => a === 'main' || a.endsWith(':main') || a.endsWith('/main'),
   );
   if (targetsMain) return true;
+  // `HEAD` / `@` resolve to the current branch, so on main they push main —
+  // `git push origin HEAD` while on main must not read as an explicit non-main
+  // target.
+  if (branch === 'main' && positionals.some((a) => a === 'HEAD' || a === '@')) return true;
   const safeFlag = flags.some((f) => ['--delete', '-d', '--tags', '--prune', '--mirror'].includes(f));
   const explicitTarget = positionals.length >= 2; // remote + refspec → not the current branch implicitly
   return branch === 'main' && !safeFlag && !explicitTarget;
@@ -85,11 +90,16 @@ function pushesMain(args, branch) {
 // branch first isn't judged against the pre-switch branch. Plain
 // `git checkout <x>` is intentionally not tracked (path-vs-branch ambiguous).
 function switchTarget(sub, args) {
-  if (sub === 'switch' || ((sub === 'checkout') && (args.includes('-b') || args.includes('-B')))) {
+  if (sub !== 'switch' && sub !== 'checkout') return null;
+  // `switch -` / `checkout -` jumps to the PREVIOUS branch, which the hook can't
+  // resolve. Assume it could be main so a commit/push later in the SAME chain
+  // stays guarded (else `git switch - && git commit` would sneak onto main).
+  if (args.includes('-')) return 'main';
+  if (sub === 'switch' || args.includes('-b') || args.includes('-B')) {
     const positionals = args.filter((a) => !a.startsWith('-'));
     return positionals[0] ?? null;
   }
-  return null;
+  return null; // plain `git checkout <x>` — path-vs-branch ambiguous, not tracked
 }
 
 // Destructive git flags that no part of the ticket workflow needs, blocked on
@@ -99,35 +109,78 @@ function switchTarget(sub, args) {
 // untracked-file deletion, force checkout). Returns a reason or null.
 export function destructiveGitReason(sub, args) {
   const has = (...flags) => args.some((a) => flags.includes(a));
+  // A single-character short flag present anywhere in a single-dash cluster,
+  // e.g. 'f' in `-uf` or 'd' in `-df` — so clustered flags can't slip past an
+  // exact-token check. Excludes long (`--`) flags and `-o=val` attached values.
+  const hasShort = (ch) =>
+    args.some((a) => a.startsWith('-') && !a.startsWith('--') && !a.includes('=') && a.slice(1).includes(ch));
   switch (sub) {
     case 'push':
-      if (has('-f', '--force') || args.some((a) => a === '--force-with-lease' || a.startsWith('--force-with-lease=')))
-        return 'git push --force rewrites remote history. Force-push is never part of the workflow — push normally and open a PR.';
+      // Force by flag (-f / -uf / --force / --force-with-lease) OR by the
+      // `+refspec` force syntax (`git push origin +main`, `+feat/x`).
+      if (has('--force') || hasShort('f') ||
+          args.some((a) => a === '--force-with-lease' || a.startsWith('--force-with-lease=')) ||
+          args.some((a) => a.startsWith('+')))
+        return 'git push force (--force / -f / +refspec) rewrites remote history. Force-push is never part of the workflow — push normally and open a PR.';
       return null;
     case 'add':
     case 'stage':
-      if (has('-f', '--force'))
+      if (has('--force') || hasShort('f'))
         return 'git add -f overrides .gitignore and can stage ignored files (e.g. secrets / build artifacts). Stage only intended, non-ignored paths.';
       return null;
     case 'branch':
-      if (has('-D'))
-        return 'git branch -D force-deletes a branch, discarding unmerged commits. Use -d (safe delete) instead.';
+      // Force-delete = -D, or (--delete/-d) combined with (--force/-f), or a
+      // single cluster carrying both (e.g. -Df / -df).
+      if (hasShort('D') || ((has('--delete') || hasShort('d')) && (has('--force') || hasShort('f'))))
+        return 'git branch force-delete (-D / --delete --force) discards unmerged commits. Use -d (safe delete) instead.';
       return null;
     case 'reset':
       if (has('--hard'))
         return 'git reset --hard irreversibly discards working-tree changes. Not part of the workflow.';
       return null;
     case 'clean':
-      if (args.some((a) => /^-[a-z]*f/i.test(a)))
-        return 'git clean -f permanently deletes untracked files. Not part of the workflow.';
+      if (has('--force') || hasShort('f'))
+        return 'git clean -f / --force permanently deletes untracked files. Not part of the workflow.';
       return null;
     case 'checkout':
-      if (has('-f', '--force'))
+      if (has('--force') || hasShort('f'))
         return 'git checkout -f discards local changes. Use git switch / git restore explicitly instead.';
       return null;
     default:
       return null;
   }
+}
+
+// Split a compound command into top-level segments on && || ; and newline —
+// but NOT inside single/double quotes or $( … ) command substitutions. So data
+// (a commit-message heredoc body, a quoted JS string that happens to contain
+// `&&` or git verbs) is never mis-parsed as a separate command. Not a full shell
+// parser — it covers the shapes the workflow actually produces; a stray
+// unbalanced `)` inside a heredoc body is the known residual.
+export function splitSegments(command) {
+  const segments = [];
+  let buf = '';
+  let sq = false;   // inside '...'
+  let dq = false;   // inside "..."
+  let subst = 0;    // depth of $( … )
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    const next = command[i + 1];
+    if (sq) { buf += c; if (c === "'") sq = false; continue; }
+    if (c === "'" && !dq) { buf += c; sq = true; continue; }
+    if (c === '"' && subst === 0) { buf += c; dq = !dq; continue; }
+    if (c === '$' && next === '(') { buf += '$('; subst++; i++; continue; }
+    if (subst > 0 && c === '(') { buf += c; subst++; continue; }
+    if (subst > 0 && c === ')') { buf += c; subst--; continue; }
+    if (!dq && subst === 0) {
+      if (c === '&' && next === '&') { segments.push(buf); buf = ''; i++; continue; }
+      if (c === '|' && next === '|') { segments.push(buf); buf = ''; i++; continue; }
+      if (c === ';' || c === '\n') { segments.push(buf); buf = ''; continue; }
+    }
+    buf += c;
+  }
+  segments.push(buf);
+  return segments.map((s) => s.trim()).filter(Boolean);
 }
 
 // Decide whether a (possibly compound) command should be blocked. `getBranch`
@@ -136,14 +189,10 @@ export function destructiveGitReason(sub, args) {
 export function decide(command, getBranch) {
   if (typeof command !== 'string' || !command.trim()) return { blocked: false };
 
-  // Split on &&, ||, ;, newline so each git invocation is checked independently.
-  // Single `|` is intentionally not a split point: piping into the guarded
-  // subcommands is not a real workflow, and splitting on it would mangle commit
-  // messages that contain a literal `|`.
-  const segments = command
-    .split(/&&|\|\||;|\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Quote/substitution-aware split so each git invocation is checked
+  // independently without mis-splitting quoted data (see splitSegments). Single
+  // `|` is intentionally not a split point.
+  const segments = splitSegments(command);
 
   let branch = getBranch(); // effective branch, updated as we walk switch/checkout in a chain
 
