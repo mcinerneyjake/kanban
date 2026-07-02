@@ -114,7 +114,14 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   };
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    // Ignore Escape fired from an open native <select> (type/priority/status/
+    // project/parent/add-blocker) — the keydown bubbles to document, and closing
+    // the modal there would discard unsaved edits. Same guard as #83 for the
+    // popovers; useDismiss (tkt-62defb0169d3) is the longer-term shared home, but
+    // the modal is Escape-only (no ref/outside-click) so the guard is inlined.
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target instanceof HTMLSelectElement)) onClose();
+    };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
