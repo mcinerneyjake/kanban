@@ -20,7 +20,8 @@ function fakeClient() {
 
 describe('handleFsEvent (filter + debounce)', () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => {
+  afterEach(async () => {
+    await stopTicketWatcher();   // cancel any pending debounce timer before restoring clocks
     closeAllStreamClients();
     vi.useRealTimers();
   });
@@ -51,6 +52,60 @@ describe('handleFsEvent (filter + debounce)', () => {
     handleFsEvent('/tickets/notes.json');
     vi.advanceTimersByTime(100);
     expect(c.refreshes()).toHaveLength(0);
+  });
+
+  it('stopTicketWatcher cancels a pending debounce (no late broadcast)', async () => {
+    const c = fakeClient();
+    registerClient(c.client);
+    handleFsEvent('/tickets/tkt-abc.md');       // schedules the debounced broadcast
+    await stopTicketWatcher();                  // must clear the pending timer
+    vi.advanceTimersByTime(1000);
+    expect(c.refreshes()).toHaveLength(0);
+  });
+});
+
+// Real chokidar + real fs events (no fake timers) — proves the wiring the unit
+// tests stub: options, on('all'), the mkdir-on-start fix, and restart.
+describe('startTicketWatcher (integration, real fs)', () => {
+  let base: string | null = null;
+
+  afterEach(async () => {
+    await stopTicketWatcher();
+    closeAllStreamClients();
+    delete process.env.TICKETS_DIR_OVERRIDE;
+    if (base) { await fs.rm(base, { recursive: true, force: true }); base = null; }
+  });
+
+  // Re-touch the ticket file until the debounced broadcast reaches the client —
+  // no fixed sleeps; tolerates chokidar's initial settle + the 100ms debounce.
+  async function expectRefreshOnWrite(dir: string, name: string, c: ReturnType<typeof fakeClient>) {
+    await vi.waitFor(async () => {
+      await fs.writeFile(path.join(dir, name), '---\ntitle: X\n---\n');
+      expect(c.refreshes().length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5000, interval: 100 });
+  }
+
+  it('creates a missing tickets dir on start and broadcasts on a real .md write', async () => {
+    base = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-watch-int-'));
+    const dir = path.join(base, 'tickets');     // deliberately does NOT exist yet
+    process.env.TICKETS_DIR_OVERRIDE = dir;
+
+    const c = fakeClient();
+    registerClient(c.client);
+    startTicketWatcher();                        // must mkdir(dir), else the watch is dead
+    await expectRefreshOnWrite(dir, 'tkt-int.md', c);
+  });
+
+  it('re-attaches after a stop — restart is not wedged', async () => {
+    base = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-watch-int2-'));
+    process.env.TICKETS_DIR_OVERRIDE = base;
+
+    const c = fakeClient();
+    registerClient(c.client);
+    startTicketWatcher();
+    await stopTicketWatcher();
+    startTicketWatcher();                        // must attach a fresh watcher
+    await expectRefreshOnWrite(base, 'tkt-int2.md', c);
   });
 });
 

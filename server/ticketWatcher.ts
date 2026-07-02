@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs';
 import { watch, type FSWatcher } from 'chokidar';
 import { getTicketsDir } from './tickets.js';
 import { broadcast } from './stream.js';
@@ -40,13 +41,26 @@ let watcher: FSWatcher | null = null;
 // getTicketsDir() so TICKETS_DIR_OVERRIDE is honoured.
 export function startTicketWatcher(): void {
   if (watcher) return;
-  watcher = watch(getTicketsDir(), {
+  const dir = getTicketsDir();
+  // chokidar silently no-ops on a missing dir (verified: watching a nonexistent
+  // path emits only `addDir` when it appears, never file `add`/`change`). Since
+  // tickets/ is gitignored, a fresh clone doesn't have it and the service only
+  // mkdirs lazily on first read/write — so the watcher would attach to nothing
+  // and live refresh would stay dead until restart. Ensure the dir exists first.
+  mkdirSync(dir, { recursive: true });
+  watcher = watch(dir, {
     ignoreInitial: true,                          // don't fire for existing files at boot
     ignored: (p: string) => p.endsWith('.tmp'),   // skip atomic-write temp files
     depth: 0,                                      // flat dir; no recursion
   });
   watcher.on('all', (_event, filePath) => handleFsEvent(filePath));
-  watcher.on('error', (err) => console.error('[watch] error', err));
+  // A fatal watcher error would otherwise wedge recovery: the `if (watcher)
+  // return` guard above would short-circuit any later startTicketWatcher(). Tear
+  // the watcher down (best-effort) so a restart can re-attach a fresh one.
+  watcher.on('error', (err) => {
+    console.error('[watch] error', err);
+    void stopTicketWatcher();
+  });
 }
 
 // Stop the watcher and cancel any pending debounce. Idempotent and safe to call
