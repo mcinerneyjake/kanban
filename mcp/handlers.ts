@@ -4,7 +4,8 @@ import {
 } from '../server/tickets.js';
 import { appendEvent, getTicketEvents } from '../server/events.js';
 import {
-  BOARD_STATUSES, STATUS_IDS, CREATE_STATUS_IDS, isStatusId, isTicketType, isPriority,
+  BOARD_STATUSES, STATUS_IDS, CREATE_STATUS_IDS, TYPES, PRIORITIES,
+  isStatusId, isTicketType, isPriority,
   type Ticket, type StatusId,
 } from '../shared/constants.js';
 
@@ -76,26 +77,54 @@ function extractTicketFields(
 ): TicketFields {
   const out: TicketFields = {};
   if (!args) return out;
-  if (typeof args.title === 'string') out.title = args.title;
-  if (typeof args.type === 'string') {
-    if (!isTicketType(args.type)) throw new HttpError(400, `Invalid type: ${args.type}`);
+  // A field that is PRESENT but wrong-typed is REJECTED (400), not silently
+  // dropped — parity with the HTTP path's validateWritableTypes (#82). Without
+  // this, `update_ticket {id, title: 42}` would drop title and report a
+  // successful no-op rename. `!== undefined` distinguishes absent (skip) from
+  // present-and-malformed (throw).
+  if (args.title !== undefined) {
+    if (typeof args.title !== 'string') throw new HttpError(400, 'title must be a string');
+    out.title = args.title;
+  }
+  if (args.type !== undefined) {
+    if (typeof args.type !== 'string' || !isTicketType(args.type))
+      throw new HttpError(400, `Invalid type: ${String(args.type)}`);
     out.type = args.type;
   }
-  if (typeof args.priority === 'string') {
-    if (!isPriority(args.priority)) throw new HttpError(400, `Invalid priority: ${args.priority}`);
+  if (args.priority !== undefined) {
+    if (typeof args.priority !== 'string' || !isPriority(args.priority))
+      throw new HttpError(400, `Invalid priority: ${String(args.priority)}`);
     out.priority = args.priority;
   }
-  if (typeof args.status === 'string') out.status = validatedStatus(args.status, allowedStatuses);
-  if (typeof args.body === 'string') out.body = args.body;
-  if (typeof args.project === 'string') out.project = args.project;
-  else if (args.project === null) out.project = null;
-  if (isStringArray(args.blockers)) out.blockers = args.blockers;
-  if (typeof args.parent === 'string') out.parent = args.parent;
-  else if (args.parent === null) out.parent = null;
-  if (typeof args.dueDate === 'string') out.dueDate = args.dueDate;
-  else if (args.dueDate === null) out.dueDate = null;
-  if (typeof args.assignee === 'string') out.assignee = args.assignee;
-  else if (args.assignee === null) out.assignee = null;
+  if (args.status !== undefined) {
+    if (typeof args.status !== 'string')
+      throw new HttpError(400, `Invalid status: ${String(args.status)} (allowed: ${allowedStatuses.join(', ')})`);
+    out.status = validatedStatus(args.status, allowedStatuses);
+  }
+  if (args.body !== undefined) {
+    if (typeof args.body !== 'string') throw new HttpError(400, 'body must be a string');
+    out.body = args.body;
+  }
+  if (args.project !== undefined) {
+    if (typeof args.project === 'string' || args.project === null) out.project = args.project;
+    else throw new HttpError(400, 'project must be a string or null');
+  }
+  if (args.parent !== undefined) {
+    if (typeof args.parent === 'string' || args.parent === null) out.parent = args.parent;
+    else throw new HttpError(400, 'parent must be a string or null');
+  }
+  if (args.dueDate !== undefined) {
+    if (typeof args.dueDate === 'string' || args.dueDate === null) out.dueDate = args.dueDate;
+    else throw new HttpError(400, 'dueDate must be a string or null');
+  }
+  if (args.assignee !== undefined) {
+    if (typeof args.assignee === 'string' || args.assignee === null) out.assignee = args.assignee;
+    else throw new HttpError(400, 'assignee must be a string or null');
+  }
+  if (args.blockers !== undefined) {
+    if (!isStringArray(args.blockers)) throw new HttpError(400, 'blockers must be an array of strings');
+    out.blockers = args.blockers;
+  }
   return out;
 }
 
@@ -214,8 +243,8 @@ export const TOOLS: Tool[] = [
         id: { type: 'string', description: 'Ticket ID' },
         title: { type: 'string' },
         status: { type: 'string', enum: UPDATE_STATUS_ENUM },
-        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-        type: { type: 'string', enum: ['bug', 'feature', 'task', 'chore'] },
+        priority: { type: 'string', enum: [...PRIORITIES] },
+        type: { type: 'string', enum: [...TYPES] },
         body: { type: 'string', description: 'Full markdown description of the ticket' },
         project: { type: ['string', 'null'], description: 'Project name, or null to clear' },
         blockers: { type: 'array', items: { type: 'string' }, description: 'List of blocking ticket IDs' },
@@ -242,8 +271,8 @@ export const TOOLS: Tool[] = [
       type: 'object',
       properties: {
         title: { type: 'string' },
-        type: { type: 'string', enum: ['bug', 'feature', 'task', 'chore'] },
-        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+        type: { type: 'string', enum: [...TYPES] },
+        priority: { type: 'string', enum: [...PRIORITIES] },
         status: { type: 'string', enum: CREATE_STATUS_ENUM },
         body: { type: 'string', description: 'Markdown description' },
         project: { type: 'string', description: 'Project name' },
@@ -317,8 +346,11 @@ export async function handleToolCall(
       case 'record_review': {
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
-        // Writes the events file directly via the service layer — no HTTP, so
-        // it works whether or not the web server is running.
+        // Verify the ticket exists first (throws 404) — otherwise a typo'd id
+        // would silently create a ghost events/<id>.jsonl for a nonexistent
+        // ticket. Writes the events file directly via the service layer — no
+        // HTTP, so it works whether or not the web server is running.
+        await getTicket(id);
         await appendEvent({ ticketId: id, step: 'review', state: 'reached' });
         return { content: [textContent(JSON.stringify(await getTicketEvents(id), null, 2))] };
       }
