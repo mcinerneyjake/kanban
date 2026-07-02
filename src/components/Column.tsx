@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
+import { useDismiss } from '../useDismiss.js';
 import type { Ticket } from '../../shared/constants.js';
 import Card from './Card.jsx';
 
@@ -24,19 +25,7 @@ export default function Column({ column, tickets, depths, childCounts, activeBlo
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onMouse = (e: MouseEvent) => {
-      if (menuRef.current && e.target instanceof Node && !menuRef.current.contains(e.target)) setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
-    document.addEventListener('mousedown', onMouse);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onMouse);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
+  useDismiss(menuRef, () => setMenuOpen(false), { enabled: menuOpen });
 
   const onColumnDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();

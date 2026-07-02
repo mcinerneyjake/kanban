@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
+import { useDismiss } from '../useDismiss.js';
 import { WIDGETS, type DashboardConfig } from '../useDashboardConfig.js';
 
 type Props = {
@@ -14,24 +15,7 @@ export default function DashboardConfigPopover({ projects, dash }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouse = (e: MouseEvent) => {
-      if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false);
-    };
-    // Escape on an open native <select> should close its dropdown, not the
-    // whole popover — the keydown bubbles to document, so skip closing when the
-    // target is a <select> and let the control handle its own Escape.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !(e.target instanceof HTMLSelectElement)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onMouse);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onMouse);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  useDismiss(ref, () => setOpen(false), { enabled: open });
 
   // Badge counts everything diverging from the defaults: a project filter, any
   // hidden widget, and auto-refresh being on.
