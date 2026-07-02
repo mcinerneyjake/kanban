@@ -334,6 +334,44 @@ describe('deleteTicket', () => {
 
     expect(await getTicket(unrelated.id)).toEqual(before);
   });
+
+  it('orphans children to top-level (parent → null) when their parent is deleted', async () => {
+    const parent = await createTicket({ title: 'Parent' });
+    const childA = await updateTicket((await createTicket({ title: 'Child A' })).id, { parent: parent.id });
+    const childB = await updateTicket((await createTicket({ title: 'Child B' })).id, { parent: parent.id });
+    expect(childA.parent).toBe(parent.id);
+
+    await deleteTicket(parent.id);
+
+    expect((await getTicket(childA.id)).parent).toBeNull();
+    expect((await getTicket(childB.id)).parent).toBeNull();
+  });
+
+  it('does not bump a child\'s `updated` when orphaning it (housekeeping, not an edit)', async () => {
+    const parent = await createTicket({ title: 'Parent' });
+    const child = await updateTicket((await createTicket({ title: 'Child' })).id, { parent: parent.id });
+
+    await deleteTicket(parent.id);
+
+    expect((await getTicket(child.id)).updated).toBe(child.updated);
+  });
+
+  it('cleans blocker and parent edges in one pass, leaving unrelated edges intact', async () => {
+    const victim = await createTicket({ title: 'Victim' });
+    const otherParent = await createTicket({ title: 'Other parent' });
+    // One ticket is BOTH a child of the victim AND blocked by it.
+    const both = await updateTicket(
+      (await createTicket({ title: 'Both' })).id,
+      { parent: victim.id, blockers: [victim.id, otherParent.id] },
+    );
+    expect(both).toMatchObject({ parent: victim.id, blockers: [victim.id, otherParent.id] });
+
+    await deleteTicket(victim.id);
+
+    const after = await getTicket(both.id);
+    expect(after.parent).toBeNull();          // orphaned
+    expect(after.blockers).toEqual([otherParent.id]); // victim stripped, other kept
+  });
 });
 
 describe('listProjects', () => {
