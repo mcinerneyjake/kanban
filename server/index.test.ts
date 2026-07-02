@@ -490,6 +490,10 @@ describe('wrap error funnel — 500 branch', () => {
       expect(res.status).toBe(500);
       expect(Object.keys(res.body)).toEqual(['error']);
       expect(res.body).not.toHaveProperty('stack');
+      // The raw internal message must not reach the client (it can embed fs paths
+      // or other internals); a generic message is returned and detail is logged.
+      expect(res.body.error).toBe('Internal server error');
+      expect(res.body.error).not.toContain('boom');
       expect(errSpy).toHaveBeenCalled();
     } finally {
       spy.mockRestore();
@@ -762,5 +766,25 @@ describe('POST /api/tickets/:id/review', () => {
   it('rejects an invalid id with 400', async () => {
     const res = await request(app).post('/api/tickets/bad.id/review').send({ reviewed: true });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a well-formed id for a nonexistent ticket with 404 and writes no event file', async () => {
+    const res = await request(app).post('/api/tickets/tkt-ghost99999999/review').send({ reviewed: true });
+    expect(res.status).toBe(404);
+    // the orphan events/<id>.jsonl must never have been created
+    const files = await fs.readdir(eventsTmpDir);
+    expect(files.some((f) => f.includes('tkt-ghost99999999'))).toBe(false);
+  });
+});
+
+describe('malformed JSON body', () => {
+  it('returns a 400 { error } on the JSON contract, not the default HTML error page', async () => {
+    const res = await request(app)
+      .post('/api/tickets')
+      .set('Content-Type', 'application/json')
+      .send('{ "title": '); // truncated → express.json throws a SyntaxError
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toHaveProperty('error');
   });
 });

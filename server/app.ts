@@ -4,6 +4,7 @@ import { eventsRouter } from './routes/events.js';
 import { intakeRouter } from './routes/intake.js';
 import { boardRouter } from './routes/board.js';
 import { streamRouter } from './routes/stream.js';
+import { errorHandler } from './middleware/asyncWrap.js';
 
 // Assembles the Express app from the resource routers. Layering:
 //   route (wiring) -> controller (parse/validate/shape) -> service (logic/IO).
@@ -18,3 +19,7 @@ app.use('/api/tickets', eventsRouter);
 app.use('/api/intake', intakeRouter);
 app.use('/api/stream', streamRouter);
 app.use('/api', boardRouter);
+
+// Last: catches errors thrown before a wrap()ed handler (e.g. a malformed JSON
+// body rejected by express.json) and keeps them on the { error } JSON contract.
+app.use(errorHandler);

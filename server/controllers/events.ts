@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { getTicketEvents, appendEvent, REVIEW_CLEARED } from '../events.js';
+import { getTicket } from '../tickets.js';
 import type { ReviewRequest } from '../schemas/review.js';
 import { ticketId } from '../schemas/params.js';
 
@@ -14,6 +15,9 @@ export async function events(req: Request, res: Response): Promise<void> {
 // un-reviews via a cleared marker; anything else (incl. an empty body) confirms.
 export async function review(req: Request, res: Response, input: ReviewRequest): Promise<void> {
   const id = ticketId(req);
+  // A write endpoint, unlike GET events: reject a ghost id (404 via getTicket)
+  // so we never create an orphan events/<id>.jsonl for a nonexistent ticket.
+  await getTicket(id);
   const reviewed = input.reviewed !== false;
   await appendEvent({
     ticketId: id,

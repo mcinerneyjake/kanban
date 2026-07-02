@@ -25,6 +25,15 @@ on:
       - 'playwright.config.ts'
       - '.github/workflows/e2e.yml'
 
+# Least privilege: the job only reads the checkout (artifact upload uses the
+# runtime token, not GITHUB_TOKEN scopes).
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
     runs-on: ubuntu-latest

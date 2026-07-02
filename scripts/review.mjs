@@ -68,7 +68,10 @@ function handleEvent(ev) {
     case 'result': {
       spinStop();
       if (ev.result) process.stdout.write(ev.result + '\n');
-      const cost = ev.cost_usd != null ? ` · $${Number(ev.cost_usd).toFixed(4)}` : '';
+      // Current stream-json names this total_cost_usd; keep cost_usd as a fallback
+      // for older CLI builds.
+      const costVal = ev.total_cost_usd ?? ev.cost_usd;
+      const cost = costVal != null ? ` · $${Number(costVal).toFixed(4)}` : '';
       const secs = ev.duration_ms != null ? ` · ${(ev.duration_ms / 1000).toFixed(1)}s` : '';
       process.stderr.write(`\n✓ Review complete${secs}${cost}\n`);
       break;
@@ -78,7 +81,12 @@ function handleEvent(ev) {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-if (!process.env.PATH?.includes('claude') && !process.env.CLAUDE_CLI) {
+// Verify the binary actually resolves. The old `PATH.includes('claude')` shortcut
+// was a substring test, not an existence check — it both false-negatived (a claude
+// on PATH via a dir not literally named "claude") and false-positived (any PATH
+// entry containing "claude", e.g. /home/claude/bin, skipping the real check). Just
+// resolve it, unless CLAUDE_CLI explicitly overrides.
+if (!process.env.CLAUDE_CLI) {
   try {
     const { execSync } = await import('node:child_process');
     execSync('command -v claude', { stdio: 'ignore' });
@@ -102,6 +110,17 @@ rl.on('line', (raw) => {
   const line = raw.trim();
   if (!line) return;
   try { handleEvent(JSON.parse(line)); } catch { /* non-JSON lines ignored */ }
+});
+
+// spawn() failures (e.g. claude vanished between the existence check and here)
+// surface as an 'error' event, not a non-zero close — without this the process
+// would crash with an unhandled ENOENT instead of a friendly message.
+proc.on('error', (err) => {
+  spinStop();
+  console.error(err.code === 'ENOENT'
+    ? 'claude CLI not found — install Claude Code to use npm run review'
+    : `Failed to launch claude: ${err.message}`);
+  process.exit(1);
 });
 
 proc.on('close', (code) => {
