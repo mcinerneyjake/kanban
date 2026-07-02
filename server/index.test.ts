@@ -148,6 +148,35 @@ describe('POST /api/tickets', () => {
     const res = await request(app).post('/api/tickets').send({ title: '   ' });
     expect(res.status).toBe(400);
   });
+
+  it('returns 400 (not 500) when title is a non-string', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: 42 });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('title') });
+  });
+
+  it('returns 400 when project is a non-string', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: 'A', project: { nested: true } });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('project') });
+  });
+
+  it('returns 400 when blockers is not an array of strings', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: 'A', blockers: 'tkt-x' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('blockers') });
+  });
+
+  it('returns 400 when creating with a non-creatable status (qa)', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: 'A', status: 'qa' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('status') });
+  });
+
+  it('returns 400 when creating with status archived', async () => {
+    const res = await request(app).post('/api/tickets').send({ title: 'A', status: 'archived' });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('PATCH /api/tickets/:id', () => {
@@ -167,6 +196,33 @@ describe('PATCH /api/tickets/:id', () => {
       .send({ order: 'five' });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('order') });
+  });
+
+  it('returns 400 (not 500) when title is a non-string', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ title: 42 });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('title') });
+  });
+
+  it('returns 400 when parent is a non-string (and does not persist it)', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ parent: 99 });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('parent') });
+  });
+
+  it('returns 400 when assignee is a nested object (data-loss guard)', async () => {
+    await seedTicket('abc123456789', 'Original');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ assignee: { name: 'x' } });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('assignee') });
   });
 
   it('accepts a fractional order (drag-drop midpoint)', async () => {

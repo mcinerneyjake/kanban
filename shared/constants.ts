@@ -19,6 +19,16 @@ export const STATUSES = [
 
 export const STATUS_IDS = STATUSES.map((s) => s.id);
 
+// Statuses a ticket may be CREATED in: the board columns minus `qa`. `qa` is a
+// review gate you transition a ticket INTO (via update), never one you create a
+// ticket in; `archived` is a lifecycle end-state (not a board column), so it's
+// excluded too. Shared so the HTTP service (createTicket) and the MCP create
+// schema enforce the same restriction instead of diverging. Typed as
+// readonly StatusId[] so `.includes(status)` accepts any StatusId.
+export const CREATE_STATUS_IDS: readonly StatusId[] = BOARD_STATUSES
+  .map((s) => s.id)
+  .filter((s) => s !== 'qa');
+
 export const TYPES = ['bug', 'feature', 'task', 'chore'] as const;
 
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
