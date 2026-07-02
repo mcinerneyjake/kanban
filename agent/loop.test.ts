@@ -6,7 +6,7 @@ import { runIntake } from './loop.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
 import { type ChatTool } from './tools.js';
 import { TicketIndex, type Embedder } from './retrieval.js';
-import { listTickets } from '../server/tickets.js';
+import { listTickets, createTicket } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
 
 // Stub embedder: every text maps to the same vector — ranking is irrelevant
@@ -144,12 +144,15 @@ describe('runIntake', () => {
     expect(result.messages.find((m) => m.role === 'tool')?.content).toContain('query');
   });
 
-  it('throws if the agent never stops calling tools', async () => {
+  it('returns an errored outcome (not a throw) when the step budget is exhausted', async () => {
     const chat: ChatClient = {
       complete: () => Promise.resolve(assistant(null, [toolCall('c', 'search_board', '{"query":"x"}')])),
     };
-    await expect(runIntake('x', { chat, index: await buildIndex(), maxSteps: 3 }))
-      .rejects.toThrow(/within 3 steps/);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxSteps: 3 });
+    // Return, don't throw — preserving the outcome/usage of whatever ran first.
+    expect(result.outcome.errored).toBe(true);
+    expect(result.steps).toBe(3);
+    expect(result.final).toMatch(/within 3 steps/);
   });
 
   // --- human-in-the-loop approval gate (Phase 4) ---
@@ -248,12 +251,24 @@ describe('runIntake', () => {
   });
 
   it('reports outcome: updated when an update is approved', async () => {
+    const seeded = await createTicket({ title: 'Seed to update' }); // a real file to update
     const chat = new ScriptedChat([
-      assistant(null, [toolCall('c1', 'update_ticket', '{"id":"t1","title":"x"}')]),
+      assistant(null, [toolCall('c1', 'update_ticket', JSON.stringify({ id: seeded.id, title: 'x' }))]),
       assistant('updated'),
     ]);
     const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
     expect(result.outcome).toMatchObject({ created: 0, updated: 1, declined: 0 });
+  });
+
+  it('does NOT count a failed mutation as accepted (isError → not created/updated)', async () => {
+    const chat = new ScriptedChat([
+      // create with no title → 400 isError; update a nonexistent id → 404 isError.
+      assistant(null, [toolCall('c1', 'create_ticket', '{}')]),
+      assistant(null, [toolCall('c2', 'update_ticket', '{"id":"tkt-missing","title":"x"}')]),
+      assistant('nothing landed'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 0, updated: 0, declined: 0, noProposal: true });
   });
 
   it('reports outcome: declined when a mutation is rejected', async () => {

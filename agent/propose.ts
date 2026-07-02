@@ -1,4 +1,4 @@
-import { runIntake, type IntakeDeps } from './loop.js';
+import { runIntake, mutationKind, type IntakeDeps } from './loop.js';
 
 export interface IntakeProposal {
   /** The proposed tool — 'create_ticket' or 'update_ticket'. */
@@ -22,7 +22,11 @@ export async function proposeIntake(report: string, deps: Omit<IntakeDeps, 'appr
   const result = await runIntake(report, {
     ...deps,
     approve: (name, args) => {
-      proposal ??= { action: name, args: args ?? {} };
+      // Capture only the first legitimate create/update as the proposal — ignore
+      // any other gated tool (e.g. a prompt-injected delete_ticket, or a junk
+      // first call) so the proposal always matches the documented create/update
+      // contract. Every gated tool is still declined (return false → no write).
+      if (mutationKind(name)) proposal ??= { action: name, args: args ?? {} };
       return false; // capture only — never execute
     },
   });
