@@ -120,6 +120,15 @@ export default function App() {
     setPrefill(null);
   }, []);
 
+  // Navigating between views (board ↔ dashboard) closes any open modal — an
+  // edit/create modal is scoped to the view it was opened from and should not
+  // linger over a different view. Wrapping setView keeps this tied to the
+  // navigation action itself rather than a reactive effect.
+  const handleViewChange = useCallback((next: View) => {
+    setView(next);
+    closeTicket();
+  }, [closeTicket]);
+
   const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
       if (editing === 'new') await api.create(data);
@@ -188,7 +197,7 @@ export default function App() {
     <div className="layout">
       <Sidebar
         view={view}
-        onViewChange={setView}
+        onViewChange={handleViewChange}
         theme={theme}
         onToggleTheme={toggle}
       />
