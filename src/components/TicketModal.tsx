@@ -8,6 +8,7 @@ import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
 import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
+import { changedFormFields } from '../lib/ticketDiff.js';
 import Spinner from './Spinner.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
@@ -17,7 +18,7 @@ type Props = {
   allTickets: Ticket[]
   projects: string[]
   assignees: string[]
-  onSave: (data: FormState) => void
+  onSave: (data: Partial<FormState>) => void
   onDelete: (id: string) => void
   onOpen: (ticket: Ticket, initial?: Prefill) => void
   onClose: () => void
@@ -45,7 +46,7 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
 export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onClose }: Props) {
-  const [form, setForm] = useState<FormState>({
+  const makeInitialForm = (): FormState => ({
     title: initial?.title ?? ticket?.title ?? '',
     type: initial?.type ?? ticket?.type ?? 'task',
     priority: initial?.priority ?? ticket?.priority ?? 'medium',
@@ -65,6 +66,12 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     dueDate: ticket?.dueDate ?? null,
     assignee: ticket?.assignee ?? null,
   });
+  const [form, setForm] = useState<FormState>(makeInitialForm);
+  // Open-time snapshot of the form. On save we PATCH only the fields the user
+  // actually changed vs. this baseline, so an unchanged field can't clobber a
+  // concurrent external edit (e.g. the agent moving status while the modal is
+  // open). Captured once (useState initializer) — never re-baselined mid-edit.
+  const [baseline] = useState<FormState>(makeInitialForm);
   const [preview, setPreview] = useState(false);
   // Create mode only: live "related tickets" dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
@@ -184,7 +191,10 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.title.trim()) return;
-    onSave(form);
+    // Existing ticket: PATCH only what changed vs the open-time baseline (so a
+    // stale unchanged field can't overwrite a concurrent external edit). New
+    // ticket: send the whole form (create needs every field).
+    onSave(ticket ? changedFormFields(form, baseline) : form);
   };
 
   // Create flow has three faces: probing the model, the draft-from-note step
