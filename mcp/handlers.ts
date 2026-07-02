@@ -4,7 +4,7 @@ import {
 } from '../server/tickets.js';
 import { appendEvent, getTicketEvents } from '../server/events.js';
 import {
-  BOARD_STATUSES, STATUS_IDS, isStatusId, isTicketType, isPriority,
+  BOARD_STATUSES, STATUS_IDS, CREATE_STATUS_IDS, isStatusId, isTicketType, isPriority,
   type Ticket, type StatusId,
 } from '../shared/constants.js';
 
@@ -24,10 +24,11 @@ export type ToolResult = {
 // Advertised status enums for the create/update tool schemas. Deliberately
 // asymmetric: a ticket is CREATED in a pre-work state and only TRANSITIONS into
 // `qa` via update — `qa` is a review gate you move a ticket into, never one you
-// create a ticket in. Derived from the single source of truth (BOARD_STATUSES)
-// so the advertised contract can never drift from the real column set.
+// create a ticket in. Both derive from the single source of truth in
+// shared/constants so the advertised contract, the MCP validator, and the HTTP
+// service (createTicket) can never drift on which statuses are creatable.
 export const UPDATE_STATUS_ENUM = BOARD_STATUSES.map((s) => s.id);
-export const CREATE_STATUS_ENUM = UPDATE_STATUS_ENUM.filter((s) => s !== 'qa');
+export const CREATE_STATUS_ENUM = CREATE_STATUS_IDS;
 
 // ---------------------------------------------------------------------------
 // Protocol helpers

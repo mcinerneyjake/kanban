@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
-import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, STATUS_STEP, type Ticket, type StatusId, type DashboardSummary } from '../shared/constants.js';
+import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, CREATE_STATUS_IDS, STATUS_STEP, type Ticket, type StatusId, type DashboardSummary } from '../shared/constants.js';
 import { appendEvent } from './events.js';
 
 // ---------------------------------------------------------------------------
@@ -165,6 +165,30 @@ function validateEnums(patch: TicketPatch) {
   assertEnum(STATUS_IDS, patch.status, 'status');
 }
 
+// The service is the single write choke point for BOTH the typed MCP path (args
+// pre-sanitized by extractTicketFields) and the raw Express path (req.body is
+// `any`). These runtime typeof guards give parity with the MCP extractor: a bad
+// HTTP body fails as a 400 instead of a 500 (`title.trim()` on a number) or a
+// silent data-loss write (a non-string project/parent/assignee or a non-array
+// blockers persisted to YAML, then read back as null/[]). The MCP path only ever
+// passes correct types, so it sails through untouched.
+function validateWritableTypes(patch: TicketPatch) {
+  if (patch.title != null && typeof patch.title !== 'string')
+    throw new HttpError(400, 'title must be a string');
+  if (patch.body != null && typeof patch.body !== 'string')
+    throw new HttpError(400, 'body must be a string');
+  if (patch.order != null && typeof patch.order !== 'number')
+    throw new HttpError(400, 'order must be a number');
+  for (const field of ['project', 'parent', 'dueDate', 'assignee'] as const) {
+    const value = patch[field];
+    if (value != null && typeof value !== 'string')
+      throw new HttpError(400, `${field} must be a string or null`);
+  }
+  if (patch.blockers != null &&
+      (!Array.isArray(patch.blockers) || !patch.blockers.every((b) => typeof b === 'string')))
+    throw new HttpError(400, 'blockers must be an array of strings');
+}
+
 const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // dueDate is hand-editable and accepted from untyped callers; enforce a strict
@@ -213,7 +237,13 @@ export async function getTicket(id: string): Promise<Ticket> {
 }
 
 export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
-  validateEnums(input);
+  validateWritableTypes(input);
+  assertEnum(TYPES, input.type, 'type');
+  assertEnum(PRIORITIES, input.priority, 'priority');
+  // Create is restricted to the pre-work board columns — reject `qa`/`archived`
+  // at create (parity with the MCP create schema; see CREATE_STATUS_IDS).
+  if (input.status != null && !CREATE_STATUS_IDS.includes(input.status))
+    throw new HttpError(400, `Invalid status: ${input.status} (allowed for create: ${CREATE_STATUS_IDS.join(', ')})`);
   assertDueDate(input.dueDate);
   if (!input.title || !input.title.trim())
     throw new HttpError(400, 'Title is required');
@@ -280,12 +310,8 @@ async function emitStatusStep(id: string, status: StatusId): Promise<void> {
 }
 
 export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
+  validateWritableTypes(patch);
   validateEnums(patch);
-  // `order` is typed number, but HTTP callers pass an untyped body — guard the
-  // runtime type so a non-number (e.g. "five") can't be written, then silently
-  // coerced to 0 by normalize() on the next read (which reorders the card).
-  if (patch.order != null && typeof patch.order !== 'number')
-    throw new HttpError(400, 'order must be a number');
   assertDueDate(patch.dueDate);
   const existing = await getTicket(id);
   if (typeof patch.parent === 'string') {

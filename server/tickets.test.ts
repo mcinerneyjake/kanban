@@ -733,3 +733,56 @@ describe('concurrent same-id writes (temp-file uniqueness)', () => {
     expect(leftovers).toEqual([]);
   });
 });
+
+describe('write-path type + create-status validation', () => {
+  // A raw HTTP body bypasses TicketPatch typing at runtime. Object.assign lets
+  // us stage a wrong-typed field onto a typed input without an `as` cast (banned
+  // by consistent-type-assertions), matching what express.json() would deliver.
+  function withRuntime(base: Partial<Ticket>, extra: Record<string, unknown>): Partial<Ticket> {
+    Object.assign(base, extra);
+    return base;
+  }
+
+  it('createTicket rejects a non-string title with 400 (no .trim() 500)', async () => {
+    const err = await httpError(createTicket(withRuntime({}, { title: 42 })));
+    expect(err.status).toBe(400);
+    expect(err.message).toContain('title');
+  });
+
+  it('createTicket rejects qa and archived as a create status', async () => {
+    for (const status of ['qa', 'archived'] as const) {
+      const err = await httpError(createTicket({ title: 'A', status }));
+      expect(err.status).toBe(400);
+      expect(err.message).toContain('status');
+    }
+  });
+
+  it('createTicket still accepts the pre-work board statuses', async () => {
+    for (const status of ['backlog', 'todo', 'in-progress', 'done'] as const) {
+      const t = await createTicket({ title: 'A', status });
+      expect(t.status).toBe(status);
+    }
+  });
+
+  it('updateTicket rejects a non-string project rather than writing then losing it', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, withRuntime({}, { project: { x: 1 } })));
+    expect(err.status).toBe(400);
+    expect(err.message).toContain('project');
+    // The bad write never landed: the ticket is unchanged on disk.
+    expect((await getTicket(t.id)).project).toBeNull();
+  });
+
+  it('updateTicket rejects a non-array blockers value', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, withRuntime({}, { blockers: 'tkt-x' })));
+    expect(err.status).toBe(400);
+    expect(err.message).toContain('blockers');
+  });
+
+  it('updateTicket still allows a transition to archived (service lifecycle path)', async () => {
+    const t = await createTicket({ title: 'A', status: 'done' });
+    const archived = await updateTicket(t.id, { status: 'archived' });
+    expect(archived.status).toBe('archived');
+  });
+});

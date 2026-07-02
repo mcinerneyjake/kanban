@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { handleToolCall, TOOLS, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from './handlers.js';
-import { createTicket, listTickets } from '../server/tickets.js';
+import { createTicket, updateTicket, listTickets } from '../server/tickets.js';
 
 // The handlers call the service layer, which writes real files — redirect that
 // I/O to a temp dir so the real tickets/ folder is never touched.
@@ -162,7 +162,10 @@ describe('list_tickets', () => {
 
   it('accepts archived as a status filter and returns archived tickets', async () => {
     await seed({ title: 'live', status: 'todo' });
-    await seed({ title: 'gone', status: 'archived' });
+    // `archived` isn't a creatable status (nor an MCP-settable one), so reach it
+    // via the service updateTicket — the real archive lifecycle path.
+    const goneId = await seed({ title: 'gone', status: 'todo' });
+    await updateTicket(goneId, { status: 'archived' });
     const tickets = asRecordArray(await handleToolCall('list_tickets', { status: 'archived' }));
     expect(tickets).toHaveLength(1);
     expect(tickets[0].title).toBe('gone');
