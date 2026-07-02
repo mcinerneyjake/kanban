@@ -1,0 +1,68 @@
+name: e2e
+
+# Runs the Playwright e2e suite so create-flow / dnd regressions surface on the PR
+# that causes them — the gap that let the create-modal smoke tests rot silently
+# after the AI-first modal consolidation (#56), fixed in tkt-d03ac7416d67.
+#
+# Deliberately a SEPARATE job from the `gate` workflow (typecheck + lint + unit
+# coverage) so the fast unit loop stays untouched, and PATH-FILTERED so docs- or
+# server-only PRs don't pay the browser-download cost.
+#
+# ADVISORY for now: this check is intentionally NOT in the `main` branch ruleset,
+# so a failure surfaces on the PR without blocking merge. Once it has proven
+# stable (no false reds over ~1–2 weeks), promote it to a required check
+# alongside `gate` / `branch-name` / `review`.
+#
+# The suite is CI-deterministic: playwright.config.ts pins the drafting model to a
+# dead port, so the create modal falls to the manual form regardless of whether a
+# local LLM is reachable.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'e2e/**'
+      - 'playwright.config.ts'
+      - '.github/workflows/e2e.yml'
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+
+      # Cache the browser binaries keyed on the resolved Playwright version, so we
+      # only re-download when the dependency actually changes.
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      # Only the chromium project is configured; --with-deps is still needed on a
+      # cache hit to install the OS-level libraries the browser links against.
+      - name: Install Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium system deps (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
