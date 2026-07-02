@@ -23,16 +23,19 @@ export interface SseClient {
   writeHead(status: number, headers: Record<string, string>): void
   write(chunk: string): boolean
   end(): void
+  // http.ServerResponse extends Writable, so a real Response exposes `destroyed`
+  // — true once the socket is gone. Optional so tests can omit it.
+  readonly destroyed?: boolean
 }
 
 const clients = new Set<SseClient>();
 
-// Heartbeat keeps idle connections alive through proxies. Dead clients are
-// reaped by the `close`/`error` listeners on the response (see `stream`); a
-// write that throws *synchronously* (e.g. write-after-end) also drops the
-// client here — but note Node's res.write() on a broken-but-open socket returns
-// false / emits an async 'error' rather than throwing, so the listeners, not
-// this try/catch, are the primary reap path.
+// Heartbeat keeps idle connections alive through proxies AND sweeps dead
+// clients: each tick, writeToAll drops any response whose socket is `destroyed`.
+// Immediate reap still comes from the `close`/`error` listeners (see `stream`);
+// the heartbeat is the periodic backstop for a client that slipped past them.
+// (Reaping on `write() === false` would be wrong — that's just backpressure on a
+// live-but-slow client, not death — so we key on `destroyed`, not the return.)
 const HEARTBEAT_MS = 25_000;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
@@ -47,10 +50,13 @@ function stopHeartbeat(): void {
   if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
 }
 
-// Write to every client, dropping any whose socket has gone away (write throws
-// or the client was already half-closed). Never throws to the caller.
+// Write to every client, dropping any whose socket has gone away: `destroyed`
+// is the reliable signal (a broken-but-open socket returns false from write()
+// rather than throwing); the try/catch stays as a backstop for a synchronous
+// throw (e.g. write-after-end). Never throws to the caller.
 function writeToAll(payload: string): void {
   for (const client of clients) {
+    if (client.destroyed) { clients.delete(client); continue; }
     try { client.write(payload); }
     catch { clients.delete(client); }
   }

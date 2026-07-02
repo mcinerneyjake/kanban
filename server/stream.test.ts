@@ -1,13 +1,13 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
   registerClient, broadcast, streamClientCount, closeAllStreamClients,
   type SseClient,
 } from './stream.js';
 
 // A minimal SseClient that records what the hub writes to it. The hub only ever
-// calls writeHead/write/end, so this fully stands in for an Express Response
-// without opening a socket.
-function fakeClient(opts: { throwOnWrite?: boolean } = {}) {
+// calls writeHead/write/end (+ reads `destroyed`), so this fully stands in for
+// an Express Response without opening a socket.
+function fakeClient(opts: { throwOnWrite?: boolean; destroyed?: boolean } = {}) {
   const writes: string[] = [];
   const headers: Record<string, string>[] = [];
   let ended = false;
@@ -21,11 +21,13 @@ function fakeClient(opts: { throwOnWrite?: boolean } = {}) {
       return true;
     },
     end: () => { ended = true; },
+    destroyed: opts.destroyed,
   };
   return {
     client, headers, writes,
     isEnded: () => ended,
     refreshes: () => writes.filter((w) => w.startsWith('event: refresh')),
+    pings: () => writes.filter((w) => w.startsWith(': ping')),
   };
 }
 
@@ -82,5 +84,49 @@ describe('SSE hub', () => {
     expect(streamClientCount()).toBe(0);
     expect(a.isEnded()).toBe(true);
     expect(b.isEnded()).toBe(true);
+  });
+});
+
+describe('SSE heartbeat + dead-client sweep', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { closeAllStreamClients(); vi.useRealTimers(); });
+
+  it('sends a `: ping` to clients on each heartbeat interval', () => {
+    const c = fakeClient();
+    registerClient(c.client);
+    expect(c.pings()).toHaveLength(0);        // opening ': connected' only, no ping yet
+    vi.advanceTimersByTime(25_000);
+    expect(c.pings()).toHaveLength(1);
+    vi.advanceTimersByTime(25_000);
+    expect(c.pings()).toHaveLength(2);
+  });
+
+  it('stops the heartbeat once the last client unregisters (no further pings)', () => {
+    const c = fakeClient();
+    const unregister = registerClient(c.client);
+    vi.advanceTimersByTime(25_000);
+    const before = c.pings().length;
+    unregister();
+    vi.advanceTimersByTime(75_000);           // three more intervals would elapse
+    expect(c.pings()).toHaveLength(before);   // but the heartbeat was stopped
+  });
+
+  it('reaps a `destroyed` client on the next heartbeat tick (past close/error)', () => {
+    const live = fakeClient();
+    const dead = fakeClient({ destroyed: true }); // socket gone, listeners missed it
+    registerClient(live.client);
+    registerClient(dead.client);
+    expect(streamClientCount()).toBe(2);
+    vi.advanceTimersByTime(25_000);           // heartbeat sweeps the destroyed one
+    expect(streamClientCount()).toBe(1);
+    expect(live.pings()).toHaveLength(1);
+  });
+
+  it('broadcast also drops a destroyed client without writing to it', () => {
+    const dead = fakeClient({ destroyed: true });
+    registerClient(dead.client);
+    broadcast('refresh');
+    expect(streamClientCount()).toBe(0);
+    expect(dead.refreshes()).toHaveLength(0);
   });
 });
