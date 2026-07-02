@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Request, Response, NextFunction, RequestHandler, ErrorRequestHandler } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
 import { HttpError } from '../tickets.js';
 
@@ -15,9 +15,30 @@ function sendError(res: Response, err: unknown): void {
   }
   const status = err instanceof HttpError ? err.status : 500;
   if (status === 500) console.error(err);
-  const message = err instanceof Error ? err.message : 'Unknown error';
+  // HttpError messages are authored and safe to surface. Any other error reaching
+  // here is an unexpected internal fault whose raw message may leak internals — a
+  // rethrown fs error, for instance, embeds the ticket file's absolute path — so
+  // return a generic message to the client and keep the detail in the server log.
+  const message = err instanceof HttpError ? err.message : 'Internal server error';
   res.status(status).json({ error: message });
 }
+
+// Terminal 4-arg error handler for failures thrown BEFORE any wrap()ed handler
+// runs — chiefly express.json()'s errors on a malformed or over-limit body, which
+// would otherwise hit Express's default HTML error page and break the { error }
+// JSON contract every endpoint honours. body-parser tags these with an `entity.*`
+// `type` (and a numeric `status`); everything else falls through to sendError.
+// Mounted after the routers (see app.ts).
+export const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+  if (res.headersSent) { next(err); return; }
+  if (err instanceof Error && 'type' in err && typeof err.type === 'string' && err.type.startsWith('entity.')) {
+    const status = 'status' in err && typeof err.status === 'number' ? err.status : 400;
+    const message = err.type === 'entity.parse.failed' ? 'Malformed JSON in request body' : err.message;
+    res.status(status).json({ error: message });
+    return;
+  }
+  sendError(res, err);
+};
 
 // A handler that has already been handed whatever it needs off the request.
 // Controllers write their response via `res` and return nothing; the funnel

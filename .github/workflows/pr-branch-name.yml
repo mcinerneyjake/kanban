@@ -10,6 +10,14 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+# Least privilege: this check only inspects the head branch name, nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-name-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   branch-name:
     runs-on: ubuntu-latest

@@ -133,11 +133,20 @@ export default function App() {
       if (!connectedOnce) { connectedOnce = true; return; }
       load();
     };
+    // EventSource auto-reconnects on transient drops (readyState → CONNECTING); a
+    // CLOSED state is a permanent failure that kills realtime silently. Log it so
+    // a dead stream is at least diagnosable rather than invisible.
+    const onError = () => {
+      if (es.readyState === EventSource.CLOSED)
+        console.warn('[sse] live updates unavailable — the event stream is closed and will not reconnect');
+    };
     es.addEventListener('refresh', onRefresh);
     es.addEventListener('open', onOpen);
+    es.addEventListener('error', onError);
     return () => {
       es.removeEventListener('refresh', onRefresh);
       es.removeEventListener('open', onOpen);
+      es.removeEventListener('error', onError);
       es.close();
     };
   }, [load]);

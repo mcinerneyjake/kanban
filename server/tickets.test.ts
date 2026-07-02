@@ -79,6 +79,63 @@ describe('dueDate format validation', () => {
     const cleared = await updateTicket(t.id, { dueDate: null });
     expect(cleared.dueDate).toBeNull();
   });
+
+  it('rejects an impossible date that matches the YYYY-MM-DD shape', async () => {
+    // These pass the regex but are not real calendar dates — they would NaN the
+    // overdue comparison the guard protects.
+    for (const bad of ['2026-99-99', '2026-13-01', '2026-02-30', '2026-00-10']) {
+      const err = await httpError(createTicket({ title: 'A', dueDate: bad }));
+      expect(err.status).toBe(400);
+    }
+  });
+
+  it('accepts a real leap day', async () => {
+    const t = await createTicket({ title: 'A', dueDate: '2028-02-29' });
+    expect(t.dueDate).toBe('2028-02-29');
+  });
+});
+
+describe('order finite guard', () => {
+  it('rejects a non-finite order (Infinity) on update with 400 and does not persist it', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, { order: Infinity }));
+    expect(err.status).toBe(400);
+    expect((await getTicket(t.id)).order).not.toBe(Infinity);
+  });
+
+  it('rejects a NaN order on update with 400', async () => {
+    const t = await createTicket({ title: 'A' });
+    const err = await httpError(updateTicket(t.id, { order: NaN }));
+    expect(err.status).toBe(400);
+  });
+
+  it('still accepts a finite order', async () => {
+    const t = await createTicket({ title: 'A' });
+    const updated = await updateTicket(t.id, { order: 42 });
+    expect(updated.order).toBe(42);
+  });
+});
+
+describe('fs error mapping (getTicket)', () => {
+  it('maps a genuinely missing file to 404', async () => {
+    const err = await httpError(getTicket('tkt-doesnotexist'));
+    expect(err.status).toBe(404);
+  });
+
+  it('rethrows a non-ENOENT fs error instead of masking it as a 404', async () => {
+    // A directory where the .md file is expected makes readFile throw EISDIR, not
+    // ENOENT — a real fault that must surface (→ 500), not be reported as missing.
+    const dir = path.join(tmpDir, 'tkt-isdir.md');
+    await fs.mkdir(dir);
+    try {
+      const err = await getTicket('tkt-isdir').catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(HttpError);
+      expect(err.code).toBe('EISDIR');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('parent cycle guard (updateTicket)', () => {

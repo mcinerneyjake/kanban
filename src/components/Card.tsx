@@ -134,7 +134,11 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
           </span>
         )}
         {ticket.dueDate && ticket.status !== 'done' && ticket.status !== 'archived' && (() => {
-          const today = new Date().toISOString().slice(0, 10);
+          // Local "today", not UTC: toISOString() would flip to tomorrow in the
+          // evening at negative UTC offsets (e.g. 8pm EDT), lighting the overdue
+          // badge hours early. dueDate is a bare YYYY-MM-DD, so compare in local time.
+          const now = new Date();
+          const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
           const cls = ticket.dueDate < today ? ' overdue' : ticket.dueDate === today ? ' due-today' : '';
           return (
             <span className={`badge due-date${cls}`} title={`Due ${ticket.dueDate}`}>

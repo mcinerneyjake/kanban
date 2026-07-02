@@ -10,6 +10,16 @@ on:
   push:
     branches: [main]
 
+# Least privilege: the gate only reads the checkout, never writes back.
+permissions:
+  contents: read
+
+# Cancel superseded PR runs, but never cancel a run on main (each squash-merge
+# push deserves its own complete gate).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   gate:
     runs-on: ubuntu-latest

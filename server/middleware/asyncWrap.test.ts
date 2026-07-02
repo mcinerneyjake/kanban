@@ -21,15 +21,19 @@ describe('wrap — error funnel', () => {
     expect(res.body.error).toBe('teapot');
   });
 
-  it('maps an unexpected throw to 500, logs it, and leaks no stack', async () => {
+  it('maps an unexpected throw to a generic 500, logs it, and leaks neither stack nor raw message', async () => {
     const app = makeApp();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    app.get('/x', wrap(async () => { throw new Error('boom'); }));
+    app.get('/x', wrap(async () => { throw new Error('boom: /abs/secret/path'); }));
     try {
       const res = await request(app).get('/x');
       expect(res.status).toBe(500);
       expect(Object.keys(res.body)).toEqual(['error']);
       expect(res.body).not.toHaveProperty('stack');
+      // The raw message (which can embed internals like fs paths) is not surfaced;
+      // a generic message is returned and the detail is kept in the server log.
+      expect(res.body.error).toBe('Internal server error');
+      expect(res.body.error).not.toContain('boom');
       expect(errSpy).toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
@@ -46,14 +50,14 @@ describe('wrap — error funnel', () => {
     expect(res.body.error).toBe('sync');
   });
 
-  it('reports a non-Error throw as 500 "Unknown error"', async () => {
+  it('reports a non-Error throw as a generic 500', async () => {
     const app = makeApp();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     app.get('/x', wrap(async () => { throw 'a bare string'; }));
     try {
       const res = await request(app).get('/x');
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe('Unknown error');
+      expect(res.body.error).toBe('Internal server error');
     } finally {
       errSpy.mockRestore();
     }

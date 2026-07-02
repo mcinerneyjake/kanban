@@ -32,6 +32,13 @@ export class HttpError extends Error {
   }
 }
 
+// A missing file is the only fs error that means "ticket not found"; everything
+// else (EACCES, EMFILE, EISDIR, …) is a real fault that must surface as a 500,
+// not be masked as a 404. Narrows `unknown` without a cast so lint stays happy.
+function isENOENT(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && err.code === 'ENOENT';
+}
+
 type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
 // Shape returned by gray-matter after parsing a ticket file. js-yaml will
@@ -179,8 +186,11 @@ function validateWritableTypes(patch: TicketPatch) {
     throw new HttpError(400, 'title must be a string');
   if (patch.body != null && typeof patch.body !== 'string')
     throw new HttpError(400, 'body must be a string');
-  if (patch.order != null && typeof patch.order !== 'number')
-    throw new HttpError(400, 'order must be a number');
+  if (patch.order != null && (typeof patch.order !== 'number' || !Number.isFinite(patch.order)))
+    // Infinity/NaN pass a bare `typeof === 'number'` check but poison ordering:
+    // JSON.parse('{"order":1e999}') → Infinity, which then makes every future
+    // createTicket compute maxOrder + 1 = Infinity. Reject non-finite outright.
+    throw new HttpError(400, 'order must be a finite number');
   for (const field of ['project', 'parent', 'dueDate', 'assignee'] as const) {
     const value = patch[field];
     if (value != null && typeof value !== 'string')
@@ -197,8 +207,16 @@ const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // YYYY-MM-DD shape on write so a bad value can't reach the UI (where
 // formatDueDate would render "undefined NaN") or break the overdue comparison.
 function assertDueDate(dueDate: string | null | undefined) {
-  if (typeof dueDate === 'string' && !DUE_DATE_RE.test(dueDate))
+  if (typeof dueDate !== 'string') return;
+  if (!DUE_DATE_RE.test(dueDate))
     throw new HttpError(400, 'dueDate must be YYYY-MM-DD');
+  // The regex admits impossible dates (2026-99-99, 2026-02-30) that still NaN the
+  // overdue comparison this guard exists to protect. Confirm it's a real calendar
+  // date by round-tripping through Date: an out-of-range ISO date parses to
+  // Invalid Date, and a rolled-over one won't serialise back to the same string.
+  const parsed = new Date(`${dueDate}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== dueDate)
+    throw new HttpError(400, `dueDate is not a real calendar date: ${dueDate}`);
 }
 
 function newId(): string {
@@ -249,8 +267,9 @@ export async function getTicket(id: string): Promise<Ticket> {
   let raw: string;             // 400 (Invalid id) rather than being masked as a 404.
   try {
     raw = await fs.readFile(file, 'utf8');
-  } catch {
-    throw new HttpError(404, `Ticket not found: ${id}`);
+  } catch (err) {
+    if (isENOENT(err)) throw new HttpError(404, `Ticket not found: ${id}`);
+    throw err; // EACCES/EMFILE/… are real faults → 500, not a masked 404
   }
   try {
     const { data, content } = matter(raw, NO_CACHE); // see NO_CACHE: consistent throw on bad YAML
@@ -438,8 +457,9 @@ export async function deleteTicket(id: string): Promise<void> {
   const file = ticketPath(id); // validate id before the try (see getTicket)
   try {
     await fs.unlink(file);
-  } catch {
-    throw new HttpError(404, `Ticket not found: ${id}`);
+  } catch (err) {
+    if (isENOENT(err)) throw new HttpError(404, `Ticket not found: ${id}`);
+    throw err; // EACCES/EMFILE/… are real faults → 500, not a masked 404
   }
   // Best-effort referential cleanup: strip the deleted id from every other
   // ticket's *blocker* edges, and orphan its children to top-level (parent →
