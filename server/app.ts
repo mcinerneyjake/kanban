@@ -3,6 +3,7 @@ import { ticketsRouter } from './routes/tickets.js';
 import { eventsRouter } from './routes/events.js';
 import { intakeRouter } from './routes/intake.js';
 import { boardRouter } from './routes/board.js';
+import { streamRouter } from './routes/stream.js';
 
 // Assembles the Express app from the resource routers. Layering:
 //   route (wiring) -> controller (parse/validate/shape) -> service (logic/IO).
@@ -15,4 +16,5 @@ app.use(express.json({ limit: '256kb' }));
 app.use('/api/tickets', ticketsRouter);
 app.use('/api/tickets', eventsRouter);
 app.use('/api/intake', intakeRouter);
+app.use('/api/stream', streamRouter);
 app.use('/api', boardRouter);

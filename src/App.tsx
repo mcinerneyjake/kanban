@@ -52,6 +52,15 @@ export default function App() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
+  // Suppress the echo of our OWN writes: a local mutation persists to a file,
+  // chokidar sees it, and the server broadcasts `refresh` back ~100ms later.
+  // Reloading on that echo would clobber the optimistic drag/reparent state
+  // (which skips reloading on success by design), so mute refresh-driven reloads
+  // briefly after each local write. Genuinely external changes (Claude / the MCP
+  // process) land outside this window and still refresh instantly.
+  const muteRefreshUntil = useRef(0);
+  const markLocalWrite = useCallback(() => { muteRefreshUntil.current = Date.now() + 500; }, []);
+
   const projects = useMemo(
     () => [...new Set(tickets.map((t) => t.project).filter((p): p is string => Boolean(p)))].sort(),
     [tickets],
@@ -105,6 +114,31 @@ export default function App() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Live board sync: the server broadcasts a bare `refresh` over SSE whenever a
+  // ticket file changes (API, direct edit, or the separate MCP process). load()
+  // re-syncs the board and the dashboard aggregates.
+  useEffect(() => {
+    const es = new EventSource('/api/stream');
+    // Skip refreshes that are the echo of our own just-persisted write (see
+    // markLocalWrite) so they don't clobber optimistic state.
+    const onRefresh = () => { if (Date.now() >= muteRefreshUntil.current) load(); };
+    // The initial connect is already covered by the mount load(); only refetch
+    // on a genuine RE-connect, to catch changes missed while disconnected
+    // (EventSource auto-reconnects but does not replay events).
+    let connectedOnce = false;
+    const onOpen = () => {
+      if (!connectedOnce) { connectedOnce = true; return; }
+      load();
+    };
+    es.addEventListener('refresh', onRefresh);
+    es.addEventListener('open', onOpen);
+    return () => {
+      es.removeEventListener('refresh', onRefresh);
+      es.removeEventListener('open', onOpen);
+      es.close();
+    };
   }, [load]);
 
   // Open the modal — create ('new') or edit (a ticket) — with an optional prefill
@@ -164,6 +198,7 @@ export default function App() {
     }
     if (descendants.has(newParentId)) return;
     const originalParent = current.find((t) => t.id === id)?.parent ?? null;
+    markLocalWrite();
     setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: newParentId } : t)));
     try {
       await api.update(id, { parent: newParentId });
@@ -171,7 +206,7 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
       setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, parent: originalParent } : t)));
     }
-  }, []);
+  }, [markLocalWrite]);
 
   const handleArchiveAll = useCallback(async () => {
     const doneTickets = ticketsRef.current.filter((t) => t.status === 'done');
@@ -183,6 +218,7 @@ export default function App() {
 
   // Optimistic move: patch local state first, persist, reload on failure.
   const handleMove = useCallback(async (id: string, status: Ticket['status'], order: number) => {
+    markLocalWrite();
     setTickets((prev) =>
       prev.map((t) => (t.id === id ? { ...t, status, order } : t)));
     try {
@@ -191,7 +227,7 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
       load();
     }
-  }, [load]);
+  }, [load, markLocalWrite]);
 
   return (
     <div className="layout">
