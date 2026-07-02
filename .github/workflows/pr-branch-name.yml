@@ -3,6 +3,9 @@ name: PR branch name
 # Enforces the branch-per-ticket convention documented in CLAUDE.md:
 #   <type>/<id>-<slug>   e.g. chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket
 # Fails the PR if its head branch doesn't match, so naming stays consistent.
+# The id segment is lowercase-alphanumeric (min 6): this accepts both the current
+# 12-hex ids from newId() AND the shorter base36 legacy board ids (e.g.
+# tkt-mqqh0pkx0q), which the old [0-9a-f]{12} pattern wrongly rejected.
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -16,7 +19,7 @@ jobs:
           BRANCH: ${{ github.head_ref }}
         run: |
           echo "Head branch: $BRANCH"
-          if [[ "$BRANCH" =~ ^(fix|feat|task|chore)/tkt-[0-9a-f]{12}-[a-z0-9-]+$ ]]; then
+          if [[ "$BRANCH" =~ ^(fix|feat|task|chore)/tkt-[a-z0-9]{6,}-[a-z0-9-]+$ ]]; then
             echo "✓ Branch name matches <type>/<id>-<slug>"
           else
             echo "::error::Branch '$BRANCH' does not match <type>/<id>-<slug> — type ∈ {fix,feat,task,chore}, id like tkt-4f7ccb2cd6bc, slug lowercase-kebab. See CLAUDE.md → Branch, commit & PR workflow."
