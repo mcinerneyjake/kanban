@@ -17,12 +17,13 @@ code, and closes it with `update_ticket` — dogfooding the very tools it builds
 
 The workflow is deliberately strict so an agent can run it end-to-end. One
 ticket → one branch → one squash-merged PR, gated by CI (typecheck · lint ·
-Vitest) and a *second* automated Claude review that comments on each PR. Branch
-protection blocks direct pushes to `main`, so nothing merges without the gate
-green. A human approves three checkpoints — commit, open PR, merge — but the
-implementation between them is the agent's.
+Vitest, plus a path-filtered Playwright e2e job) and a *second* automated Claude
+review that comments on each PR. Branch protection blocks direct pushes to
+`main`, so nothing merges without the gate green. A human approves three
+checkpoints — commit, open PR, merge — but the implementation between them is
+the agent's.
 
-The result: **~125 commits across four days, 53 co-authored by Claude**, each a
+The result: **177 commits across ten days, 148 co-authored by Claude**, each a
 self-contained, tested, reviewed slice rather than a big-bang dump. It's a
 working demo of agent-driven development where the *process* — tickets, gates,
 and review — is as much the artifact as the code.
@@ -104,6 +105,11 @@ Four layers, each independently testable (the model is mocked in tests):
    **fail-safe** human-in-the-loop gate: every non-read-only tool needs
    approval, and a closed stdin defaults to *decline*.
 
+Each run ends with a cost summary from a pluggable model
+(`agent/economics.ts`): local runs are costed by **measured energy**
+(kWh × your regional rate) rather than notional token prices — the per-token
+API-price model stays available as a dormant seam for cloud endpoints.
+
 ### Local-LLM setup
 
 Configure an embedding model and a chat model via a gitignored `.env` (copy
@@ -139,25 +145,23 @@ Fully local: no API keys, no billing, nothing to flake mid-demo.
 2. Load **Qwen3-Embedding-0.6B** (~600 MB) plus a chat model from the table,
    and start the local server (`:1234`).
 3. `curl http://localhost:1234/v1/models` → put the exact ids in `.env`.
-4. `npm run dev`, then create a ticket (watch the dedup strip) or run
-   `npm run agent -- "<report>"`.
+4. `npm run dev`, then hit **+ New ticket** — with a model up, the create modal
+   is AI-first: paste a messy note and the agent drafts the ticket (with a
+   "Related tickets" dedup strip as you type). Or run the CLI:
+   `npm run agent -- "<report>"`. Without a model, the modal falls back to the
+   plain manual form.
 
 #### Bring your own key (cloud chat — optional, advanced)
 
-Prefer not to run a local *chat* model? Point `LLM_BASE_URL` at an
-OpenAI-compatible cloud endpoint and set `LLM_API_KEY` (`.env` only, never
-commit):
-
-- **OpenAI** — `https://api.openai.com/v1` (e.g. `LLM_MODEL=gpt-4o-mini`).
-  Native format, no shim.
-- **Claude** — `https://api.anthropic.com/v1` (Anthropic's OpenAI-compat
-  endpoint, e.g. `LLM_MODEL=claude-...`). A best-effort migration shim —
-  **verify the tool loop works** before demoing on it.
-
-Two caveats worth knowing: **Anthropic has no embeddings API**, so retrieval
-still needs an embedder (a local one, or OpenAI's). And the embedder is keyless
-today, so a *fully*-cloud setup is OpenAI-for-both; Claude is chat-only
-alongside a local embedder.
+Prefer not to run a local *chat* model? The provider seam is just the
+OpenAI-compatible `/v1` contract — point `LLM_BASE_URL` at a cloud endpoint and
+set `LLM_API_KEY` (`.env` only, never commit). **OpenAI**
+(`https://api.openai.com/v1`, e.g. `LLM_MODEL=gpt-4o-mini`) works natively. A
+dedicated Anthropic/Claude chat driver was evaluated and deliberately dropped
+rather than shipped half-verified — cloud stays a config swap behind the seam,
+not a maintained path. (The one cloud integration this repo keeps is the CI
+code-review job.) Note the embedder is keyless today, so retrieval still runs
+against a local embedding model either way.
 
 ## Stack
 
@@ -175,12 +179,14 @@ alongside a local embedder.
 
 ```
 kanban/
-├── server/          Express API (index.ts) + file service (tickets.ts)
+├── server/          Express API (routes → controllers → tickets.ts service)
 ├── mcp/             MCP server: handlers.ts (tool logic) + server.ts (entrypoint)
+├── agent/           Intake agent: retrieval · tools · loop · CLI · cost/economics
 ├── shared/          Domain enums shared by server, client + MCP (no drift)
 ├── src/             React app
+├── e2e/             Playwright browser tests (smoke + drag-and-drop)
 ├── tickets/         ← source of truth: one .md per ticket (gitignored)
-├── .github/         CI: quality gate · PR branch-name · Claude code review
+├── .github/         CI: quality gate · branch-name · Claude review · e2e
 └── vite.config.ts   dev proxy /api → :3001
 ```
 
@@ -201,22 +207,35 @@ updated: 2026-06-20T09:00:00.000Z
 Markdown body…
 ```
 
+Optional frontmatter fields: `project`, `blockers` (ticket ids), `parent`
+(sub-tickets), `dueDate`, `assignee`. Invalid values never crash the board —
+see Design notes.
+
 ## Tests & CI
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run lint        # eslint
-npm test            # vitest
+npm run lint        # eslint (includes the e2e specs)
+npm test            # vitest — 640+ tests across every logic layer
+npm run test:e2e    # playwright — boots the app and drives a real browser
 ```
 
-A husky pre-commit hook runs all three locally; the same gate runs in GitHub
-Actions on every PR, alongside a check that branch names follow
+A husky pre-commit hook runs the first three locally; the same gate runs in
+GitHub Actions on every PR, alongside a check that branch names follow
 `<type>/<id>-<slug>`. Work lands on `main` via squash-merged PRs, with branch
-protection requiring both checks green.
+protection requiring three checks green (gate · branch-name · review).
 
-A third workflow runs an automated **Claude code review** on each PR — it posts
-findings as a comment when an `ANTHROPIC_API_KEY` repo secret is configured, and
-skips silently when the secret is absent or the diff is docs/config-only.
+Two more workflows run per-PR: an automated **Claude code review** posts
+findings as a comment when an `ANTHROPIC_API_KEY` repo secret is configured
+(and skips silently when it's absent or the diff is docs-only), and a
+path-filtered **Playwright e2e job** runs the browser suite whenever UI-facing
+files change — advisory for now, promoted to required once it has a stable
+track record. All workflows run least-privilege (`contents: read`) with
+concurrency groups.
+
+> The e2e suite is deterministic without a local LLM: `playwright.config.ts`
+> pins the drafting model at a dead port so the create modal always falls to
+> its manual form.
 
 ## Design notes
 
