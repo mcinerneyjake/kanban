@@ -6,9 +6,14 @@ import { type RunOutcome } from './economics.js';
 
 // ---------------------------------------------------------------------------
 // Tool-use loop (Phase 3) + human-in-the-loop approval gate (Phase 4). Drives a
-// ChatClient through the agent's tools until it produces a final answer. The
-// gate is FAIL-SAFE: only read-only tools run freely; everything else (writes,
-// and any tool added later) requires approval by default.
+// ChatClient through the agent's tools until it produces a final answer.
+//
+// The gate is fail-safe WHEN an `approve` fn is supplied: only read-only tools
+// run freely; everything else (writes, and any tool added later) is routed
+// through `approve`, so a newly added tool defaults to requiring approval rather
+// than slipping through. Omitting `approve` is an explicit opt-out — auto-approve
+// for programmatic callers that drive the loop themselves (see IntakeDeps.approve).
+// The CLI always supplies a prompting gate.
 // ---------------------------------------------------------------------------
 
 export const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given a raw report (a bug, a request, or a note), land it on the board correctly:
@@ -70,8 +75,9 @@ export interface IntakeDeps {
   approve?: ApproveFn;
 }
 
-// create/update are the "accepted" mutations counted toward the run outcome.
-function mutationKind(name: string): 'create' | 'update' | null {
+// create/update are the "accepted" mutations counted toward the run outcome —
+// and the only tools a propose-mode capture should treat as a proposal.
+export function mutationKind(name: string): 'create' | 'update' | null {
   if (name === 'create_ticket') return 'create';
   if (name === 'update_ticket') return 'update';
   return null;
@@ -116,9 +122,15 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     for (const call of calls) {
       const { result, declined: wasDeclined } = await runCall(call.function.name, parseArgs(call.function.arguments), deps);
       const kind = mutationKind(call.function.name);
+      // Count a mutation as accepted ONLY when it was neither declined nor
+      // errored — a failed create/update (e.g. missing title → 400 → isError)
+      // produced no ticket, so it must not be credited as created/updated (which
+      // would make economics.ts claim manual value for work never done).
       if (kind && wasDeclined) declinedCount += 1;
-      else if (kind === 'create') created += 1;
-      else if (kind === 'update') updated += 1;
+      else if (kind && !result.isError) {
+        if (kind === 'create') created += 1;
+        else updated += 1;
+      }
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -127,5 +139,15 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     }
   }
 
-  throw new Error(`Agent did not finish within ${maxSteps} steps`);
+  // Step budget exhausted. Return an errored outcome rather than throwing, so
+  // the usage/tally of mutations that DID execute before the budget ran out is
+  // preserved (a throw would discard it and never set RunOutcome.errored).
+  const outcome: RunOutcome = {
+    created, updated, declined: declinedCount,
+    noProposal: created + updated + declinedCount === 0,
+    errored: true,
+  };
+  const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
+    `${created + updated} mutation(s) were applied before the step budget ran out.`;
+  return { final, messages, steps: maxSteps, outcome };
 }

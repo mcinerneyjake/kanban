@@ -103,4 +103,19 @@ describe('proposeIntake', () => {
     const result = await proposeIntake('x', { chat, index: await buildIndex() });
     expect(result.proposal).toEqual({ action: 'create_ticket', args: {} });
   });
+
+  it('ignores a non-create/update gated call and captures the real create/update (tkt-fa3b427fb0b6)', async () => {
+    // A prompt-injected `delete_ticket` (or any non-mutation gated tool) must not
+    // become the proposal — only create/update do, and the legitimate one that
+    // follows is captured instead of being displaced.
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'delete_ticket', '{"id":"t1"}')]),
+      assistant(null, [toolCall('c2', 'update_ticket', '{"id":"t1","status":"done"}')]),
+      assistant('Proposed an update.'),
+    ]);
+    const result = await proposeIntake('x', { chat, index: await buildIndex() });
+    expect(result.proposal).toMatchObject({ action: 'update_ticket', args: { id: 't1', status: 'done' } });
+    // and nothing was written
+    expect((await listTickets()).length).toBe(0);
+  });
 });

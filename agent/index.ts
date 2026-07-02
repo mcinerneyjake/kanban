@@ -36,6 +36,14 @@ async function main(): Promise<void> {
       try {
         const current = await getTicket(args.id);
         console.log(`Current: "${current.title}" — ${current.status}/${current.priority}`);
+        // A body replacement is destructive and unrecoverable (tickets/ is
+        // gitignored — no undo). Show the current body so the reviewer isn't
+        // approving a blind full-body overwrite; the proposed body is in the
+        // args JSON printed above.
+        if (typeof args.body === 'string' && args.body !== current.body) {
+          console.log('Current body (will be REPLACED by the proposed `body` above):');
+          console.log(current.body || '(empty)');
+        }
       } catch {
         console.log('(could not load the current ticket state)');
       }
