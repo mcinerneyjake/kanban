@@ -149,9 +149,9 @@ git push -u origin <prefix>/<id>-<slug>
 gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the ## Implementation summary>"
 ```
 
-The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`.
+The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`. A fourth workflow (`.github/workflows/e2e.yml`, added 2026-07-02) runs the Playwright suite path-filtered to UI-touching changes (`src/**`, `e2e/**`, `playwright.config.ts`) — it is **advisory** (not in the ruleset) until it earns a stable track record, then gets promoted to required.
 
-**Branch protection:** `main` is protected by a GitHub ruleset that enforces all three CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level.
+**Branch protection:** `main` is protected by a GitHub ruleset that enforces the three **required** CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level. (`e2e` reports on the PR but does not yet block merge.)
 
 When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
 
