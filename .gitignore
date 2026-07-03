@@ -12,3 +12,4 @@ events/
 test-results/
 playwright-report/
 coverage/
+.cache/
