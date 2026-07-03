@@ -23,6 +23,12 @@
   --st-in-progress: #ffab00;
   --st-qa: #6554c0;
   --st-done: #36b37e;
+  /* Economics cost-kind accents: measured=green (truth), assumed=amber
+     (estimated), externality=purple (report-only); line = usage series. */
+  --econ-measured: #36b37e;
+  --econ-assumed: #ffab00;
+  --econ-externality: #6554c0;
+  --econ-line: #0052cc;
 }
 
 [data-theme="dark"] {
@@ -50,6 +56,10 @@
   --st-in-progress: #d29922;
   --st-qa: #a371f7;
   --st-done: #3fb950;
+  --econ-measured: #3fb950;
+  --econ-assumed: #d29922;
+  --econ-externality: #a371f7;
+  --econ-line: #58a6ff;
 }
 
 * { box-sizing: border-box; }
@@ -1096,3 +1106,41 @@ body {
   text-overflow: ellipsis;
 }
 .card-progress.is-failed .card-progress-label { color: var(--danger); }
+
+/* --- Economics dashboard --------------------------------------------------- */
+.econ-dashboard { padding: 20px; max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+
+.econ-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+}
+.econ-tile {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+}
+.econ-tile-value { font-size: 22px; font-weight: 700; color: var(--text); }
+.econ-tile-label { font-size: 12px; color: var(--muted); }
+.econ-notional { color: var(--muted); font-weight: 400; }
+.econ-caveat { font-size: 12px; color: var(--muted); margin: -8px 2px 0; }
+
+.econ-chart-card, .econ-group {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+}
+.econ-group-title { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+.econ-chart { width: 100%; height: auto; display: block; }
+.econ-line { stroke: var(--econ-line); stroke-width: 2; }
+.econ-area { fill: var(--econ-line); opacity: 0.12; }
+.econ-dot { fill: var(--econ-line); stroke: var(--card-bg); stroke-width: 2; }
+
+.econ-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+/* The cost-kind accent: a left border so the three groups read as distinct. */
+.econ-group--measured { border-left: 3px solid var(--econ-measured); }
+.econ-group--assumed { border-left: 3px solid var(--econ-assumed); }
+.econ-group--externality { border-left: 3px solid var(--econ-externality); }
+
+.econ-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.econ-table td { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.econ-table tr:last-child td { border-bottom: none; }
+.econ-line-label { color: var(--text); }
+.econ-line-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.econ-line-amount.econ-notional { color: var(--muted); }

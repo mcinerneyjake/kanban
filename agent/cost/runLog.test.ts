@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { appendRun, readRun, readRuns, getRunForTicket, isRunRecord, type RunRecord } from './runLog.js';
+import { appendRun, readRun, readRuns, getRunForTicket, isRunRecord, runsDir as defaultRunsDir, type RunRecord } from './runLog.js';
 import { emptyUsage } from './usage.js';
 import { createTicket } from '../../server/tickets.js';
 
@@ -91,6 +91,22 @@ describe('getRunForTicket (ticket → run join)', () => {
   it('returns null (does not throw) for an unknown or malformed ticket id', async () => {
     expect(await getRunForTicket('tkt-doesnotexist')).toBeNull();
     expect(await getRunForTicket('../bad id')).toBeNull(); // getTicket would throw 400
+  });
+});
+
+describe('runsDir (default location)', () => {
+  it('defaults to the project-root runs/ dir, not nested under agent/', () => {
+    const saved = process.env.RUNS_DIR_OVERRIDE;
+    delete process.env.RUNS_DIR_OVERRIDE;
+    try {
+      const dir = defaultRunsDir();
+      expect(dir.endsWith(`${path.sep}runs`)).toBe(true);
+      // Regression guard: the reorg moved this file to agent/cost/, so a single
+      // `..` would wrongly resolve to <root>/agent/runs.
+      expect(dir.includes(`${path.sep}agent${path.sep}`)).toBe(false);
+    } finally {
+      if (saved !== undefined) process.env.RUNS_DIR_OVERRIDE = saved;
+    }
   });
 });
 

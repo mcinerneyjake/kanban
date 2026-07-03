@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { api } from './api.js';
 import Board from './components/Board.jsx';
 import Dashboard from './components/Dashboard.jsx';
+import EconomicsDashboard from './components/EconomicsDashboard.jsx';
 import Sidebar, { type View } from './components/Sidebar.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
@@ -263,9 +264,9 @@ export default function App() {
                 />
                 <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
               </>
-            ) : (
+            ) : view === 'dashboard' ? (
               <DashboardConfigPopover projects={projects} dash={dash} />
-            )}
+            ) : null}
             <button className="btn primary" onClick={() => openTicket('new')}>
               + New ticket
             </button>
@@ -279,6 +280,8 @@ export default function App() {
             <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
             <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
+        ) : view === 'economics' ? (
+          <EconomicsDashboard refreshKey={refreshKey} />
         ) : (
           <Dashboard
             project={dash.project}

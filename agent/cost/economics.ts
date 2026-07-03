@@ -1,6 +1,9 @@
 import { type RunUsage } from './usage.js';
 import { type CostConfig, isSet } from './costConfig.js';
 import { type CostLine, ApiPriceCostModel } from './cost.js';
+import {
+  LABEL_TOTAL_RUN_COST, LABEL_COST_PER_ACCEPTED, LABEL_NET_SAVINGS, LABEL_LOCAL_VS_CLOUD,
+} from '../../shared/constants.js';
 
 // Turns the per-run cost components + the run's outcome into UNIT ECONOMICS:
 // cost per accepted ticket, net savings vs. doing it by hand, and the
@@ -19,14 +22,6 @@ export interface RunOutcome {
 export function acceptedCount(o: RunOutcome): number {
   return o.created + o.updated;
 }
-
-// Canonical labels for the derived economics lines. Exported so the aggregator
-// (economicsSummary.ts) keys on the SAME strings — a rename here breaks its
-// import, not silently its find() at runtime.
-export const LABEL_TOTAL_RUN_COST = 'total run cost';
-export const LABEL_COST_PER_ACCEPTED = 'cost per accepted ticket';
-export const LABEL_NET_SAVINGS = 'net savings';
-export const LABEL_LOCAL_VS_CLOUD = 'local vs cloud (saved)';
 
 // Cast-free validator for a persisted RunOutcome (run log reads).
 export function isRunOutcome(v: unknown): v is RunOutcome {

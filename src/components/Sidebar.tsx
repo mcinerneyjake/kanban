@@ -1,10 +1,11 @@
 import { withBlur } from '../lib/withBlur.js';
 
-export type View = 'board' | 'dashboard'
+export type View = 'board' | 'dashboard' | 'economics'
 
 const NAV: { view: View; icon: string; label: string }[] = [
   { view: 'board', icon: '📋', label: 'Board' },
   { view: 'dashboard', icon: '📊', label: 'Dashboard' },
+  { view: 'economics', icon: '⚡', label: 'Economics' },
 ];
 
 type Props = {

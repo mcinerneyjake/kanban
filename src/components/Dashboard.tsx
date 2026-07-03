@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { api } from '../api.js';
 import ErrorBanner from './ErrorBanner.jsx';
+import { usePolledSummary } from '../usePolledSummary.js';
 import { donutSegments } from '../lib/donutSegments.js';
 import { type WidgetVisibility } from '../useDashboardConfig.js';
 import {
@@ -55,28 +56,12 @@ type Props = {
 // visibility, auto-refresh) lives in the topbar's Config popover and arrives as
 // props; this component owns only the data fetch, polling, and rendering.
 export default function Dashboard({ project, visible, autoRefresh, refreshKey, onOpen }: Props) {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // setState only ever runs inside the async callbacks (never synchronously in
-  // render/effect), matching App.load() and keeping the effect side-effect-free.
-  const load = useCallback(() => {
-    api.dashboard(project || undefined)
-      .then((s) => { setSummary(s); setError(null); })
-      .catch((e: Error) => setError(e.message));
-  }, [project]);
-
-  // Refresh on mount, on project change, and whenever App signals a ticket
-  // mutation (refreshKey). The full-screen loading state shows only before the
-  // first summary arrives; later refreshes swap the data in place.
-  useEffect(() => { load(); }, [load, refreshKey]);
-
-  // Optional polling — only while enabled.
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const id = setInterval(load, AUTO_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [autoRefresh, load]);
+  // Fetch on mount + project change + refreshKey; poll only while auto-refresh is
+  // on. Shared with the Economics view via usePolledSummary.
+  const fetcher = useCallback(() => api.dashboard(project || undefined), [project]);
+  const { data: summary, error, setError } = usePolledSummary<DashboardSummary>(
+    fetcher, refreshKey, autoRefresh ? AUTO_REFRESH_MS : 0,
+  );
 
   const statusSegments = summary
     ? donutSegments(summary.byStatus.map((s) => ({ key: s.status, count: s.count })), CIRCUMFERENCE)
