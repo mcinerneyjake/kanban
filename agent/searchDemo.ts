@@ -1,6 +1,6 @@
-import { RuntimeEmbedder } from './retrieval.js';
-import { buildBoardIndex } from './indexCache.js';
-import { resolveEmbedConfig } from './models.js';
+import { RuntimeEmbedder } from './retrieval/retrieval.js';
+import { buildBoardIndex } from './retrieval/indexCache.js';
+import { resolveEmbedConfig } from './retrieval/models.js';
 
 // Load local config if a .env is present; tolerate its absence.
 try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }

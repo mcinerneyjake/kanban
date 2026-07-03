@@ -1,4 +1,4 @@
-import { type Ticket } from '../shared/constants.js';
+import { type Ticket } from '../../shared/constants.js';
 import { RuntimeEmbedder, DocumentIndex, type Embedder } from './retrieval.js';
 import { resolveEmbedConfig } from './models.js';
 import { TicketConnector } from './connectors/ticket.js';

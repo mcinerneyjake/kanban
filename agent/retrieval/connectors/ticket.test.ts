@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { TicketConnector } from './ticket.js';
 import { collectDocuments } from './connector.js';
-import { createTicket } from '../../server/tickets.js';
-import { type Ticket } from '../../shared/constants.js';
+import { createTicket } from '../../../server/tickets.js';
+import { type Ticket } from '../../../shared/constants.js';
 
 function mk(id: string, title: string, body = '', status: Ticket['status'] = 'backlog'): Ticket {
   return {

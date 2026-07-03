@@ -4,7 +4,7 @@ import { app } from './app.js';
 import { scheduleWeeklyArchive, stopArchiveScheduler, msUntilNextSundayEvening } from './archiveScheduler.js';
 import { startTicketWatcher, stopTicketWatcher } from './ticketWatcher.js';
 import { closeAllStreamClients } from './stream.js';
-import { getTicketIndex } from '../agent/indexCache.js';
+import { getTicketIndex } from '../agent/retrieval/indexCache.js';
 
 // Process entrypoint. Assembly moved to app.ts and the archive scheduler to
 // archiveScheduler.ts; these re-exports keep ./index.js a stable import surface

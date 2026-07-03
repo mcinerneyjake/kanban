@@ -8,7 +8,7 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 // non-HttpError, exercising the wrap() 500 branch (live ESM binding — index.ts
 // reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
-import { resetIndexCache } from '../agent/indexCache.js';
+import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 
 let tmpDir: string;
 // The PATCH route drives updateTicket, which emits status-milestone telemetry;

@@ -3,9 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
-import { DocumentIndex, type Embedder, type Document } from './retrieval.js';
-import { TOOLS } from '../mcp/handlers.js';
-import { createTicket, getTicket } from '../server/tickets.js';
+import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
+import { TOOLS } from '../../mcp/handlers.js';
+import { createTicket, getTicket } from '../../server/tickets.js';
 
 // Deterministic stub embedder (keyword -> fixed vector), as in retrieval.test.
 class StubEmbedder implements Embedder {

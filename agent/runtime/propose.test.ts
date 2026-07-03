@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { proposeIntake } from './propose.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
-import { DocumentIndex, type Embedder } from './retrieval.js';
-import { listTickets } from '../server/tickets.js';
+import { DocumentIndex, type Embedder } from '../retrieval/retrieval.js';
+import { listTickets } from '../../server/tickets.js';
 
 class StubEmbedder implements Embedder {
   embedDocuments(texts: string[]): Promise<number[][]> { return Promise.resolve(texts.map(() => [1, 0, 0])); }

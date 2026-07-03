@@ -1,6 +1,6 @@
 import { type EmbedConfig, resolveEmbedConfig } from './models.js';
 import { chunkText, type ChunkOptions } from './chunk.js';
-import { UsageMeter, type RunUsage, type CallTokens } from './usage.js';
+import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
 
 // ---------------------------------------------------------------------------
 // Retrieval layer (RAG) — Phase 1 of the agent. An `Embedder` seam plus an

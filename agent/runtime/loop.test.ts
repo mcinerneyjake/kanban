@@ -5,8 +5,8 @@ import path from 'node:path';
 import { runIntake } from './loop.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
 import { type ChatTool } from './tools.js';
-import { DocumentIndex, type Embedder } from './retrieval.js';
-import { listTickets, createTicket } from '../server/tickets.js';
+import { DocumentIndex, type Embedder } from '../retrieval/retrieval.js';
+import { listTickets, createTicket } from '../../server/tickets.js';
 
 // Stub embedder: every text maps to the same vector — ranking is irrelevant
 // here, the loop tests only care about dispatch/termination mechanics.

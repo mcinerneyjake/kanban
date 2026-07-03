@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { appendRun, readRun, readRuns, getRunForTicket, isRunRecord, type RunRecord } from './runLog.js';
 import { emptyUsage } from './usage.js';
-import { createTicket } from '../server/tickets.js';
+import { createTicket } from '../../server/tickets.js';
 
 let runsDir: string;
 let ticketsDir: string;

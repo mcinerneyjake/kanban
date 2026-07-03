@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTicket } from '../server/tickets.js';
+import { getTicket } from '../../server/tickets.js';
 import { type RunUsage, isRunUsage } from './usage.js';
 import { type RunOutcome, isRunOutcome } from './economics.js';
 import { type RunSummary, isRunSummary } from './summary.js';
