@@ -165,3 +165,27 @@ describe('dispatchTool — security gate', () => {
     expect((await dispatchTool('frobnicate', {}, index)).isError).toBe(true);
   });
 });
+
+describe('dispatchTool — provenance stamping', () => {
+  // Parse the ticket id out of a create/update result (cast-free).
+  function idOf(text: string): string {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null && 'id' in parsed && typeof parsed.id === 'string' ? parsed.id : '';
+  }
+
+  it('stamps source: agent + runId on create when a runId is passed', async () => {
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Via dispatch' }, index, 'run-77');
+    const ticket = await getTicket(idOf(res.content[0].text));
+    expect(ticket.source).toBe('agent');
+    expect(ticket.runId).toBe('run-77');
+  });
+
+  it('leaves create unstamped when no runId is passed', async () => {
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'No run' }, index);
+    const ticket = await getTicket(idOf(res.content[0].text));
+    expect(ticket.source).toBeNull();
+    expect(ticket.runId).toBeNull();
+  });
+});

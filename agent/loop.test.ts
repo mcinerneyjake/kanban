@@ -121,6 +121,37 @@ describe('runIntake', () => {
     expect(board.some((t) => t.title === 'From the agent')).toBe(true);
   });
 
+  it('mints a runId and returns it on the result', async () => {
+    const result = await runIntake('hi', { chat: new ScriptedChat([assistant('done')]), index: await buildIndex() });
+    expect(typeof result.runId).toBe('string');
+    expect(result.runId.length).toBeGreaterThan(0);
+  });
+
+  it('captures created ticket ids and stamps them with the run provenance', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Agent authored"}')]),
+      assistant('Created it.'),
+    ]);
+    const result = await runIntake('add it', { chat, index: await buildIndex(), runId: 'run-fixed' });
+    expect(result.createdIds).toHaveLength(1);
+    expect(result.runId).toBe('run-fixed');
+    // The created ticket carries the run's provenance in its frontmatter.
+    const board = await listTickets();
+    const created = board.find((t) => t.title === 'Agent authored');
+    expect(created?.source).toBe('agent');
+    expect(created?.runId).toBe('run-fixed');
+    expect(result.createdIds[0]).toBe(created?.id);
+  });
+
+  it('does not capture an id for a failed (errored) create', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{}')]), // no title → 400 → isError
+      assistant('nothing created'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex() });
+    expect(result.createdIds).toHaveLength(0);
+  });
+
   it('tolerates malformed tool arguments (surfaces the tool error)', async () => {
     const chat = new ScriptedChat([
       assistant(null, [toolCall('c1', 'search_board', 'not json')]),

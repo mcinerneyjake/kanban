@@ -1,6 +1,6 @@
 import { type RunUsage } from './usage.js';
 import { type CostConfig } from './costConfig.js';
-import { type CostLine, EnergyCostModel, HardwareCostModel } from './cost.js';
+import { type CostLine, isCostLine, EnergyCostModel, HardwareCostModel } from './cost.js';
 import { economicsLines, type RunOutcome } from './economics.js';
 import { cacheablePrefix, cacheableLines } from './cacheable.js';
 
@@ -23,6 +23,17 @@ export interface RunSummary {
   assumed: CostLine[];
   externalities: CostLine[];
   headline: CostLine[];
+}
+
+// Cast-free validator for a persisted RunSummary (run log reads): four arrays of
+// CostLine.
+export function isRunSummary(v: unknown): v is RunSummary {
+  const isLines = (x: unknown): x is CostLine[] => Array.isArray(x) && x.every(isCostLine);
+  return typeof v === 'object' && v !== null
+    && 'measured' in v && isLines(v.measured)
+    && 'assumed' in v && isLines(v.assumed)
+    && 'externalities' in v && isLines(v.externalities)
+    && 'headline' in v && isLines(v.headline);
 }
 
 // The curated highlight lines — shown separately, and excluded from `assumed`

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
-import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, CREATE_STATUS_IDS, STATUS_STEP, type Ticket, type StatusId, type DashboardSummary } from '../shared/constants.js';
+import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, CREATE_STATUS_IDS, STATUS_STEP, isSource, type Ticket, type StatusId, type DashboardSummary, type Provenance } from '../shared/constants.js';
 import { appendEvent } from './events.js';
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,8 @@ interface RawFrontmatter {
   parent?: string | null
   dueDate?: string | null
   assignee?: string | null
+  source?: string | null
+  runId?: string | null
 }
 
 // Explicit-field object passed to matter.stringify — typed so serialize()
@@ -74,6 +76,8 @@ interface SerializedFrontmatter {
   parent?: string
   dueDate?: string
   assignee?: string
+  source?: string
+  runId?: string
 }
 
 async function ensureDir() {
@@ -127,6 +131,8 @@ function normalize(id: string, data: RawFrontmatter, body: string): Ticket {
     parent: typeof data.parent === 'string' && data.parent ? data.parent : null,
     dueDate: typeof data.dueDate === 'string' && data.dueDate ? data.dueDate : null,
     assignee: typeof data.assignee === 'string' && data.assignee ? data.assignee : null,
+    source: typeof data.source === 'string' && isSource(data.source) ? data.source : null,
+    runId: typeof data.runId === 'string' && data.runId ? data.runId : null,
   };
 }
 
@@ -146,6 +152,9 @@ function serialize(ticket: Ticket): string {
   if (ticket.parent) data.parent = ticket.parent;
   if (ticket.dueDate) data.dueDate = ticket.dueDate;
   if (ticket.assignee) data.assignee = ticket.assignee;
+  // Provenance keys are omitted for human/CLI writes (both null) → clean diffs.
+  if (ticket.source) data.source = ticket.source;
+  if (ticket.runId) data.runId = ticket.runId;
   return matter.stringify(`\n${ticket.body}\n`, data);
 }
 
@@ -281,7 +290,10 @@ export async function getTicket(id: string): Promise<Ticket> {
   }
 }
 
-export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
+// `provenance` is a TRUSTED stamp — supplied only by the agent write path, never
+// derived from `input` (which may be a raw HTTP body or model tool args), so
+// authorship can't be forged by an untrusted caller.
+export async function createTicket(input: Partial<Ticket>, provenance?: Provenance): Promise<Ticket> {
   validateWritableTypes(input);
   assertEnum(TYPES, input.type, 'type');
   assertEnum(PRIORITIES, input.priority, 'priority');
@@ -312,6 +324,8 @@ export async function createTicket(input: Partial<Ticket>): Promise<Ticket> {
       parent: input.parent ?? null,
       dueDate: input.dueDate ?? null,
       assignee: input.assignee ?? null,
+      source: provenance?.source,
+      runId: provenance?.runId,
     },
     input.body ?? '',
   );
@@ -354,7 +368,7 @@ async function emitStatusStep(id: string, status: StatusId): Promise<void> {
   }
 }
 
-export async function updateTicket(id: string, patch: TicketPatch): Promise<Ticket> {
+export async function updateTicket(id: string, patch: TicketPatch, provenance?: Provenance): Promise<Ticket> {
   validateWritableTypes(patch);
   validateEnums(patch);
   assertDueDate(patch.dueDate);
@@ -381,6 +395,12 @@ export async function updateTicket(id: string, patch: TicketPatch): Promise<Tick
     parent: patch.parent !== undefined ? patch.parent : existing.parent,
     dueDate: patch.dueDate !== undefined ? patch.dueDate : existing.dueDate,
     assignee: patch.assignee !== undefined ? patch.assignee : existing.assignee,
+    // Authorship is set once at CREATE and never reassigned — an agent EDIT of a
+    // human-authored ticket must not claim authorship. Only `runId` is refreshed
+    // by an agent write, linking the ticket to the run that last modified it (the
+    // cost-attribution join); a human/HTTP write preserves the existing runId.
+    source: existing.source,
+    runId: provenance ? provenance.runId : existing.runId,
     created: existing.created,
     updated: new Date().toISOString(),
   };

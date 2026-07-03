@@ -1,6 +1,7 @@
 import { type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS, handleToolCall, type ToolResult } from '../mcp/handlers.js';
 import { type DocumentIndex } from './retrieval.js';
+import { type Provenance } from '../shared/constants.js';
 
 // ---------------------------------------------------------------------------
 // Tool layer (Phase 2). The agent's tool set = a safe whitelist of the MCP
@@ -65,17 +66,26 @@ async function searchBoard(args: Record<string, unknown> | undefined, index: Doc
   return textResult(JSON.stringify(flat, null, 2));
 }
 
+// Tools whose writes get stamped with the run's provenance (source: agent + the
+// runId), so an agent-authored ticket is traceable back to its run's usage/cost.
+const PROVENANCE_TOOLS = new Set(['create_ticket', 'update_ticket']);
+
 // One tool call -> one ToolResult. search_board hits the index; whitelisted MCP
 // tools reuse handleToolCall verbatim; anything else is refused (double-gating
 // so delete_ticket/start_ticket can never reach the service via the agent).
+// `runId`, when supplied, stamps create/update writes with agent provenance —
+// this is the agent-only boundary the human MCP client never crosses.
 export async function dispatchTool(
   name: string,
   args: Record<string, unknown> | undefined,
   index: DocumentIndex,
+  runId?: string,
 ): Promise<ToolResult> {
   if (!AGENT_TOOL_NAMES.has(name)) {
     return textResult(`Tool not available to the agent: ${name}`, true);
   }
   if (name === 'search_board') return searchBoard(args, index);
-  return handleToolCall(name, args);
+  const provenance: Provenance | undefined =
+    runId && PROVENANCE_TOOLS.has(name) ? { source: 'agent', runId } : undefined;
+  return handleToolCall(name, args, provenance);
 }

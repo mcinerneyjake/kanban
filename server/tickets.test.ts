@@ -917,3 +917,59 @@ describe('corrupt ticket file resilience', () => {
     warn.mockRestore();
   });
 });
+
+describe('provenance (source + runId)', () => {
+  it('stamps source + runId when createTicket is given provenance', async () => {
+    const t = await createTicket({ title: 'Agent made this' }, { source: 'agent', runId: 'run-abc' });
+    expect(t.source).toBe('agent');
+    expect(t.runId).toBe('run-abc');
+    // Round-trips through the file, not just the return value.
+    const reread = await getTicket(t.id);
+    expect(reread.source).toBe('agent');
+    expect(reread.runId).toBe('run-abc');
+  });
+
+  it('leaves source/runId null (and omits the frontmatter keys) for a human write', async () => {
+    const t = await createTicket({ title: 'Human made this' });
+    expect(t.source).toBeNull();
+    expect(t.runId).toBeNull();
+    const raw = await fs.readFile(path.join(tmpDir, `${t.id}.md`), 'utf8');
+    expect(raw).not.toContain('source:');
+    expect(raw).not.toContain('runId:');
+  });
+
+  it('updateTicket links the run (runId) but does NOT reassign authorship', async () => {
+    const t = await createTicket({ title: 'Start human' }); // source null (human)
+    const updated = await updateTicket(t.id, { title: 'Edited by agent' }, { source: 'agent', runId: 'run-9' });
+    expect(updated.source).toBeNull(); // authorship stays human — not flipped to agent
+    expect(updated.runId).toBe('run-9'); // but the modifying run is linked
+  });
+
+  it('updateTicket refreshes runId on an agent-authored ticket, keeping source', async () => {
+    const t = await createTicket({ title: 'By agent' }, { source: 'agent', runId: 'run-1' });
+    const updated = await updateTicket(t.id, { title: 'Agent again' }, { source: 'agent', runId: 'run-2' });
+    expect(updated.source).toBe('agent');
+    expect(updated.runId).toBe('run-2'); // latest run that touched it
+  });
+
+  it('updateTicket preserves existing provenance on a human (unstamped) edit', async () => {
+    const t = await createTicket({ title: 'By agent' }, { source: 'agent', runId: 'run-1' });
+    const edited = await updateTicket(t.id, { title: 'Human tweak' }); // no provenance
+    expect(edited.source).toBe('agent'); // preserved, not cleared
+    expect(edited.runId).toBe('run-1');
+  });
+
+  it('reads valid source/runId from a hand-authored file', async () => {
+    await writeRaw('tkt-prov', makeRaw('Prov', 1, { source: 'agent', runId: 'run-file' }));
+    const t = await getTicket('tkt-prov');
+    expect(t.source).toBe('agent');
+    expect(t.runId).toBe('run-file');
+  });
+
+  it('rejects an invalid source value in a file (falls back to null)', async () => {
+    await writeRaw('tkt-badsrc', makeRaw('Bad', 1, { source: 'hacker', runId: 'run-x' }));
+    const t = await getTicket('tkt-badsrc');
+    expect(t.source).toBeNull(); // 'hacker' isn't a valid TicketSource
+    expect(t.runId).toBe('run-x');
+  });
+});

@@ -33,9 +33,19 @@ export const TYPES = ['bug', 'feature', 'task', 'chore'] as const;
 
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 
+// Provenance: who authored a ticket. Only `agent` is ever stamped — a manual
+// (human/CLI/HTTP) write leaves `source` null. Distinct from Document.source
+// (which names a retrieval connector); this names the WRITER of the record.
+export const SOURCES = ['agent'] as const;
+
+// Trusted provenance stamp, threaded only through the agent write path (never
+// from HTTP bodies or model tool args) so authorship can't be spoofed.
+export type Provenance = { source: TicketSource; runId: string }
+
 export type StatusId = (typeof STATUSES)[number]['id']
 export type TicketType = (typeof TYPES)[number]
 export type Priority = (typeof PRIORITIES)[number]
+export type TicketSource = (typeof SOURCES)[number]
 
 // Type predicates — use find() so TypeScript can narrow val to the literal
 // union type without a cast. Safe to call with any string at runtime.
@@ -47,6 +57,9 @@ export function isTicketType(val: string): val is TicketType {
 }
 export function isPriority(val: string): val is Priority {
   return PRIORITIES.find((p) => p === val) !== undefined;
+}
+export function isSource(val: string): val is TicketSource {
+  return SOURCES.find((s) => s === val) !== undefined;
 }
 
 export type Ticket = {
@@ -64,6 +77,12 @@ export type Ticket = {
   parent: string | null
   dueDate: string | null
   assignee: string | null
+  // Provenance — present (non-null) only for agent-authored tickets (see
+  // SOURCES). Optional so the many ticket literals in tests need not set them;
+  // normalize() always emits an explicit value (null for human/CLI writes).
+  // `runId` links to the run log (agent/runLog.ts) for per-ticket usage lookup.
+  source?: TicketSource | null
+  runId?: string | null
 }
 
 // --- Dashboard aggregation -------------------------------------------------

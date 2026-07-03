@@ -9,6 +9,7 @@ dist
 .DS_Store
 tickets/
 events/
+runs/
 test-results/
 playwright-report/
 coverage/

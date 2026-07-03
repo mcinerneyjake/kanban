@@ -6,7 +6,7 @@ import { appendEvent, getTicketEvents } from '../server/events.js';
 import {
   BOARD_STATUSES, STATUS_IDS, CREATE_STATUS_IDS, TYPES, PRIORITIES,
   isStatusId, isTicketType, isPriority,
-  type Ticket, type StatusId,
+  type Ticket, type StatusId, type Provenance,
 } from '../shared/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -313,6 +313,10 @@ export const TOOLS: Tool[] = [
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown> | undefined,
+  // Trusted authorship stamp — passed ONLY by the agent write path. The human
+  // MCP server and HTTP routes call without it, so their writes stay unstamped.
+  // Provenance never comes from `args`, so the model can't forge or omit it.
+  provenance?: Provenance,
 ): Promise<ToolResult> {
   try {
     switch (name) {
@@ -334,7 +338,7 @@ export async function handleToolCall(
       case 'update_ticket': {
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
-        return { content: [textContent(JSON.stringify(await updateTicket(id, extractTicketFields(args, UPDATE_STATUS_ENUM)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await updateTicket(id, extractTicketFields(args, UPDATE_STATUS_ENUM), provenance), null, 2))] };
       }
 
       case 'start_ticket': {
@@ -356,7 +360,7 @@ export async function handleToolCall(
       }
 
       case 'create_ticket':
-        return { content: [textContent(JSON.stringify(await createTicket(extractTicketFields(args, CREATE_STATUS_ENUM)), null, 2))] };
+        return { content: [textContent(JSON.stringify(await createTicket(extractTicketFields(args, CREATE_STATUS_ENUM), provenance), null, 2))] };
 
       case 'delete_ticket': {
         const id = extractId(args);

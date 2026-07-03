@@ -26,6 +26,21 @@ export function emptyUsage(): RunUsage {
   };
 }
 
+// Cast-free validator for a persisted RunUsage (run log reads). Every numeric
+// field must be a number and cachedReported a boolean — a malformed record is
+// rejected rather than trusted.
+export function isRunUsage(v: unknown): v is RunUsage {
+  return typeof v === 'object' && v !== null
+    && 'promptTokens' in v && typeof v.promptTokens === 'number'
+    && 'completionTokens' in v && typeof v.completionTokens === 'number'
+    && 'totalTokens' in v && typeof v.totalTokens === 'number'
+    && 'calls' in v && typeof v.calls === 'number'
+    && 'reportedCalls' in v && typeof v.reportedCalls === 'number'
+    && 'activeMs' in v && typeof v.activeMs === 'number'
+    && 'cachedTokens' in v && typeof v.cachedTokens === 'number'
+    && 'cachedReported' in v && typeof v.cachedReported === 'boolean';
+}
+
 export interface CallTokens { prompt: number; completion: number; total: number; cached?: number }
 
 // Accumulates timed runtime calls. Every call records its duration; token
