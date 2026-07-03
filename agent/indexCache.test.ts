@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getTicketIndex, resetIndexCache, ticketToDocument, buildBoardIndex } from './indexCache.js';
+import { getTicketIndex, resetIndexCache, buildBoardIndex } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
 import { createTicket } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
@@ -101,21 +101,8 @@ describe('getTicketIndex', () => {
   });
 });
 
-// The ticket → Document bridge: the one place that knows what a ticket is. The
-// retrieval layer downstream is source-agnostic (see retrieval.test.ts).
-describe('ticketToDocument', () => {
-  it('maps a ticket to a source-tagged Document, carrying status in meta', () => {
-    const d = ticketToDocument(mk('t1', 'Fix login'));
-    expect(d).toMatchObject({ id: 't1', source: 'ticket', title: 'Fix login', meta: { status: 'backlog' } });
-  });
-
-  it('embeds the body into text, not just the title', () => {
-    const d = ticketToDocument({ ...mk('t1', 'Title'), body: 'the login flow is broken' });
-    expect(d.text).toContain('Title');
-    expect(d.text).toContain('the login flow is broken');
-  });
-});
-
+// ticket→Document mapping now lives in the TicketConnector — see
+// connectors.test.ts. These tests cover the cache's use of it end-to-end.
 describe('buildBoardIndex', () => {
   let tmpDir: string;
   beforeAll(async () => {

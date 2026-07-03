@@ -1,6 +1,6 @@
-import { listTickets } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
-import { RuntimeEmbedder, DocumentIndex, type Document, type Embedder } from './retrieval.js';
+import { RuntimeEmbedder, DocumentIndex, type Embedder } from './retrieval.js';
+import { TicketConnector } from './connectors/ticket.js';
 
 // ---------------------------------------------------------------------------
 // Process-wide cached TicketIndex for the HTTP intake endpoints. Building the
@@ -26,26 +26,17 @@ import { RuntimeEmbedder, DocumentIndex, type Document, type Embedder } from './
 // re-embed on every boot.
 // ---------------------------------------------------------------------------
 
-// Ticket → Document bridge. The Connector abstraction (tkt-371da07ef923) will
-// formalize per-source mapping; for now tickets map inline here so the
-// retrieval layer stays source-agnostic. Ticket-specific fields (status) ride
-// through in `meta`; `text` is the title + body, matching the old embed input.
-export function ticketToDocument(t: Ticket): Document {
-  return {
-    id: t.id,
-    source: 'ticket',
-    title: t.title,
-    text: `${t.title}\n\n${t.body}`.trim(),
-    updated: t.updated,
-    meta: { status: t.status },
-  };
-}
+// The board's connector — the one place that knows tickets. All ticket→Document
+// mapping (and the board read) goes through it, keeping this module's caching
+// concerns separate from source-schema knowledge.
+const board = new TicketConnector();
 
 // Build a fresh (uncached) index over a board. The CLIs (agent/searchDemo) run
-// once and don't benefit from the process cache, so they build directly.
+// once and don't benefit from the process cache, so they build directly. Pass
+// `tickets` to skip the board read (tests); otherwise the connector pulls it.
 export async function buildBoardIndex(embedder: Embedder, tickets?: Ticket[]): Promise<DocumentIndex> {
-  const all = tickets ?? await listTickets();
-  return DocumentIndex.build(embedder, all.map(ticketToDocument));
+  const all = tickets ?? await board.pull();
+  return DocumentIndex.build(embedder, all.map((t) => board.toDocument(t)));
 }
 
 function signature(tickets: Ticket[]): string {
@@ -67,11 +58,13 @@ export interface IndexOptions {
 }
 
 async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
-  const tickets = opts.tickets ?? await listTickets();
+  // Pull raw tickets first: the change signature is computed over their
+  // id + updated stamps, then each is mapped to a Document via the connector.
+  const tickets = opts.tickets ?? await board.pull();
   const sig = signature(tickets);
   if (cache && cache.sig === sig) return cache.index;
   const embedder = opts.embedder ?? RuntimeEmbedder.fromEnv();
-  const index = await DocumentIndex.build(embedder, tickets.map(ticketToDocument));
+  const index = await DocumentIndex.build(embedder, tickets.map((t) => board.toDocument(t)));
   cache = { index, sig };
   return index;
 }
