@@ -109,6 +109,64 @@ describe('DocumentIndex', () => {
   });
 });
 
+describe('DocumentIndex — chunking', () => {
+  // Constant embedder: every text (chunk or query) maps to the same vector, so
+  // all chunks score equally — these tests assert chunk/rollup STRUCTURE, not
+  // ranking (ranking is covered above and in chunk.test.ts).
+  const flat: Embedder = {
+    embedDocuments: (texts) => Promise.resolve(texts.map(() => [1, 0, 0])),
+    embedQuery: () => Promise.resolve([1, 0, 0]),
+  };
+  const long = 'x'.repeat(100); // size 40 / overlap 0 → 3 windows: [0,40) [40,80) [80,100)
+
+  it('with no chunk config, indexes one entry per document (unchanged behavior)', async () => {
+    const index = await DocumentIndex.build(flat, [doc('d1', 'Doc', long)]);
+    expect(index.size).toBe(1);
+  });
+
+  it('splits an oversized document into multiple embedded chunks', async () => {
+    const index = await DocumentIndex.build(flat, [doc('d1', 'Doc', long)], { size: 40, overlap: 0 });
+    expect(index.size).toBe(3);
+  });
+
+  it('rolls up to one hit per parent document by default (real id, no chunk detail)', async () => {
+    const index = await DocumentIndex.build(flat, [doc('d1', 'Doc', long)], { size: 40, overlap: 0 });
+    const results = await index.search('anything', 5);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('d1');
+    expect(results[0].chunk).toBeUndefined();
+  });
+
+  it('returns per-chunk hits with the matched chunk index + text when rollup is off', async () => {
+    const index = await DocumentIndex.build(flat, [doc('d1', 'Doc', long)], { size: 40, overlap: 0 });
+    const hits = await index.search('anything', 5, { rollup: false });
+    expect(hits).toHaveLength(3);
+    expect(hits.every((h) => h.id === 'd1')).toBe(true);
+    expect([...hits].map((h) => h.chunk?.index).sort()).toEqual([0, 1, 2]);
+    expect(hits.every((h) => typeof h.chunk?.text === 'string' && h.chunk.text.length > 0)).toBe(true);
+  });
+
+  it('drops a document with empty/whitespace text — consistently, chunking on or off', async () => {
+    const docs = [doc('empty', 'No body', '   '), doc('real', 'Has text', 'has real content')];
+    const off = await DocumentIndex.build(flat, docs);
+    const on = await DocumentIndex.build(flat, docs, { size: 40, overlap: 0 });
+    expect(off.size).toBe(1); // only 'real' — no-chunk path drops the empty doc too
+    expect(on.size).toBe(1);
+    expect((await off.search('anything', 5)).map((r) => r.id)).toEqual(['real']);
+  });
+
+  it('does not inflate the document count when rolling up a multi-chunk corpus', async () => {
+    const index = await DocumentIndex.build(
+      flat,
+      [doc('d1', 'One', long), doc('d2', 'Two', long)],
+      { size: 40, overlap: 0 },
+    );
+    expect(index.size).toBe(6); // 2 docs × 3 chunks
+    const ids = (await index.search('anything', 10)).map((r) => r.id).sort();
+    expect(ids).toEqual(['d1', 'd2']); // rolled up to the two parents
+  });
+});
+
 // --- RuntimeEmbedder (mocked fetch) ----------------------------------------
 
 interface EmbedRequest { model: string; input: string[] }

@@ -1,4 +1,5 @@
 import { type EmbedConfig, resolveEmbedConfig } from './models.js';
+import { chunkText, type ChunkOptions } from './chunk.js';
 import { UsageMeter, type RunUsage, type CallTokens } from './usage.js';
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,8 @@ export interface Document {
 
 // A search hit: the document's identity + relevance score. `text` is dropped
 // (callers rank/display by title); `meta` is carried through from the document.
+// `chunk` is present only on non-rolled-up (chunk-granularity) results — it
+// names which chunk of the parent document matched, and its text.
 export interface ScoredDocument {
   id: string;
   source: string;
@@ -166,49 +169,116 @@ export interface ScoredDocument {
   url?: string;
   score: number;
   meta?: Record<string, string>;
+  chunk?: { index: number; text: string };
 }
 
 const DEFAULT_TOP_K = 5;
 
+// One embedded unit in the index: the `chunkIndex`-th chunk of parent `doc`.
+// When chunking is off there is exactly one entry per document (chunkIndex 0).
+// The chunk's text is NOT stored — it's re-derived from doc.text on the rare
+// rollup:false path (see toScored), so the index doesn't duplicate document
+// text in memory alongside the parent Document it already retains.
+interface Entry {
+  doc: Document;
+  chunkIndex: number;
+  vector: number[];
+}
+
 export class DocumentIndex {
-  private entries: { doc: Document; vector: number[] }[] = [];
+  private entries: Entry[] = [];
 
-  constructor(private readonly embedder: Embedder) {}
+  // `chunk` splits each document's text into multiple embedded vectors; omit it
+  // to index each document as a single vector (the default, unchanged behavior).
+  constructor(
+    private readonly embedder: Embedder,
+    private readonly chunk?: ChunkOptions,
+  ) {}
 
-  static async build(embedder: Embedder, documents: Document[]): Promise<DocumentIndex> {
-    const index = new DocumentIndex(embedder);
+  static async build(embedder: Embedder, documents: Document[], chunk?: ChunkOptions): Promise<DocumentIndex> {
+    const index = new DocumentIndex(embedder, chunk);
     await index.rebuild(documents);
     return index;
   }
 
-  // (Re)embed the given corpus into the in-memory index, replacing any prior
-  // contents. The caller owns the source→Document mapping (see the connectors).
-  async rebuild(documents: Document[]): Promise<void> {
-    const vectors = await this.embedder.embedDocuments(documents.map((d) => d.text));
-    if (vectors.length !== documents.length) {
-      throw new Error(`Embedder returned ${vectors.length} vectors for ${documents.length} documents`);
-    }
-    this.entries = documents.map((doc, i) => ({ doc, vector: vectors[i] }));
+  // Split a document into its embeddable units — chunks when chunking is on, the
+  // whole (trimmed) text as a single unit otherwise. A document with no
+  // chunkable text contributes NO units in either mode, so an empty/whitespace
+  // document is consistently absent from the index (chunkText already drops it;
+  // the no-chunk path must match, or the same record would be indexed with
+  // chunking off but silently dropped with it on).
+  private unitsOf(doc: Document): string[] {
+    if (this.chunk) return chunkText(doc.text, this.chunk);
+    const trimmed = doc.text.trim();
+    return trimmed ? [trimmed] : [];
   }
 
+  // (Re)embed the given corpus into the in-memory index, replacing any prior
+  // contents. Each document is exploded into chunks (keyed back to their parent)
+  // before embedding. The caller owns the source→Document mapping (connectors).
+  async rebuild(documents: Document[]): Promise<void> {
+    const pending = documents.flatMap((doc) =>
+      this.unitsOf(doc).map((text, chunkIndex) => ({ doc, chunkIndex, text })),
+    );
+    const vectors = await this.embedder.embedDocuments(pending.map((p) => p.text));
+    if (vectors.length !== pending.length) {
+      throw new Error(`Embedder returned ${vectors.length} vectors for ${pending.length} chunks`);
+    }
+    // Keep only (doc, chunkIndex, vector) — the chunk text was needed to embed
+    // but is re-derivable, so it's dropped rather than retained.
+    this.entries = pending.map((p, i) => ({ doc: p.doc, chunkIndex: p.chunkIndex, vector: vectors[i] }));
+  }
+
+  // Number of indexed chunks — equals the document count when chunking is off.
   get size(): number {
     return this.entries.length;
   }
 
-  // Semantic top-k by cosine similarity to the query.
-  async search(query: string, k: number = DEFAULT_TOP_K): Promise<ScoredDocument[]> {
+  // Semantic top-k by cosine similarity. By default results are rolled up to the
+  // parent document (the best-scoring chunk per document, keyed by the real
+  // document id) — the shape every consumer expects. Pass `{ rollup: false }`
+  // for per-chunk hits, each carrying the matched chunk's index + text.
+  async search(query: string, k: number = DEFAULT_TOP_K, opts: { rollup?: boolean } = {}): Promise<ScoredDocument[]> {
     if (this.entries.length === 0) return [];
     const q = await this.embedder.embedQuery(query);
-    return this.entries
-      .map(({ doc, vector }) => ({
-        id: doc.id,
-        source: doc.source,
-        title: doc.title,
-        url: doc.url,
-        score: cosineSimilarity(q, vector),
-        meta: doc.meta,
-      }))
+    const rollup = opts.rollup ?? true;
+    const scored = this.entries.map((e) => ({ entry: e, score: cosineSimilarity(q, e.vector) }));
+    const hits = rollup ? bestChunkPerDocument(scored) : scored;
+    return hits
       .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(0, k));
+      .slice(0, Math.max(0, k))
+      .map(({ entry, score }) => this.toScored(entry, score, rollup));
   }
+
+  // Build a result. For a rolled-up hit that's just the parent document's
+  // identity + score. For a chunk-level hit we also attach the matched chunk's
+  // index + text — re-derived from the parent (unitsOf is deterministic for a
+  // fixed doc + chunk config) rather than stored on every entry.
+  private toScored(entry: Entry, score: number, rolledUp: boolean): ScoredDocument {
+    const { doc, chunkIndex } = entry;
+    const base: ScoredDocument = {
+      id: doc.id,
+      source: doc.source,
+      title: doc.title,
+      url: doc.url,
+      score,
+      meta: doc.meta,
+    };
+    if (rolledUp) return base;
+    return { ...base, chunk: { index: chunkIndex, text: this.unitsOf(doc)[chunkIndex] ?? '' } };
+  }
+}
+
+type ScoredEntry = { entry: Entry; score: number };
+
+// Collapse chunk hits to one per parent document, keeping the best score.
+// Grouped by the document object (not its id) so ids may collide across sources
+// without being merged.
+function bestChunkPerDocument(scored: ScoredEntry[]): ScoredEntry[] {
+  const best = new Map<Document, ScoredEntry>();
+  for (const s of scored) {
+    const cur = best.get(s.entry.doc);
+    if (!cur || s.score > cur.score) best.set(s.entry.doc, s);
+  }
+  return [...best.values()];
 }
