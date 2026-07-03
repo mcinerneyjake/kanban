@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { getTicketIndex, resetIndexCache } from './indexCache.js';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { getTicketIndex, resetIndexCache, ticketToDocument, buildBoardIndex } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
+import { createTicket } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
 
 // Counts how many times the whole board is (re)embedded — one call per build.
@@ -94,5 +98,49 @@ describe('getTicketIndex', () => {
     const index = await getTicketIndex({ embedder: flaky, tickets });
     expect(index.size).toBe(1);
     expect(attempts).toBe(2);
+  });
+});
+
+// The ticket → Document bridge: the one place that knows what a ticket is. The
+// retrieval layer downstream is source-agnostic (see retrieval.test.ts).
+describe('ticketToDocument', () => {
+  it('maps a ticket to a source-tagged Document, carrying status in meta', () => {
+    const d = ticketToDocument(mk('t1', 'Fix login'));
+    expect(d).toMatchObject({ id: 't1', source: 'ticket', title: 'Fix login', meta: { status: 'backlog' } });
+  });
+
+  it('embeds the body into text, not just the title', () => {
+    const d = ticketToDocument({ ...mk('t1', 'Title'), body: 'the login flow is broken' });
+    expect(d.text).toContain('Title');
+    expect(d.text).toContain('the login flow is broken');
+  });
+});
+
+describe('buildBoardIndex', () => {
+  let tmpDir: string;
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-indexcache-test-'));
+    process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  });
+  afterAll(async () => {
+    delete process.env.TICKETS_DIR_OVERRIDE;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads the live board when no tickets argument is given', async () => {
+    await createTicket({ title: 'Live ticket' });
+    const index = await buildBoardIndex(new CountingEmbedder());
+    expect(index.size).toBeGreaterThan(0);
+  });
+
+  it('carries each ticket\'s status through to search results', async () => {
+    const index = await buildBoardIndex(new CountingEmbedder(), [
+      { ...mk('t1', 'Fix login bug'), status: 'done' },
+      { ...mk('t2', 'Add dashboard'), status: 'in-progress' },
+    ]);
+    const results = await index.search('anything', 2);
+    const byId = new Map(results.map((r) => [r.id, r]));
+    expect(byId.get('t1')?.meta?.status).toBe('done');
+    expect(byId.get('t2')?.meta?.status).toBe('in-progress');
   });
 });

@@ -3,10 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
-import { TicketIndex, type Embedder } from './retrieval.js';
+import { DocumentIndex, type Embedder, type Document } from './retrieval.js';
 import { TOOLS } from '../mcp/handlers.js';
 import { createTicket, getTicket } from '../server/tickets.js';
-import { type Ticket } from '../shared/constants.js';
 
 // Deterministic stub embedder (keyword -> fixed vector), as in retrieval.test.
 class StubEmbedder implements Embedder {
@@ -18,11 +17,10 @@ class StubEmbedder implements Embedder {
     return hit ? hit[1] : [0, 0, 1];
   }
 }
-function mk(id: string, title: string): Ticket {
-  return {
-    id, title, body: '', type: 'task', priority: 'medium', status: 'backlog',
-    order: 0, created: '', updated: '', project: null, blockers: [], parent: null, dueDate: null, assignee: null,
-  };
+// A ticket-sourced Document, as the indexCache bridge would produce it — status
+// rides in `meta` and is flattened back to top-level by search_board.
+function doc(id: string, title: string): Document {
+  return { id, source: 'ticket', title, text: title, meta: { status: 'backlog' } };
 }
 const embedder = new StubEmbedder([['login', [1, 0, 0]], ['dashboard', [0, 1, 0]]]);
 
@@ -99,7 +97,7 @@ describe('AGENT_TOOLS', () => {
 
 describe('dispatchTool — search_board', () => {
   it('routes to the index and returns structured, ordered results', async () => {
-    const index = await TicketIndex.build(embedder, [mk('t1', 'Fix login bug'), mk('t2', 'Add dashboard')]);
+    const index = await DocumentIndex.build(embedder, [doc('t1', 'Fix login bug'), doc('t2', 'Add dashboard')]);
     const res = await dispatchTool('search_board', { query: 'login screen broken' }, index);
     expect(res.isError).toBeFalsy();
     const results = parseResults(res.content[0].text);
@@ -108,13 +106,13 @@ describe('dispatchTool — search_board', () => {
   });
 
   it('respects the limit argument', async () => {
-    const index = await TicketIndex.build(embedder, [mk('t1', 'Fix login bug'), mk('t2', 'login again'), mk('t3', 'Add dashboard')]);
+    const index = await DocumentIndex.build(embedder, [doc('t1', 'Fix login bug'), doc('t2', 'login again'), doc('t3', 'Add dashboard')]);
     const res = await dispatchTool('search_board', { query: 'login', limit: 1 }, index);
     expect(parseResults(res.content[0].text)).toHaveLength(1);
   });
 
   it('errors without a query', async () => {
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     const res = await dispatchTool('search_board', {}, index);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('query');
@@ -124,14 +122,14 @@ describe('dispatchTool — search_board', () => {
 describe('dispatchTool — MCP delegation', () => {
   it('delegates list_tickets to handleToolCall', async () => {
     await createTicket({ title: 'Seeded' });
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     const res = await dispatchTool('list_tickets', undefined, index);
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain('Seeded');
   });
 
   it('delegates create_ticket and persists the new ticket', async () => {
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     const res = await dispatchTool('create_ticket', { title: 'Made by agent' }, index);
     expect(res.isError).toBeFalsy();
     const list = await dispatchTool('list_tickets', undefined, index);
@@ -139,7 +137,7 @@ describe('dispatchTool — MCP delegation', () => {
   });
 
   it('propagates an MCP-layer error (unknown id)', async () => {
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     const res = await dispatchTool('get_ticket', { id: 'tkt-doesnotexist' }, index);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('not found');
@@ -149,7 +147,7 @@ describe('dispatchTool — MCP delegation', () => {
 describe('dispatchTool — security gate', () => {
   it('blocks delete_ticket and does NOT destroy the ticket', async () => {
     const created = await createTicket({ title: 'Keep me' });
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     const res = await dispatchTool('delete_ticket', { id: created.id }, index);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('not available');
@@ -158,12 +156,12 @@ describe('dispatchTool — security gate', () => {
   });
 
   it('blocks start_ticket', async () => {
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     expect((await dispatchTool('start_ticket', { id: 'x' }, index)).isError).toBe(true);
   });
 
   it('blocks an unknown tool', async () => {
-    const index = await TicketIndex.build(embedder, []);
+    const index = await DocumentIndex.build(embedder, []);
     expect((await dispatchTool('frobnicate', {}, index)).isError).toBe(true);
   });
 });

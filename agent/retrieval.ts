@@ -1,5 +1,3 @@
-import { listTickets } from '../server/tickets.js';
-import { type Ticket } from '../shared/constants.js';
 import { type EmbedConfig, resolveEmbedConfig } from './models.js';
 import { UsageMeter, type RunUsage, type CallTokens } from './usage.js';
 
@@ -143,37 +141,54 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-// --- in-memory ticket index -------------------------------------------------
+// --- document model + in-memory index --------------------------------------
 
-export interface ScoredTicket { id: string; title: string; status: Ticket['status']; score: number }
+// A source-agnostic unit of retrieval. Connectors (tickets, docs, email, …) map
+// their own records to this shape; the index embeds `text` and grounds over it.
+// `meta` carries source-specific extras (e.g. a ticket's status) through to
+// search results without leaking those field names into this generic model.
+export interface Document {
+  id: string;
+  source: string;                 // connector the document came from, e.g. 'ticket'
+  title: string;
+  text: string;                   // the embeddable content (title + body, a chunk, …)
+  url?: string;
+  updated?: string;
+  meta?: Record<string, string>;
+}
+
+// A search hit: the document's identity + relevance score. `text` is dropped
+// (callers rank/display by title); `meta` is carried through from the document.
+export interface ScoredDocument {
+  id: string;
+  source: string;
+  title: string;
+  url?: string;
+  score: number;
+  meta?: Record<string, string>;
+}
 
 const DEFAULT_TOP_K = 5;
 
-// One embeddable document per ticket: title + body.
-function docText(t: Ticket): string {
-  return `${t.title}\n\n${t.body}`.trim();
-}
-
-export class TicketIndex {
-  private entries: { id: string; title: string; status: Ticket['status']; vector: number[] }[] = [];
+export class DocumentIndex {
+  private entries: { doc: Document; vector: number[] }[] = [];
 
   constructor(private readonly embedder: Embedder) {}
 
-  static async build(embedder: Embedder, tickets?: Ticket[]): Promise<TicketIndex> {
-    const index = new TicketIndex(embedder);
-    await index.rebuild(tickets);
+  static async build(embedder: Embedder, documents: Document[]): Promise<DocumentIndex> {
+    const index = new DocumentIndex(embedder);
+    await index.rebuild(documents);
     return index;
   }
 
-  // (Re)embed the whole board into the in-memory index. Pass `tickets` to skip
-  // the filesystem read (used by tests); otherwise reads the live board.
-  async rebuild(tickets?: Ticket[]): Promise<void> {
-    const all = tickets ?? await listTickets();
-    const vectors = await this.embedder.embedDocuments(all.map(docText));
-    if (vectors.length !== all.length) {
-      throw new Error(`Embedder returned ${vectors.length} vectors for ${all.length} tickets`);
+  // (Re)embed the given corpus into the in-memory index, replacing any prior
+  // contents. The caller owns the source→Document mapping (see the connectors).
+  async rebuild(documents: Document[]): Promise<void> {
+    const vectors = await this.embedder.embedDocuments(documents.map((d) => d.text));
+    if (vectors.length !== documents.length) {
+      throw new Error(`Embedder returned ${vectors.length} vectors for ${documents.length} documents`);
     }
-    this.entries = all.map((t, i) => ({ id: t.id, title: t.title, status: t.status, vector: vectors[i] }));
+    this.entries = documents.map((doc, i) => ({ doc, vector: vectors[i] }));
   }
 
   get size(): number {
@@ -181,11 +196,18 @@ export class TicketIndex {
   }
 
   // Semantic top-k by cosine similarity to the query.
-  async search(query: string, k: number = DEFAULT_TOP_K): Promise<ScoredTicket[]> {
+  async search(query: string, k: number = DEFAULT_TOP_K): Promise<ScoredDocument[]> {
     if (this.entries.length === 0) return [];
     const q = await this.embedder.embedQuery(query);
     return this.entries
-      .map((e) => ({ id: e.id, title: e.title, status: e.status, score: cosineSimilarity(q, e.vector) }))
+      .map(({ doc, vector }) => ({
+        id: doc.id,
+        source: doc.source,
+        title: doc.title,
+        url: doc.url,
+        score: cosineSimilarity(q, vector),
+        meta: doc.meta,
+      }))
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(0, k));
   }
