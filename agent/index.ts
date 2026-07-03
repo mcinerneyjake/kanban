@@ -9,11 +9,14 @@ import { askApproval } from './approval.js';
 import { mergeUsage } from './usage.js';
 import { resolveCostConfig } from './costConfig.js';
 import { buildSummary, renderSummary } from './summary.js';
+import { appendRun } from './runLog.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with
 // a stdin approval gate on every mutating action.
 //   npm run agent -- "the dashboard crashes when I export to CSV"
+//   npm run agent -- --yes "…"   auto-approve every write (non-interactive; for
+//                                driving a metered run from a Claude Code session)
 // Requires running embedding + chat models (e.g. LM Studio).
 
 // Load local config if a .env is present; tolerate its absence (config then
@@ -21,15 +24,25 @@ import { buildSummary, renderSummary } from './summary.js';
 try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
 
 async function main(): Promise<void> {
-  const input = process.argv.slice(2).join(' ').trim();
+  // Consume LEADING flags only, so a `-y` inside the report text isn't mistaken
+  // for the option (and isn't stripped from the intake).
+  const argv = process.argv.slice(2);
+  let autoApprove = false;
+  while (argv.length > 0 && (argv[0] === '--yes' || argv[0] === '-y')) {
+    autoApprove = true;
+    argv.shift();
+  }
+  const input = argv.join(' ').trim();
   if (!input) {
-    console.error('Usage: npm run agent -- "<report>"');
+    console.error('Usage: npm run agent -- [--yes] "<report>"');
     process.exit(1);
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let reviewMs = 0; // measured HITL gate-open time, fed to the run summary
-  const approve = async (name: string, args: Record<string, unknown> | undefined): Promise<boolean> => {
+  // --yes auto-approves every write (no gate, no review time) so a create/update
+  // happens INSIDE the metered run — the run→ticket linkage the run log needs.
+  const interactiveApprove = async (name: string, args: Record<string, unknown> | undefined): Promise<boolean> => {
     console.log(`\n⚠  The agent wants to ${name}:`);
     console.log(JSON.stringify(args ?? {}, null, 2));
     // For an update, show the ticket's CURRENT state so the reviewer isn't blind.
@@ -55,13 +68,15 @@ async function main(): Promise<void> {
     reviewMs += Date.now() - start;
     return ok;
   };
+  const approve = autoApprove ? () => true : interactiveApprove;
 
   const embedder = RuntimeEmbedder.fromEnv();
   const chat = RuntimeChatClient.fromEnv();
+  const model = resolveLlmConfig().model;
   try {
     console.log('Building the board index…');
     const index = await buildBoardIndex(embedder);
-    console.log(`Indexed ${index.size} tickets. Running intake…`);
+    console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}…`);
     const result = await runIntake(input, { chat, index, approve });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
 
@@ -73,11 +88,30 @@ async function main(): Promise<void> {
       outcome: result.outcome,
       reviewMs,
       cfg: resolveCostConfig(),
-      model: resolveLlmConfig().model,
+      model,
       prefixText: SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS),
       dynamicText: input,
     });
     console.log(`\n${renderSummary(summary)}`);
+
+    // Persist the run: usage + cost + outcome, keyed by the run's id and joined
+    // to the tickets it authored (which now carry runId in their frontmatter).
+    // Best-effort — the tickets are already written, so a run-log failure must
+    // NOT report the whole run as failed (that would trigger spurious retries).
+    try {
+      await appendRun({
+        runId: result.runId,
+        at: new Date().toISOString(),
+        model,
+        usage,
+        outcome: result.outcome,
+        reviewMs,
+        cost: summary,
+        ticketIds: { created: result.createdIds, updated: result.updatedIds },
+      });
+    } catch (err) {
+      console.warn(`[runlog] failed to persist run ${result.runId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   } finally {
     rl.close();
   }

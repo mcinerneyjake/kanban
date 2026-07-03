@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
 import { type ChatClient, type ChatMessage } from './llm.js';
 import { type DocumentIndex } from './retrieval.js';
@@ -64,6 +65,11 @@ export interface IntakeResult {
   messages: ChatMessage[];
   steps: number;
   outcome: RunOutcome;
+  // The run's id (stamped onto every ticket this run authored) and the ids of
+  // the tickets it created/updated — the link the run log joins on.
+  runId: string;
+  createdIds: string[];
+  updatedIds: string[];
 }
 
 export interface IntakeDeps {
@@ -73,6 +79,8 @@ export interface IntakeDeps {
   // Gate for non-read-only tools. Omit to auto-approve (programmatic use); the
   // CLI always supplies a prompting gate.
   approve?: ApproveFn;
+  // Inject a fixed runId (tests); otherwise a fresh one is minted per run.
+  runId?: string;
 }
 
 // create/update are the "accepted" mutations counted toward the run outcome —
@@ -85,12 +93,25 @@ export function mutationKind(name: string): 'create' | 'update' | null {
 
 // Run one tool call, gating anything that isn't read-only behind the callback.
 // Reports whether the action was declined so the loop can tally the outcome.
-async function runCall(name: string, args: Record<string, unknown> | undefined, deps: IntakeDeps): Promise<{ result: ToolResult; declined: boolean }> {
+// `runId` stamps agent provenance onto create/update writes (see dispatchTool).
+async function runCall(name: string, args: Record<string, unknown> | undefined, deps: IntakeDeps, runId: string): Promise<{ result: ToolResult; declined: boolean }> {
   const needsApproval = !READ_ONLY_TOOLS.has(name);
   if (needsApproval && deps.approve && !(await deps.approve(name, args))) {
     return { result: declined(name), declined: true };
   }
-  return { result: await dispatchTool(name, args, deps.index), declined: false };
+  return { result: await dispatchTool(name, args, deps.index, runId), declined: false };
+}
+
+// Pull the persisted ticket id out of a create/update tool result — the service
+// returns the ticket serialized as JSON, so the accepted write's id is in there.
+function ticketIdOf(result: ToolResult): string | null {
+  try {
+    const parsed: unknown = JSON.parse(result.content.map((c) => c.text).join('\n'));
+    if (typeof parsed === 'object' && parsed !== null && 'id' in parsed && typeof parsed.id === 'string') {
+      return parsed.id;
+    }
+  } catch { /* result wasn't JSON (an error message) — no id to capture */ }
+  return null;
 }
 
 // Run one intake conversation to completion (or until the step budget is spent).
@@ -100,6 +121,9 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     { role: 'user', content: input },
   ];
   const maxSteps = deps.maxSteps ?? 8;
+  const runId = deps.runId ?? randomUUID();
+  const createdIds: string[] = [];
+  const updatedIds: string[] = [];
   let created = 0;
   let updated = 0;
   let declinedCount = 0;
@@ -116,11 +140,11 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
         noProposal: created + updated + declinedCount === 0,
         errored: false,
       };
-      return { final, messages, steps: step, outcome };
+      return { final, messages, steps: step, outcome, runId, createdIds, updatedIds };
     }
 
     for (const call of calls) {
-      const { result, declined: wasDeclined } = await runCall(call.function.name, parseArgs(call.function.arguments), deps);
+      const { result, declined: wasDeclined } = await runCall(call.function.name, parseArgs(call.function.arguments), deps, runId);
       const kind = mutationKind(call.function.name);
       // Count a mutation as accepted ONLY when it was neither declined nor
       // errored — a failed create/update (e.g. missing title → 400 → isError)
@@ -128,8 +152,9 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
       // would make economics.ts claim manual value for work never done).
       if (kind && wasDeclined) declinedCount += 1;
       else if (kind && !result.isError) {
-        if (kind === 'create') created += 1;
-        else updated += 1;
+        const id = ticketIdOf(result);
+        if (kind === 'create') { created += 1; if (id) createdIds.push(id); }
+        else { updated += 1; if (id) updatedIds.push(id); }
       }
       messages.push({
         role: 'tool',
@@ -149,5 +174,5 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   };
   const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
     `${created + updated} mutation(s) were applied before the step budget ran out.`;
-  return { final, messages, steps: maxSteps, outcome };
+  return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds };
 }

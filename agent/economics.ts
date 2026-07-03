@@ -20,6 +20,16 @@ export function acceptedCount(o: RunOutcome): number {
   return o.created + o.updated;
 }
 
+// Cast-free validator for a persisted RunOutcome (run log reads).
+export function isRunOutcome(v: unknown): v is RunOutcome {
+  return typeof v === 'object' && v !== null
+    && 'created' in v && typeof v.created === 'number'
+    && 'updated' in v && typeof v.updated === 'number'
+    && 'declined' in v && typeof v.declined === 'number'
+    && 'noProposal' in v && typeof v.noProposal === 'boolean'
+    && 'errored' in v && typeof v.errored === 'boolean';
+}
+
 export interface EconomicsInput {
   usage: RunUsage;
   outcome: RunOutcome;

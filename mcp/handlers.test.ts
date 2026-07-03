@@ -460,3 +460,31 @@ describe('record_review', () => {
     expect(tool?.inputSchema.required).toEqual(['id']);
   });
 });
+
+describe('provenance stamping', () => {
+  it('stamps source + runId on create when provenance is passed', async () => {
+    const created = asRecord(await handleToolCall('create_ticket', { title: 'By agent' }, { source: 'agent', runId: 'run-1' }));
+    expect(created.source).toBe('agent');
+    expect(created.runId).toBe('run-1');
+  });
+
+  it('leaves a create unstamped when no provenance is passed', async () => {
+    const created = asRecord(await handleToolCall('create_ticket', { title: 'By human' }));
+    expect(created.source).toBeNull();
+    expect(created.runId).toBeNull();
+  });
+
+  it('ignores source/runId supplied in tool args (model cannot spoof provenance)', async () => {
+    const created = asRecord(await handleToolCall('create_ticket', { title: 'Spoof attempt', source: 'agent', runId: 'forged' }));
+    expect(created.source).toBeNull(); // args.source is not read; only the trusted param stamps
+    expect(created.runId).toBeNull();
+  });
+
+  it('links runId on update but does not reassign a human ticket to the agent', async () => {
+    const created = asRecord(await handleToolCall('create_ticket', { title: 'Start' })); // human
+    const id = typeof created.id === 'string' ? created.id : '';
+    const updated = asRecord(await handleToolCall('update_ticket', { id, title: 'Edited' }, { source: 'agent', runId: 'run-2' }));
+    expect(updated.source).toBeNull(); // authorship unchanged
+    expect(updated.runId).toBe('run-2'); // run linked
+  });
+});

@@ -14,6 +14,21 @@ export interface CostLine {
   note?: string;
 }
 
+export function isCostKind(v: unknown): v is CostKind {
+  return v === 'measured' || v === 'assumed' || v === 'externality';
+}
+
+// Cast-free validator for a persisted CostLine (run log reads). `amount` is a
+// number or null; `note` is optional.
+export function isCostLine(v: unknown): v is CostLine {
+  return typeof v === 'object' && v !== null
+    && 'label' in v && typeof v.label === 'string'
+    && 'amount' in v && (typeof v.amount === 'number' || v.amount === null)
+    && 'unit' in v && typeof v.unit === 'string'
+    && 'kind' in v && isCostKind(v.kind)
+    && (!('note' in v) || typeof v.note === 'string');
+}
+
 // A run's measured inputs (tokens, active-compute time) drive the lines; assumed
 // factors come from config.
 export interface CostModel {
