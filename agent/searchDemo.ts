@@ -1,4 +1,5 @@
-import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
+import { RuntimeEmbedder } from './retrieval.js';
+import { buildBoardIndex } from './indexCache.js';
 import { resolveEmbedConfig } from './models.js';
 
 // Load local config if a .env is present; tolerate its absence.
@@ -21,13 +22,13 @@ async function main(): Promise<void> {
   console.log(`Embedder: ${cfg.model} @ ${cfg.baseUrl}`);
   console.log('Building index from the board…');
 
-  const index = await TicketIndex.build(RuntimeEmbedder.fromEnv());
+  const index = await buildBoardIndex(RuntimeEmbedder.fromEnv());
   console.log(`Indexed ${index.size} tickets.\n`);
 
   const results = await index.search(query, 8);
   console.log(`Top matches for "${query}":\n`);
   for (const r of results) {
-    console.log(`  ${r.score.toFixed(3)}  [${r.id}] (${r.status}) ${r.title}`);
+    console.log(`  ${r.score.toFixed(3)}  [${r.id}] (${r.meta?.status ?? '—'}) ${r.title}`);
   }
 }
 

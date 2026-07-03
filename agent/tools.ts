@@ -1,6 +1,6 @@
 import { type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS, handleToolCall, type ToolResult } from '../mcp/handlers.js';
-import { type TicketIndex } from './retrieval.js';
+import { type DocumentIndex } from './retrieval.js';
 
 // ---------------------------------------------------------------------------
 // Tool layer (Phase 2). The agent's tool set = a safe whitelist of the MCP
@@ -52,12 +52,17 @@ function textResult(text: string, isError = false): ToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
 
-async function searchBoard(args: Record<string, unknown> | undefined, index: TicketIndex): Promise<ToolResult> {
+async function searchBoard(args: Record<string, unknown> | undefined, index: DocumentIndex): Promise<ToolResult> {
   const query = typeof args?.query === 'string' ? args.query : null;
   if (!query) return textResult('Missing required field: query', true);
   const limit = typeof args?.limit === 'number' ? args.limit : 5;
   const results = await index.search(query, limit);
-  return textResult(JSON.stringify(results, null, 2));
+  // Project to the flat shape the model expects (the system prompt references
+  // `status`). Explicit fields — not a `...meta` spread — so a future source
+  // whose meta carries a `score`/`title` key can't overwrite a core field, and
+  // generic fields like `source` don't leak in as prompt noise.
+  const flat = results.map((r) => ({ id: r.id, title: r.title, status: r.meta?.status, score: r.score }));
+  return textResult(JSON.stringify(flat, null, 2));
 }
 
 // One tool call -> one ToolResult. search_board hits the index; whitelisted MCP
@@ -66,7 +71,7 @@ async function searchBoard(args: Record<string, unknown> | undefined, index: Tic
 export async function dispatchTool(
   name: string,
   args: Record<string, unknown> | undefined,
-  index: TicketIndex,
+  index: DocumentIndex,
 ): Promise<ToolResult> {
   if (!AGENT_TOOL_NAMES.has(name)) {
     return textResult(`Tool not available to the agent: ${name}`, true);

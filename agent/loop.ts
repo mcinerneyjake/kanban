@@ -1,6 +1,6 @@
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
 import { type ChatClient, type ChatMessage } from './llm.js';
-import { type TicketIndex } from './retrieval.js';
+import { type DocumentIndex } from './retrieval.js';
 import { type ToolResult } from '../mcp/handlers.js';
 import { type RunOutcome } from './economics.js';
 
@@ -68,7 +68,7 @@ export interface IntakeResult {
 
 export interface IntakeDeps {
   chat: ChatClient;
-  index: TicketIndex;
+  index: DocumentIndex;
   maxSteps?: number;
   // Gate for non-read-only tools. Omit to auto-approve (programmatic use); the
   // CLI always supplies a prompting gate.

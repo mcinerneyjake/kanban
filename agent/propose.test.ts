@@ -4,21 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { proposeIntake } from './propose.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
-import { TicketIndex, type Embedder } from './retrieval.js';
+import { DocumentIndex, type Embedder } from './retrieval.js';
 import { listTickets } from '../server/tickets.js';
-import { type Ticket } from '../shared/constants.js';
 
 class StubEmbedder implements Embedder {
   embedDocuments(texts: string[]): Promise<number[][]> { return Promise.resolve(texts.map(() => [1, 0, 0])); }
   embedQuery(): Promise<number[]> { return Promise.resolve([1, 0, 0]); }
 }
-function mk(id: string, title: string): Ticket {
-  return {
-    id, title, body: '', type: 'task', priority: 'medium', status: 'backlog',
-    order: 0, created: '', updated: '', project: null, blockers: [], parent: null, dueDate: null, assignee: null,
-  };
-}
-const buildIndex = (): Promise<TicketIndex> => TicketIndex.build(new StubEmbedder(), [mk('t1', 'Existing login bug')]);
+const buildIndex = (): Promise<DocumentIndex> =>
+  DocumentIndex.build(new StubEmbedder(), [
+    { id: 't1', source: 'ticket', title: 'Existing login bug', text: 'Existing login bug' },
+  ]);
 const assistant = (content: string | null, tool_calls?: ToolCall[]): ChatMessage => ({ role: 'assistant', content, tool_calls });
 const toolCall = (id: string, name: string, args: string): ToolCall => ({ id, type: 'function', function: { name, arguments: args } });
 

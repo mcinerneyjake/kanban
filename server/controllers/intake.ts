@@ -23,7 +23,14 @@ export async function search(_req: Request, res: Response, input: IntakeSearchRe
     const index = await getTicketIndex();
     return index.search(input.query, input.limit);
   });
-  res.json({ results });
+  // The retrieval layer is source-agnostic (ScoredDocument), but the intake UI's
+  // IntakeMatch contract is flat { id, title, status, score } — project to
+  // exactly those fields (explicitly, not a `...meta` spread) so generic fields
+  // like `source`/`url` don't leak onto the wire and a stray meta key can't
+  // clobber a core field.
+  res.json({
+    results: results.map((r) => ({ id: r.id, title: r.title, status: r.meta?.status, score: r.score })),
+  });
 }
 
 export async function propose(_req: Request, res: Response, input: IntakeProposeRequest): Promise<void> {

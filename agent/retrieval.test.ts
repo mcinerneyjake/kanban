@@ -1,10 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { cosineSimilarity, TicketIndex, RuntimeEmbedder, type Embedder } from './retrieval.js';
-import { createTicket } from '../server/tickets.js';
-import { type Ticket } from '../shared/constants.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { cosineSimilarity, DocumentIndex, RuntimeEmbedder, type Document, type Embedder } from './retrieval.js';
 import { type EmbedConfig } from './models.js';
 
 // Deterministic stub: maps any text containing a known keyword to a fixed
@@ -23,12 +18,10 @@ class StubEmbedder implements Embedder {
   }
 }
 
-function mk(id: string, title: string, body = '', status: Ticket['status'] = 'backlog'): Ticket {
-  return {
-    id, title, body, type: 'task', priority: 'medium', status,
-    order: 0, created: '', updated: '', project: null, blockers: [],
-    parent: null, dueDate: null, assignee: null,
-  };
+// Minimal Document factory. `text` defaults to the title (most tests only need
+// the title to drive the stub); pass it explicitly to test body/meta handling.
+function doc(id: string, title: string, text = title, meta?: Record<string, string>): Document {
+  return { id, source: 'test', title, text, ...(meta ? { meta } : {}) };
 }
 
 describe('cosineSimilarity', () => {
@@ -46,20 +39,20 @@ describe('cosineSimilarity', () => {
   });
 });
 
-describe('TicketIndex', () => {
+describe('DocumentIndex', () => {
   const embedder = new StubEmbedder([
     ['login', [1, 0, 0]],
     ['dashboard', [0, 1, 0]],
     ['docs', [0, 0, 1]],
   ]);
-  const board = (): Ticket[] => [
-    mk('t1', 'Fix login bug'),
-    mk('t2', 'Add dashboard charts'),
-    mk('t3', 'Update docs'),
+  const corpus = (): Document[] => [
+    doc('t1', 'Fix login bug'),
+    doc('t2', 'Add dashboard charts'),
+    doc('t3', 'Update docs'),
   ];
 
-  it('returns the most semantically similar ticket first', async () => {
-    const index = await TicketIndex.build(embedder, board());
+  it('returns the most semantically similar document first', async () => {
+    const index = await DocumentIndex.build(embedder, corpus());
     const results = await index.search('login screen is broken', 2);
     expect(results[0].id).toBe('t1');
     expect(results[0].score).toBeCloseTo(1);
@@ -67,33 +60,34 @@ describe('TicketIndex', () => {
   });
 
   it('respects the top-k limit', async () => {
-    const index = await TicketIndex.build(embedder, board());
+    const index = await DocumentIndex.build(embedder, corpus());
     expect(await index.search('login', 1)).toHaveLength(1);
   });
 
-  it('carries each ticket\'s own status through to its result', async () => {
-    const index = await TicketIndex.build(embedder, [
-      mk('t1', 'Fix login bug', '', 'done'),
-      mk('t2', 'Add dashboard charts', '', 'in-progress'),
+  it('carries each document\'s source + meta through to its result', async () => {
+    const index = await DocumentIndex.build(embedder, [
+      doc('t1', 'Fix login bug', 'Fix login bug', { status: 'done' }),
+      doc('t2', 'Add dashboard charts', 'Add dashboard charts', { status: 'in-progress' }),
     ]);
     const results = await index.search('login', 2);
-    const statusById = new Map(results.map((r) => [r.id, r.status]));
-    expect(statusById.get('t1')).toBe('done');
-    expect(statusById.get('t2')).toBe('in-progress');
+    const byId = new Map(results.map((r) => [r.id, r]));
+    expect(byId.get('t1')?.meta?.status).toBe('done');
+    expect(byId.get('t2')?.meta?.status).toBe('in-progress');
+    expect(byId.get('t1')?.source).toBe('test');
   });
 
-  it('returns [] for an empty board', async () => {
-    const index = await TicketIndex.build(embedder, []);
+  it('returns [] for an empty corpus', async () => {
+    const index = await DocumentIndex.build(embedder, []);
     expect(index.size).toBe(0);
     expect(await index.search('anything')).toEqual([]);
   });
 
-  it('embeds the ticket body, not just the title', async () => {
-    // Identical titles with no keyword — only the body can drive the match,
-    // so this fails if docText ever stops including the body.
-    const index = await TicketIndex.build(embedder, [
-      mk('a', 'Ticket', 'resolve the login flow'),
-      mk('b', 'Ticket', 'tweak the dashboard widget'),
+  it('embeds the full text, not just the title', async () => {
+    // Identical titles with no keyword — only `text` can drive the match, so
+    // this fails if the index ever stops embedding the whole text.
+    const index = await DocumentIndex.build(embedder, [
+      doc('a', 'Item', 'resolve the login flow'),
+      doc('b', 'Item', 'tweak the dashboard widget'),
     ]);
     const results = await index.search('login', 1);
     expect(results[0].id).toBe('a');
@@ -101,7 +95,7 @@ describe('TicketIndex', () => {
   });
 
   it('returns [] when k is 0', async () => {
-    const index = await TicketIndex.build(embedder, board());
+    const index = await DocumentIndex.build(embedder, corpus());
     expect(await index.search('login', 0)).toEqual([]);
   });
 
@@ -110,27 +104,8 @@ describe('TicketIndex', () => {
       embedDocuments: (texts) => Promise.resolve(texts.slice(1).map(() => [1])),
       embedQuery: () => Promise.resolve([1]),
     };
-    await expect(TicketIndex.build(broken, [mk('a', 'x'), mk('b', 'y')]))
+    await expect(DocumentIndex.build(broken, [doc('a', 'x'), doc('b', 'y')]))
       .rejects.toThrow(/returned 1 vectors for 2/);
-  });
-});
-
-describe('TicketIndex.build (live board)', () => {
-  const embedder = new StubEmbedder([['login', [1, 0, 0]]]);
-  let tmpDir: string;
-  beforeAll(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-retrieval-test-'));
-    process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-  });
-  afterAll(async () => {
-    delete process.env.TICKETS_DIR_OVERRIDE;
-    await fs.rm(tmpDir, { recursive: true, force: true });
-  });
-
-  it('reads the live board when no tickets argument is given', async () => {
-    await createTicket({ title: 'Live ticket' });
-    const index = await TicketIndex.build(embedder);
-    expect(index.size).toBeGreaterThan(0);
   });
 });
 

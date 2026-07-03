@@ -1,5 +1,6 @@
 import * as readline from 'node:readline/promises';
-import { RuntimeEmbedder, TicketIndex } from './retrieval.js';
+import { RuntimeEmbedder } from './retrieval.js';
+import { buildBoardIndex } from './indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './llm.js';
 import { AGENT_TOOLS } from './tools.js';
 import { runIntake, SYSTEM_PROMPT } from './loop.js';
@@ -59,7 +60,7 @@ async function main(): Promise<void> {
   const chat = RuntimeChatClient.fromEnv();
   try {
     console.log('Building the board index…');
-    const index = await TicketIndex.build(embedder);
+    const index = await buildBoardIndex(embedder);
     console.log(`Indexed ${index.size} tickets. Running intake…`);
     const result = await runIntake(input, { chat, index, approve });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
