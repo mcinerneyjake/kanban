@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
 import { type ChatClient, type ChatMessage } from './llm.js';
-import { type DocumentIndex } from './retrieval.js';
-import { type ToolResult } from '../mcp/handlers.js';
-import { type RunOutcome } from './economics.js';
+import { type DocumentIndex } from '../retrieval/retrieval.js';
+import { type ToolResult } from '../../mcp/handlers.js';
+import { type RunOutcome } from '../cost/economics.js';
 
 // ---------------------------------------------------------------------------
 // Tool-use loop (Phase 3) + human-in-the-loop approval gate (Phase 4). Drives a

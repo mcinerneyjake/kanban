@@ -93,12 +93,12 @@ before anything is written.
 
 Four layers, each independently testable (the model is mocked in tests):
 
-1. **Retrieval** (`agent/retrieval.ts`) — embeds every ticket via the runtime's
-   `/v1/embeddings` and builds an in-memory cosine index. Run just this layer
-   with `npm run agent:search -- "<query>"`.
-2. **Tools** (`agent/tools.ts`) — a safe whitelist of the MCP tools plus
+1. **Retrieval** (`agent/retrieval/retrieval.ts`) — embeds every ticket via the
+   runtime's `/v1/embeddings` and builds an in-memory cosine index. Run just this
+   layer with `npm run agent:search -- "<query>"`.
+2. **Tools** (`agent/runtime/tools.ts`) — a safe whitelist of the MCP tools plus
    `search_board`, adapted to the OpenAI function-tool schema.
-3. **Loop** (`agent/loop.ts`) — the tool-use loop: chat → dispatch tool calls →
+3. **Loop** (`agent/runtime/loop.ts`) — the tool-use loop: chat → dispatch tool calls →
    feed results back → summarize. Search results carry ticket **status**, and
    the agent is told to skip archived/done tickets as update targets.
 4. **CLI + approval gate** (`agent/index.ts`) — the entry point and a
@@ -106,7 +106,7 @@ Four layers, each independently testable (the model is mocked in tests):
    approval, and a closed stdin defaults to *decline*.
 
 Each run ends with a cost summary from a pluggable model
-(`agent/economics.ts`): local runs are costed by **measured energy**
+(`agent/cost/economics.ts`): local runs are costed by **measured energy**
 (kWh × your regional rate) rather than notional token prices — the per-token
 API-price model stays available as a dormant seam for cloud endpoints.
 

@@ -1,5 +1,5 @@
-import { listTickets } from '../../server/tickets.js';
-import { type Ticket } from '../../shared/constants.js';
+import { listTickets } from '../../../server/tickets.js';
+import { type Ticket } from '../../../shared/constants.js';
 import { type Document } from '../retrieval.js';
 import { type Connector } from './connector.js';
 

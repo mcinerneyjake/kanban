@@ -1,7 +1,7 @@
 import { type Tool } from '@modelcontextprotocol/sdk/types.js';
-import { TOOLS, handleToolCall, type ToolResult } from '../mcp/handlers.js';
-import { type DocumentIndex } from './retrieval.js';
-import { type Provenance } from '../shared/constants.js';
+import { TOOLS, handleToolCall, type ToolResult } from '../../mcp/handlers.js';
+import { type DocumentIndex } from '../retrieval/retrieval.js';
+import { type Provenance } from '../../shared/constants.js';
 
 // ---------------------------------------------------------------------------
 // Tool layer (Phase 2). The agent's tool set = a safe whitelist of the MCP

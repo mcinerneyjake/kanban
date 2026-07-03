@@ -1,15 +1,15 @@
 import * as readline from 'node:readline/promises';
-import { RuntimeEmbedder } from './retrieval.js';
-import { buildBoardIndex } from './indexCache.js';
-import { RuntimeChatClient, resolveLlmConfig } from './llm.js';
-import { AGENT_TOOLS } from './tools.js';
-import { runIntake, SYSTEM_PROMPT } from './loop.js';
+import { RuntimeEmbedder } from './retrieval/retrieval.js';
+import { buildBoardIndex } from './retrieval/indexCache.js';
+import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
+import { AGENT_TOOLS } from './runtime/tools.js';
+import { runIntake, SYSTEM_PROMPT } from './runtime/loop.js';
 import { getTicket } from '../server/tickets.js';
-import { askApproval } from './approval.js';
-import { mergeUsage } from './usage.js';
-import { resolveCostConfig } from './costConfig.js';
-import { buildSummary, renderSummary } from './summary.js';
-import { appendRun } from './runLog.js';
+import { askApproval } from './runtime/approval.js';
+import { mergeUsage } from './cost/usage.js';
+import { resolveCostConfig } from './cost/costConfig.js';
+import { buildSummary, renderSummary } from './cost/summary.js';
+import { appendRun } from './cost/runLog.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with

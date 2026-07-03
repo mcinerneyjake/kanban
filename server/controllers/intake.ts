@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
-import { getTicketIndex } from '../../agent/indexCache.js';
-import { RuntimeChatClient } from '../../agent/llm.js';
-import { proposeIntake } from '../../agent/propose.js';
+import { getTicketIndex } from '../../agent/retrieval/indexCache.js';
+import { RuntimeChatClient } from '../../agent/runtime/llm.js';
+import { proposeIntake } from '../../agent/runtime/propose.js';
 import { HttpError } from '../tickets.js';
 import type { IntakeSearchRequest, IntakeProposeRequest } from '../schemas/intake.js';
 

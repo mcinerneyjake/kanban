@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { getTicketIndex, resetIndexCache, buildBoardIndex } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
-import { createTicket } from '../server/tickets.js';
-import { type Ticket } from '../shared/constants.js';
+import { createTicket } from '../../server/tickets.js';
+import { type Ticket } from '../../shared/constants.js';
 
 // Counts embedDocuments calls (one per non-cached build) and records the texts
 // it was actually asked to embed — the proxy for "what got re-embedded".
