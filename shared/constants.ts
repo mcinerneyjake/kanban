@@ -180,3 +180,55 @@ export type DashboardSummary = {
   byType: TypeCount[]
   recentlyUpdated: RecentTicket[]
 }
+
+// --- Agent economics (run-log aggregation) ---------------------------------
+// Response shape for GET /api/economics — a FinOps rollup over the agent run
+// log (agent/cost/runLog.ts). Shared so the server aggregator and the React
+// view can't drift. Mirrors the persisted CostLine, but re-declared here (not
+// imported from agent/cost) so shared/ stays a dependency-free leaf.
+
+export type EconomicsLineKind = 'measured' | 'assumed' | 'externality'
+
+// One aggregated economic figure. `amount: null` = notional (a required input
+// was unset) — never a silent zero, same contract as the per-run CostLine.
+export type EconomicsLine = {
+  label: string
+  amount: number | null
+  unit: string
+  kind: EconomicsLineKind
+  note?: string
+}
+
+// One day's rollup for the time-series chart.
+export type EconomicsPoint = {
+  date: string // YYYY-MM-DD
+  runCostUsd: number | null
+  totalTokens: number
+  acceptedTickets: number
+}
+
+export type EconomicsTotals = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  activeMs: number
+  created: number
+  updated: number
+  declined: number
+  acceptedTickets: number // created + updated
+}
+
+export type EconomicsSummary = {
+  range: { from: string | null; to: string | null } // null = unbounded
+  runs: number
+  totals: EconomicsTotals
+  // Cost lines summed across the range, grouped as the per-run RunSummary is.
+  measured: EconomicsLine[]
+  assumed: EconomicsLine[]
+  externalities: EconomicsLine[]
+  headline: EconomicsLine[] // cost per accepted ticket · net savings · local vs cloud
+  timeSeries: EconomicsPoint[]
+  // True if any summed USD line had a notional (null) amount — keeps the
+  // aggregated $ totals honest rather than silently under-reporting.
+  partial: boolean
+}

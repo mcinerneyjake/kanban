@@ -20,6 +20,14 @@ export function acceptedCount(o: RunOutcome): number {
   return o.created + o.updated;
 }
 
+// Canonical labels for the derived economics lines. Exported so the aggregator
+// (economicsSummary.ts) keys on the SAME strings — a rename here breaks its
+// import, not silently its find() at runtime.
+export const LABEL_TOTAL_RUN_COST = 'total run cost';
+export const LABEL_COST_PER_ACCEPTED = 'cost per accepted ticket';
+export const LABEL_NET_SAVINGS = 'net savings';
+export const LABEL_LOCAL_VS_CLOUD = 'local vs cloud (saved)';
+
 // Cast-free validator for a persisted RunOutcome (run log reads).
 export function isRunOutcome(v: unknown): v is RunOutcome {
   return typeof v === 'object' && v !== null
@@ -80,13 +88,13 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
   const local = sumUsd(localCostLines);
   const totalPartial = local.partial || reviewUsd === null;
   const totalUsd = local.total + (reviewUsd ?? 0);
-  lines.push(usd('total run cost', totalPartial ? null : totalUsd,
+  lines.push(usd(LABEL_TOTAL_RUN_COST, totalPartial ? null : totalUsd,
     totalPartial ? 'notional - some cost inputs unset' : undefined));
 
   // Cost per ACCEPTED ticket (not per run).
-  if (totalPartial) lines.push(usd('cost per accepted ticket', null, 'notional - total cost incomplete'));
-  else if (accepted === 0) lines.push(usd('cost per accepted ticket', null, 'notional - no accepted tickets'));
-  else lines.push(usd('cost per accepted ticket', totalUsd / accepted));
+  if (totalPartial) lines.push(usd(LABEL_COST_PER_ACCEPTED, null, 'notional - total cost incomplete'));
+  else if (accepted === 0) lines.push(usd(LABEL_COST_PER_ACCEPTED, null, 'notional - no accepted tickets'));
+  else lines.push(usd(LABEL_COST_PER_ACCEPTED, totalUsd / accepted));
 
   // Manual counterfactual value. Per REPORT (one report per run): a human would
   // spend manual_minutes triaging it regardless of how many tickets result, so
@@ -102,16 +110,16 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
   }
 
   // Net savings = value - total cost.
-  if (valueUsd !== null && !totalPartial) lines.push(usd('net savings', valueUsd - totalUsd));
-  else lines.push(usd('net savings', null, 'notional - value or cost incomplete'));
+  if (valueUsd !== null && !totalPartial) lines.push(usd(LABEL_NET_SAVINGS, valueUsd - totalUsd));
+  else lines.push(usd(LABEL_NET_SAVINGS, null, 'notional - value or cost incomplete'));
 
   // Cloud-equivalent (activates the dormant price-table seam) + local-vs-cloud delta.
   const cloud = new ApiPriceCostModel(cfg.apiPrices, model).lines(usage)[0];
   lines.push(cloud);
   if (cloud.amount !== null && !totalPartial) {
-    lines.push(usd('local vs cloud (saved)', cloud.amount - totalUsd, 'cloud - local'));
+    lines.push(usd(LABEL_LOCAL_VS_CLOUD, cloud.amount - totalUsd, 'cloud - local'));
   } else {
-    lines.push(usd('local vs cloud (saved)', null, 'notional - cloud or local incomplete'));
+    lines.push(usd(LABEL_LOCAL_VS_CLOUD, null, 'notional - cloud or local incomplete'));
   }
 
   return lines;

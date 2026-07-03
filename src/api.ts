@@ -1,4 +1,4 @@
-import type { Ticket, DashboardSummary, TicketEventsResponse } from '../shared/constants.js';
+import type { Ticket, DashboardSummary, EconomicsSummary, TicketEventsResponse } from '../shared/constants.js';
 
 // Rejects with the server's {error} message (or a generic status string) when
 // the HTTP response is not ok. Does not intercept network-level fetch()
@@ -39,6 +39,13 @@ export const api = {
   get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+  // Agent economics: a rollup over a date range, or a single run when runId is set.
+  economics: (opts: { from?: string; to?: string; runId?: string } = {}): Promise<EconomicsSummary> => {
+    const qs = new URLSearchParams(
+      Object.entries(opts).filter((e): e is [string, string] => Boolean(e[1]))
+    ).toString();
+    return get(`/api/economics${qs ? `?${qs}` : ''}`);
+  },
   events: (id: string): Promise<TicketEventsResponse> => get(`/api/tickets/${id}/events`),
   review: (id: string, reviewed = true): Promise<TicketEventsResponse> =>
     send(`/api/tickets/${id}/review`, 'POST', { reviewed }),
