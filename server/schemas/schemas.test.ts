@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { intakeSearchSchema, intakeProposeSchema } from './intake.js';
 import { reviewSchema } from './review.js';
-import { firstString, parseSearchTerm, parseProjectScope } from './query.js';
+import { firstString, parseSearchTerm, parseProjectScope, parseRunId, parseDateBound } from './query.js';
 import { ticketId } from './params.js';
 
 describe('intakeSearchSchema', () => {
@@ -81,6 +81,29 @@ describe('query parsing', () => {
     expect(parseProjectScope('  kanban ')).toBe('kanban');
     expect(parseProjectScope('   ')).toBeNull();
     expect(parseProjectScope(undefined)).toBeNull();
+  });
+
+  it('parseRunId trims or collapses to undefined', () => {
+    expect(parseRunId('  run-1 ')).toBe('run-1');
+    expect(parseRunId('   ')).toBeUndefined();
+    expect(parseRunId(undefined)).toBeUndefined();
+    expect(parseRunId(['a'])).toBeUndefined();
+  });
+
+  it('parseDateBound normalizes a bare date to inclusive start/end of day', () => {
+    expect(parseDateBound('2026-07-03', 'from')).toBe('2026-07-03T00:00:00.000Z');
+    expect(parseDateBound('2026-07-03', 'to')).toBe('2026-07-03T23:59:59.999Z');
+  });
+
+  it('parseDateBound passes a full ISO timestamp through unchanged', () => {
+    expect(parseDateBound('2026-07-03T09:30:00.000Z', 'from')).toBe('2026-07-03T09:30:00.000Z');
+    expect(parseDateBound('2026-07-03T09:30:00+02:00', 'to')).toBe('2026-07-03T09:30:00+02:00');
+  });
+
+  it('parseDateBound returns undefined for absent/blank/repeated values', () => {
+    expect(parseDateBound(undefined, 'from')).toBeUndefined();
+    expect(parseDateBound('   ', 'to')).toBeUndefined();
+    expect(parseDateBound(['2026-07-03'], 'from')).toBeUndefined();
   });
 });
 

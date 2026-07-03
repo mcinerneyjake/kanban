@@ -3,6 +3,7 @@ import { ticketsRouter } from './routes/tickets.js';
 import { eventsRouter } from './routes/events.js';
 import { intakeRouter } from './routes/intake.js';
 import { boardRouter } from './routes/board.js';
+import { economicsRouter } from './routes/economics.js';
 import { streamRouter } from './routes/stream.js';
 import { errorHandler } from './middleware/asyncWrap.js';
 
@@ -19,6 +20,7 @@ app.use('/api/tickets', eventsRouter);
 app.use('/api/intake', intakeRouter);
 app.use('/api/stream', streamRouter);
 app.use('/api', boardRouter);
+app.use('/api', economicsRouter);
 
 // Last: catches errors thrown before a wrap()ed handler (e.g. a malformed JSON
 // body rejected by express.json) and keeps them on the { error } JSON contract.

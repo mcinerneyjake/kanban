@@ -9,6 +9,9 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 // reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
+import { appendRun, type RunRecord } from '../agent/cost/runLog.js';
+import { emptyUsage } from '../agent/cost/usage.js';
+import * as econ from '../agent/cost/economicsSummary.js';
 
 let tmpDir: string;
 // The PATCH route drives updateTicket, which emits status-milestone telemetry;
@@ -786,5 +789,74 @@ describe('malformed JSON body', () => {
     expect(res.status).toBe(400);
     expect(res.headers['content-type']).toMatch(/application\/json/);
     expect(res.body).toHaveProperty('error');
+  });
+});
+
+describe('GET /api/economics', () => {
+  let runsDir: string;
+  beforeAll(async () => {
+    runsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-runs-'));
+    process.env.RUNS_DIR_OVERRIDE = runsDir;
+  });
+  afterAll(async () => {
+    delete process.env.RUNS_DIR_OVERRIDE;
+    await fs.rm(runsDir, { recursive: true, force: true });
+  });
+  beforeEach(async () => {
+    await fs.rm(path.join(runsDir, 'runs.jsonl'), { force: true });
+  });
+
+  const rec = (runId: string, at: string): RunRecord => ({
+    runId, at, model: 'test', usage: emptyUsage(),
+    outcome: { created: 1, updated: 0, declined: 0, noProposal: false, errored: false },
+    reviewMs: 0,
+    cost: {
+      measured: [], externalities: [], headline: [{ label: 'cost per accepted ticket', amount: 0.02, unit: 'USD', kind: 'assumed' }],
+      assumed: [{ label: 'total run cost', amount: 0.02, unit: 'USD', kind: 'assumed' }],
+    },
+    ticketIds: { created: ['tkt-x'], updated: [] },
+  });
+
+  it('returns an aggregate summary over the run log', async () => {
+    await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
+    await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
+    const res = await request(app).get('/api/economics');
+    expect(res.status).toBe(200);
+    expect(res.body.runs).toBe(2);
+    expect(res.body.totals.acceptedTickets).toBe(2);
+    expect(res.body.timeSeries).toHaveLength(2);
+  });
+
+  it('returns zeros for an empty run log', async () => {
+    const res = await request(app).get('/api/economics');
+    expect(res.status).toBe(200);
+    expect(res.body.runs).toBe(0);
+  });
+
+  it('filters by ?from/?to (bare dates → inclusive day bounds)', async () => {
+    await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
+    await appendRun(rec('run-2', '2026-07-05T10:00:00.000Z'));
+    const res = await request(app).get('/api/economics?from=2026-07-04&to=2026-07-06');
+    expect(res.body.runs).toBe(1);
+  });
+
+  it('returns a single run for ?runId=', async () => {
+    await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
+    await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
+    const res = await request(app).get('/api/economics?runId=run-2');
+    expect(res.status).toBe(200);
+    expect(res.body.runs).toBe(1);
+  });
+
+  it('404s for an unknown runId', async () => {
+    const res = await request(app).get('/api/economics?runId=nope');
+    expect(res.status).toBe(404);
+  });
+
+  it('maps a non-HttpError from the service to 500 (wrap)', async () => {
+    const spy = vi.spyOn(econ, 'summarizeEconomicsFromLog').mockRejectedValueOnce(new Error('boom'));
+    const res = await request(app).get('/api/economics');
+    expect(res.status).toBe(500);
+    spy.mockRestore();
   });
 });
