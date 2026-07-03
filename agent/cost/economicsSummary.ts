@@ -1,17 +1,15 @@
 import { readRuns, type RunRecord } from './runLog.js';
 import { type CostLine } from './cost.js';
-import {
-  acceptedCount,
-  LABEL_TOTAL_RUN_COST,
-  LABEL_COST_PER_ACCEPTED,
-  LABEL_NET_SAVINGS,
-  LABEL_LOCAL_VS_CLOUD,
-} from './economics.js';
+import { acceptedCount } from './economics.js';
 import {
   type EconomicsSummary,
   type EconomicsLine,
   type EconomicsPoint,
   type EconomicsTotals,
+  LABEL_TOTAL_RUN_COST,
+  LABEL_COST_PER_ACCEPTED,
+  LABEL_NET_SAVINGS,
+  LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -46,7 +44,7 @@ const NOTIONAL_NOTE = 'notional - not reported in any run';
 
 const groupKey = (l: { label: string; unit: string }): string => JSON.stringify([l.label, l.unit]);
 
-interface Agg { label: string; unit: string; kind: CostLine['kind']; sum: number; sawNum: boolean; sawNull: boolean }
+interface Agg { label: string; unit: string; kind: CostLine['kind']; sum: number; count: number; sawNum: boolean; sawNull: boolean }
 
 // Sum a cost-line group across runs, keyed by (label, unit) — `'marginal energy'`
 // ships in both kWh and USD, so label alone would collide. Notes reflect the
@@ -63,7 +61,7 @@ function sumGroup(perRun: CostLine[][]): { lines: EconomicsLine[]; partial: bool
     for (const line of group) {
       const key = groupKey(line);
       let a = acc.get(key);
-      if (!a) { a = { label: line.label, unit: line.unit, kind: line.kind, sum: 0, sawNum: false, sawNull: false }; acc.set(key, a); }
+      if (!a) { a = { label: line.label, unit: line.unit, kind: line.kind, sum: 0, count: 0, sawNum: false, sawNull: false }; acc.set(key, a); }
       if (line.amount === null) {
         a.sawNull = true;
         nullish.add(key);
@@ -71,13 +69,17 @@ function sumGroup(perRun: CostLine[][]): { lines: EconomicsLine[]; partial: bool
       } else {
         a.sawNum = true;
         a.sum += line.amount;
+        a.count += 1;
       }
     }
   }
-  const lines = [...acc.values()].map((a): EconomicsLine =>
-    !a.sawNum
-      ? { label: a.label, amount: null, unit: a.unit, kind: a.kind, note: NOTIONAL_NOTE }
-      : { label: a.label, amount: a.sum, unit: a.unit, kind: a.kind, ...(a.sawNull ? { note: PARTIAL_NOTE } : {}) });
+  const lines = [...acc.values()].map((a): EconomicsLine => {
+    if (!a.sawNum) return { label: a.label, amount: null, unit: a.unit, kind: a.kind, note: NOTIONAL_NOTE };
+    // Percentages are ratios — average across runs, not sum (a summed % > 100 is
+    // meaningless). Every other unit (tokens, ms, USD, kWh, count, …) is additive.
+    const amount = a.unit === '%' ? a.sum / a.count : a.sum;
+    return { label: a.label, amount, unit: a.unit, kind: a.kind, ...(a.sawNull ? { note: PARTIAL_NOTE } : {}) };
+  });
   return { lines, partial, nullish };
 }
 

@@ -61,6 +61,14 @@ describe('summarizeEconomics — cost-line aggregation', () => {
     expect(s.externalities).toContainEqual({ label: 'carbon footprint', amount: 5, unit: 'gCO2e', kind: 'externality' });
   });
 
+  it('averages percentage (ratio) lines across runs instead of summing them', () => {
+    const s = summarizeEconomics([
+      record({ at: '2026-07-01T00:00:00.000Z', cost: { measured: [line('cacheable prefix', 40, '%', 'measured')], assumed: [], externalities: [], headline: [] } }),
+      record({ at: '2026-07-02T00:00:00.000Z', cost: { measured: [line('cacheable prefix', 50, '%', 'measured')], assumed: [], externalities: [], headline: [] } }),
+    ]);
+    expect(s.measured.find((l) => l.label === 'cacheable prefix')?.amount).toBe(45); // mean, not 90
+  });
+
   it('flags partial + keeps a USD line null when it was only ever notional', () => {
     const s = summarizeEconomics([
       record({ at: '2026-07-01T00:00:00.000Z', cost: { measured: [], assumed: [line('keep-warm energy cost', null, 'USD', 'assumed', 'notional')], externalities: [], headline: [] } }),

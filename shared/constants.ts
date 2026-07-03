@@ -187,6 +187,15 @@ export type DashboardSummary = {
 // view can't drift. Mirrors the persisted CostLine, but re-declared here (not
 // imported from agent/cost) so shared/ stays a dependency-free leaf.
 
+// Canonical labels for the derived economics lines. Live in shared/ so the
+// agent aggregator, the API, AND the client dashboard all key on the SAME
+// strings — a rename is a compile error across every consumer, not a silent
+// find() miss that renders a dash.
+export const LABEL_TOTAL_RUN_COST = 'total run cost';
+export const LABEL_COST_PER_ACCEPTED = 'cost per accepted ticket';
+export const LABEL_NET_SAVINGS = 'net savings';
+export const LABEL_LOCAL_VS_CLOUD = 'local vs cloud (saved)';
+
 export type EconomicsLineKind = 'measured' | 'assumed' | 'externality'
 
 // One aggregated economic figure. `amount: null` = notional (a required input

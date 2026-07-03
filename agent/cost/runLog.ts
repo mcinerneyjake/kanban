@@ -19,9 +19,12 @@ import { type RunSummary, isRunSummary } from './summary.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Tests redirect the run log to a temp dir via this env var (mirrors
-// TICKETS_DIR_OVERRIDE / EVENTS_DIR_OVERRIDE).
-function runsDir(): string {
-  return process.env.RUNS_DIR_OVERRIDE ?? path.join(__dirname, '..', 'runs');
+// TICKETS_DIR_OVERRIDE / EVENTS_DIR_OVERRIDE). Default is the project-root
+// `runs/` dir: this file lives at agent/cost/, so it's TWO levels up (a single
+// `..` would resolve to agent/runs — the reorg regression this guards against).
+// Exported so a test can assert the default location.
+export function runsDir(): string {
+  return process.env.RUNS_DIR_OVERRIDE ?? path.join(__dirname, '..', '..', 'runs');
 }
 function runsPath(): string {
   return path.join(runsDir(), 'runs.jsonl');
