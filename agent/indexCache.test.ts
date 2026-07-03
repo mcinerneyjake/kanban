@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,11 +7,14 @@ import { type Embedder } from './retrieval.js';
 import { createTicket } from '../server/tickets.js';
 import { type Ticket } from '../shared/constants.js';
 
-// Counts how many times the whole board is (re)embedded — one call per build.
+// Counts embedDocuments calls (one per non-cached build) and records the texts
+// it was actually asked to embed — the proxy for "what got re-embedded".
 class CountingEmbedder implements Embedder {
   public builds = 0;
+  public embeddedTexts: string[] = [];
   embedDocuments(texts: string[]): Promise<number[][]> {
     this.builds++;
+    this.embeddedTexts.push(...texts);
     return Promise.resolve(texts.map(() => [1, 0, 0]));
   }
   embedQuery(): Promise<number[]> { return Promise.resolve([1, 0, 0]); }
@@ -98,6 +101,54 @@ describe('getTicketIndex', () => {
     const index = await getTicketIndex({ embedder: flaky, tickets });
     expect(index.size).toBe(1);
     expect(attempts).toBe(2);
+  });
+});
+
+// Persistent embedding cache (opt-in via EMBED_CACHE_PATH). The unchanged tests
+// above never set it, so they run purely in memory with the raw embed counts.
+describe('getTicketIndex — persistent embedding cache', () => {
+  let cacheDir: string;
+  let cachePath: string;
+  beforeEach(async () => {
+    cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-embed-cache-test-'));
+    cachePath = path.join(cacheDir, 'embeddings.json');
+  });
+  afterEach(async () => {
+    await fs.rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('persists embeddings so a rebuild after "restart" re-embeds nothing', async () => {
+    const tickets = [mk('t1', 'A'), mk('t2', 'B')];
+    const cold = new CountingEmbedder();
+    await getTicketIndex({ embedder: cold, tickets, cachePath });
+    expect(cold.builds).toBe(1); // cold cache → embedded once
+
+    resetIndexCache(); // drops the in-memory index AND the loaded store → a restart
+    const warm = new CountingEmbedder();
+    const index = await getTicketIndex({ embedder: warm, tickets, cachePath });
+    expect(warm.builds).toBe(0); // served from the persisted cache on disk
+    expect(index.size).toBe(2);
+  });
+
+  it('re-embeds only new content when the board changes', async () => {
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets: [mk('t1', 'A')], cachePath });
+    resetIndexCache();
+    const next = new CountingEmbedder();
+    // 'A' is cached from the first build; only 'B' is new.
+    await getTicketIndex({ embedder: next, tickets: [mk('t1', 'A'), mk('t2', 'B')], cachePath });
+    expect(next.builds).toBe(1);
+    expect(next.embeddedTexts).toEqual(['B']);
+  });
+
+  it('does not wipe the cache when the board is transiently empty', async () => {
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets: [mk('t1', 'A')], cachePath });
+    resetIndexCache();
+    // A build over an empty board must NOT prune the cache to nothing.
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets: [], cachePath });
+    resetIndexCache();
+    const warm = new CountingEmbedder();
+    await getTicketIndex({ embedder: warm, tickets: [mk('t1', 'A')], cachePath });
+    expect(warm.builds).toBe(0); // 'A' survived the empty build
   });
 });
 

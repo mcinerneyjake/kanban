@@ -1,35 +1,46 @@
 import { type Ticket } from '../shared/constants.js';
 import { RuntimeEmbedder, DocumentIndex, type Embedder } from './retrieval.js';
+import { resolveEmbedConfig } from './models.js';
 import { TicketConnector } from './connectors/ticket.js';
+import { EmbeddingStore } from './embeddingStore.js';
+import { CachingEmbedder } from './cachingEmbedder.js';
 
 // ---------------------------------------------------------------------------
-// Process-wide cached TicketIndex for the HTTP intake endpoints. Building the
-// index embeds the whole board, so we cache it and rebuild only when the board
-// changes — detected by a signature over ticket ids + updated timestamps.
-// (Full rebuild on any change is fine at demo scale; incremental re-embedding
-// of only the changed tickets is a future optimization.)
+// Process-wide cached DocumentIndex for the HTTP intake endpoints. Two caching
+// layers stack here:
+//   1. In-memory index memoization (this file): a signature over ticket
+//      id + updated stamps, so an unchanged board reuses the built index and a
+//      change rebuilds it. Fast, but process-local and lost on restart.
+//   2. Persistent embedding cache (EmbeddingStore + CachingEmbedder): when
+//      EMBED_CACHE_PATH is set, embeddings are keyed by content hash and stored
+//      on disk. A rebuild then re-embeds only new/changed content, and a warm
+//      restart re-embeds nothing — the vectors survive the process.
 //
-// Cloud migration notes (pain points) — this cache is tuned for a LOCAL,
-// single-process, keyless embedder. Moving embeddings to a cloud API
-// (OpenAI/Voyage) turns cheap local assumptions costly:
-//   1. The boot-time warm (server/index.ts) re-embeds the WHOLE board on every
-//      start — free locally, but $ + rate-limit risk per boot in the cloud.
-//   2. The index lives in process memory: it doesn't survive restarts and isn't
-//      shared. Horizontally scaled / serverless => each instance warms
-//      independently (N x cost + a per-instance cold start).
-//   3. Full rebuild on ANY board change re-embeds everything — cheap locally,
-//      costly per-change in the cloud.
-//   4. RuntimeEmbedder sends no auth header; a cloud embedder needs an
-//      EMBED_API_KEY bearer (the deferred cloud-embed-auth work).
-// Cloud-ready shape: persist vectors (a vector store / DB), embed INCREMENTALLY
-// (only changed tickets), and drop or gate the eager warm so you don't pay to
-// re-embed on every boot.
+// This addresses the pain points previously flagged here: full re-embed on any
+// change (now incremental) and re-embedding the world on every boot (now served
+// from disk). Persistence is opt-in via EMBED_CACHE_PATH so zero-config still
+// works purely in memory. Remaining cloud-migration note: RuntimeEmbedder sends
+// no auth header; a cloud embedder needs an EMBED_API_KEY bearer, and the JSON
+// store would move to a binary/SQLite column store at large scale.
 // ---------------------------------------------------------------------------
 
 // The board's connector — the one place that knows tickets. All ticket→Document
 // mapping (and the board read) goes through it, keeping this module's caching
 // concerns separate from source-schema knowledge.
 const board = new TicketConnector();
+
+// Lazily-loaded persistent embedding cache, keyed by its path. Loaded once per
+// process (a change of path — only in tests — reloads). Returns null when no
+// path is configured, so the index runs purely in memory.
+let storeCache: { path: string; store: Promise<EmbeddingStore> } | null = null;
+function embeddingStore(cachePath?: string): Promise<EmbeddingStore> | null {
+  const p = cachePath ?? process.env.EMBED_CACHE_PATH;
+  if (!p) return null;
+  if (!storeCache || storeCache.path !== p) {
+    storeCache = { path: p, store: EmbeddingStore.load(p) };
+  }
+  return storeCache.store;
+}
 
 // Build a fresh (uncached) index over a board. The CLIs (agent/searchDemo) run
 // once and don't benefit from the process cache, so they build directly. Pass
@@ -55,6 +66,8 @@ export interface IndexOptions {
   embedder?: Embedder;
   /** Provide tickets directly to skip the filesystem read (tests). */
   tickets?: Ticket[];
+  /** Persistent embedding-cache path; overrides EMBED_CACHE_PATH (tests). */
+  cachePath?: string;
 }
 
 async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
@@ -63,10 +76,39 @@ async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
   const tickets = opts.tickets ?? await board.pull();
   const sig = signature(tickets);
   if (cache && cache.sig === sig) return cache.index;
-  const embedder = opts.embedder ?? RuntimeEmbedder.fromEnv();
-  const index = await DocumentIndex.build(embedder, tickets.map((t) => board.toDocument(t)));
+
+  const raw = opts.embedder ?? RuntimeEmbedder.fromEnv();
+  const documents = tickets.map((t) => board.toDocument(t));
+  const store = await (embeddingStore(opts.cachePath) ?? Promise.resolve(null));
+
+  // With a persistent store, embed through the cache (only new/changed content
+  // hits the model), then prune to the current corpus and flush to disk. Without
+  // one, embed directly — pure in-memory, unchanged behavior.
+  if (store) {
+    // Namespace the cache by the embedder's identity so a model/prefix swap
+    // re-embeds rather than serving stale (possibly wrong-dimension) vectors.
+    const caching = new CachingEmbedder(raw, store, cacheNamespace());
+    const index = await DocumentIndex.build(caching, documents);
+    // Prune to the current corpus to bound growth — but NOT when the corpus is
+    // empty: a transiently unreadable/empty board must not wipe the whole cache
+    // and force a cold re-embed of everything on the next real build.
+    const keep = caching.corpusHashes();
+    if (keep.size > 0) store.prune(keep);
+    await store.persist();
+    cache = { index, sig };
+    return index;
+  }
+
+  const index = await DocumentIndex.build(raw, documents);
   cache = { index, sig };
   return index;
+}
+
+// The embedder's cache identity: model + document-instruction prefix, the two
+// config fields that change a document vector for the same text.
+function cacheNamespace(): string {
+  const cfg = resolveEmbedConfig();
+  return `${cfg.model} ${cfg.docInstruction}`;
 }
 
 // Return a DocumentIndex for the current board, rebuilding only when the board
@@ -78,8 +120,11 @@ export function getTicketIndex(opts: IndexOptions = {}): Promise<DocumentIndex> 
   return p;
 }
 
-// Test hook — drop the cached index + any in-flight build.
+// Test hook — drop the cached index, any in-flight build, and the loaded
+// embedding store. Clearing the store forces the next build to reload it from
+// disk, which is how a test simulates a process restart.
 export function resetIndexCache(): void {
   cache = null;
   pending = null;
+  storeCache = null;
 }
