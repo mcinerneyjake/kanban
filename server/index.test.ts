@@ -848,6 +848,18 @@ describe('GET /api/economics', () => {
     expect(res.body.runs).toBe(1);
   });
 
+  it('enriches the single-run payload with identity + authored ticket ids', async () => {
+    await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
+    const res = await request(app).get('/api/economics?runId=run-2');
+    expect(res.status).toBe(200);
+    // The aggregate rollup drops these; the detail payload carries them so the
+    // deep-link view can name the run and link back to its tickets.
+    expect(res.body.runId).toBe('run-2');
+    expect(res.body.model).toBe('test');
+    expect(res.body.at).toBe('2026-07-02T10:00:00.000Z');
+    expect(res.body.ticketIds).toEqual({ created: ['tkt-x'], updated: [] });
+  });
+
   it('404s for an unknown runId', async () => {
     const res = await request(app).get('/api/economics?runId=nope');
     expect(res.status).toBe(404);

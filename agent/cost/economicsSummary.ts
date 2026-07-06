@@ -3,6 +3,7 @@ import { type CostLine } from './cost.js';
 import { acceptedCount } from './economics.js';
 import {
   type EconomicsSummary,
+  type EconomicsRunDetail,
   type EconomicsLine,
   type EconomicsPoint,
   type EconomicsTotals,
@@ -167,4 +168,17 @@ export function summarizeEconomics(runs: RunRecord[], opts: EconomicsRange = {})
 
 export function summarizeEconomicsFromLog(opts: EconomicsRange = {}): Promise<EconomicsSummary> {
   return readRuns().then((runs) => summarizeEconomics(runs, opts));
+}
+
+// Single-run detail for the `?runId=` deep-link: the same summary over a one-run
+// scope, enriched with the run's identity + authored ticket ids (which the
+// aggregate rollup drops) so the detail view can link back to each ticket.
+export function summarizeRun(run: RunRecord): EconomicsRunDetail {
+  return {
+    ...summarizeEconomics([run]),
+    runId: run.runId,
+    model: run.model,
+    at: run.at,
+    ticketIds: run.ticketIds,
+  };
 }

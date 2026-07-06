@@ -1144,3 +1144,28 @@ body {
 .econ-line-label { color: var(--text); }
 .econ-line-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
 .econ-line-amount.econ-notional { color: var(--muted); }
+
+/* Single-run detail view (?runId=) — the provenance-badge deep-link target. */
+.econ-back {
+  align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--muted); font-size: 13px;
+}
+.econ-back:hover { color: var(--text); }
+.econ-run-header { display: flex; flex-direction: column; gap: 2px; }
+.econ-run-id { margin: 0; font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.econ-run-meta { margin: 0; font-size: 13px; color: var(--muted); }
+
+.econ-tickets {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.econ-tickets-empty { margin: 0; font-size: 13px; color: var(--muted); }
+.econ-tickets-group { display: flex; align-items: baseline; gap: 12px; }
+.econ-tickets-label { font-size: 12px; color: var(--muted); min-width: 56px; }
+.econ-tickets-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.econ-ticket-chip {
+  background: var(--chip-bg, var(--bg)); border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; font-size: 12px; font-family: inherit;
+  color: var(--econ-line); font-variant-numeric: tabular-nums;
+}
+.econ-ticket-chip:hover { border-color: var(--econ-line); }
