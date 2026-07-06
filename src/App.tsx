@@ -9,7 +9,7 @@ import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
-import ErrorBanner from './components/ErrorBanner.jsx';
+import ErrorBanner from './components/ui/ErrorBanner.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
@@ -33,24 +33,20 @@ export default function App() {
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  // `?runId=` deep-links straight to a single run's economics detail (the
-  // provenance-badge target). Read once on mount; the URL-sync effect keeps it
-  // in the address bar so the view is reload-safe and shareable.
-  const [runId, setRunId] = useState<string | null>(() => new URLSearchParams(location.search).get('runId'));
-  const [view, setView] = useState<View>(() =>
-    new URLSearchParams(location.search).get('runId') ? 'economics' : 'board');
+  // The run-economics modal is a transient peek from the ticket editor, not a
+  // destination — so `runId` is ephemeral UI state with no URL coupling. Closing
+  // it just returns to the ticket behind it; a reload doesn't reopen it.
+  const [runId, setRunId] = useState<string | null>(null);
+  const [view, setView] = useState<View>('board');
   const dash = useDashboardConfig();
   // Bumped on every ticket reload so the dashboard re-fetches its aggregates.
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const params = encode(filter);
-    // Preserve the single-run deep-link param alongside the board filter params
-    // so it survives filter changes (this effect owns the whole query string).
-    if (runId) params.set('runId', runId);
     const search = params.toString();
     history.replaceState(null, '', search ? `?${search}` : location.pathname);
-  }, [filter, runId]);
+  }, [filter]);
 
   useEffect(() => {
     const t = setTimeout(() => setSearchTerm(searchInput.trim()), 200);
@@ -180,11 +176,31 @@ export default function App() {
   // navigation action itself rather than a reactive effect.
   const handleViewChange = useCallback((next: View) => {
     setView(next);
-    // Any sidebar navigation drops the single-run deep-link — including clicking
-    // Economics itself, which returns to the aggregate rollup.
-    setRunId(null);
+    // The sidebar sits above the modal backdrop (z-index), so it stays clickable
+    // with a modal open; a deliberate nav should dismiss any open overlay — both
+    // the ticket editor and the run-detail peek.
     closeTicket();
+    setRunId(null);
   }, [closeTicket]);
+
+  // Open a run's economics detail as a modal. Its only entry is the ProvenanceNote
+  // link inside the ticket editor, so it STACKS over that modal (a peek) rather
+  // than replacing it — closing the run modal ("← Back to ticket") returns to the
+  // editor with unsaved edits intact. `view` is untouched so the user keeps their
+  // context.
+  const openRun = useCallback((rid: string) => {
+    setRunId(rid);
+  }, []);
+
+  // Resolve a ticket id to the full ticket and open it. Ids surfaced by the
+  // dashboard or a run's authored-ticket list may not be in App's current list
+  // (polling / filtering / archival), so fall back to a fetch rather than
+  // dead-clicking when the id isn't found locally.
+  const openTicketById = useCallback((id: string) => {
+    resolveTicket(id, ticketsRef.current, api.get)
+      .then(openTicket)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [openTicket]);
 
   const handleSave = useCallback(async (data: Partial<Ticket>) => {
     try {
@@ -293,36 +309,14 @@ export default function App() {
             <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : view === 'economics' ? (
-          runId ? (
-            <EconomicsRunDetail
-              runId={runId}
-              onBack={() => setRunId(null)}
-              onOpen={(id) => {
-                // Authored-ticket links may point at tickets not in App's list
-                // (a run can create one that's since been archived/filtered), so
-                // fall back to a fetch rather than dead-clicking — same as Dashboard.
-                resolveTicket(id, ticketsRef.current, api.get)
-                  .then(openTicket)
-                  .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-              }}
-            />
-          ) : (
-            <EconomicsDashboard refreshKey={refreshKey} />
-          )
+          <EconomicsDashboard refreshKey={refreshKey} />
         ) : (
           <Dashboard
             project={dash.project}
             visible={dash.visible}
             autoRefresh={dash.autoRefresh}
             refreshKey={refreshKey}
-            onOpen={(id) => {
-              // The dashboard can surface tickets (via polling/project filter)
-              // that aren't in App's list yet, so fall back to a fetch rather
-              // than dead-clicking when the id isn't found locally.
-              resolveTicket(id, ticketsRef.current, api.get)
-                .then(openTicket)
-                .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-            }}
+            onOpen={openTicketById}
           />
         )}
 
@@ -337,7 +331,21 @@ export default function App() {
             onSave={handleSave}
             onDelete={handleDelete}
             onOpen={openTicket}
+            onOpenRun={openRun}
             onClose={closeTicket}
+          />
+        )}
+
+        {/* Single-run economics detail — a modal peeked from the ticket editor's
+            "View economics" link, stacked over it; closing ("← Back to ticket")
+            returns to the ticket with its edits intact. */}
+        {runId && (
+          <EconomicsRunDetail
+            runId={runId}
+            onClose={() => setRunId(null)}
+            // Following an authored-ticket link closes this modal as that ticket's
+            // opens, so the two don't stack.
+            onOpen={(id) => { setRunId(null); openTicketById(id); }}
           />
         )}
       </div>

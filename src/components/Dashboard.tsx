@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { api } from '../api.js';
-import ErrorBanner from './ErrorBanner.jsx';
+import ErrorBanner from './ui/ErrorBanner.jsx';
 import { usePolledSummary } from '../usePolledSummary.js';
 import { donutSegments } from '../lib/donutSegments.js';
 import { type WidgetVisibility } from '../useDashboardConfig.js';

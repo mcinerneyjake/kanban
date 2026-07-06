@@ -6,10 +6,13 @@ import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
+import ProvenanceNote from './ProvenanceNote.js';
+import { agentRunId } from '../lib/provenance.js';
 import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
-import Spinner from './Spinner.js';
+import Spinner from './ui/Spinner.js';
+import Modal from './ui/Modal.jsx';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -21,6 +24,7 @@ type Props = {
   onSave: (data: Partial<FormState>) => void
   onDelete: (id: string) => void
   onOpen: (ticket: Ticket, initial?: Prefill) => void
+  onOpenRun: (runId: string) => void
   onClose: () => void
   initial?: Prefill
 }
@@ -45,7 +49,7 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
-export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onClose }: Props) {
+export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
   const makeInitialForm = (): FormState => ({
     title: initial?.title ?? ticket?.title ?? '',
     type: initial?.type ?? ticket?.type ?? 'task',
@@ -120,19 +124,6 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     }
   };
 
-  useEffect(() => {
-    // Ignore Escape fired from an open native <select> (type/priority/status/
-    // project/parent/add-blocker) — the keydown bubbles to document, and closing
-    // the modal there would discard unsaved edits. Same guard as #83 for the
-    // popovers; useDismiss (tkt-62defb0169d3) is the longer-term shared home, but
-    // the modal is Escape-only (no ref/outside-click) so the guard is inlined.
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !(e.target instanceof HTMLSelectElement)) onClose();
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -169,6 +160,9 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   // descendantIds: full subtree — excludes all descendants from parent options to prevent cycles
   const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : [];
   const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>();
+  // Non-null only for an agent-authored existing ticket — gates the provenance
+  // note + its deep-link into the run's economics detail.
+  const provenanceRunId = ticket ? agentRunId(ticket) : null;
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project;
   const parentOptions = allTickets.filter(
     (t) =>
@@ -204,9 +198,8 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const showForm = ticket !== null || modelStatus === 'down' || drafted;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className={`modal${showForm ? '' : ' modal--draft'}`} onClick={(e) => e.stopPropagation()}>
-        <form onSubmit={submit}>
+    <Modal onClose={onClose} className={showForm ? undefined : 'modal--draft'}>
+      <form onSubmit={submit}>
           {showChecking && (
             <div className="draft-checking">
               <Spinner />
@@ -278,6 +271,9 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
           {/* Live workflow tracker — only for an existing ticket (needs an id).
               Renders null itself for un-started tickets. */}
           {ticket && <PipelineTracker ticketId={ticket.id} status={ticket.status} />}
+
+          {/* Provenance: agent-authored tickets link to their run's economics. */}
+          {provenanceRunId && <ProvenanceNote runId={provenanceRunId} onOpenRun={onOpenRun} />}
 
           {/* Dedup: semantic matches as you type a new ticket. Click one to
               edit it instead of creating a duplicate. */}
@@ -495,7 +491,6 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
           </>
           )}
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }
