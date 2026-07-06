@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { readRun } from '../../agent/cost/runLog.js';
-import { summarizeEconomics, summarizeEconomicsFromLog } from '../../agent/cost/economicsSummary.js';
+import { summarizeRun, summarizeEconomicsFromLog } from '../../agent/cost/economicsSummary.js';
 import { parseRunId, parseDateBound } from '../schemas/query.js';
 import { HttpError } from '../tickets.js';
 
@@ -12,7 +12,7 @@ export async function economics(req: Request, res: Response): Promise<void> {
   if (runId) {
     const run = await readRun(runId);
     if (!run) throw new HttpError(404, `Run not found: ${runId}`);
-    res.json(summarizeEconomics([run]));
+    res.json(summarizeRun(run));
     return;
   }
   res.json(await summarizeEconomicsFromLog({

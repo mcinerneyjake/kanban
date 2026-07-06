@@ -241,3 +241,15 @@ export type EconomicsSummary = {
   // aggregated $ totals honest rather than silently under-reporting.
   partial: boolean
 }
+
+// A single run's economics — the `?runId=` deep-link target (the provenance
+// badge points here). A superset of EconomicsSummary (over a one-run scope, so
+// `runs: 1` and a one-point `timeSeries`) enriched with the run's identity and
+// the ids of the tickets it authored — data the aggregate rollup drops but the
+// detail view needs to link back to each ticket.
+export type EconomicsRunDetail = EconomicsSummary & {
+  runId: string
+  model: string
+  at: string // ISO timestamp of the run
+  ticketIds: { created: string[]; updated: string[] }
+}

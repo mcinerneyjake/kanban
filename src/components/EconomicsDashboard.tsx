@@ -1,10 +1,12 @@
 import { useCallback } from 'react';
 import { api } from '../api.js';
 import ErrorBanner from './ErrorBanner.jsx';
+import { StatTile, CostGroup } from './EconomicsParts.jsx';
 import { usePolledSummary } from '../usePolledSummary.js';
 import { linePoints, toLinePath, toAreaPath } from '../lib/linePath.js';
+import { fmtInt, headlineTile } from '../lib/econFormat.js';
 import {
-  type EconomicsSummary, type EconomicsLine,
+  type EconomicsSummary,
   LABEL_COST_PER_ACCEPTED, LABEL_NET_SAVINGS, LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
@@ -20,57 +22,6 @@ const CHART_H = 150;
 const CHART_PAD = 18;
 const BASELINE = CHART_H - CHART_PAD;
 
-const fmtInt = (n: number): string => Math.round(n).toLocaleString();
-const fmtUsd = (n: number): string => `$${n.toFixed(Math.abs(n) < 1 ? 4 : 2)}`;
-// Cost-model labels are lowercase by convention; sentence-case them for display
-// (the underlying strings stay lowercase — the CLI renders them its own way).
-const sentence = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-
-// Render one cost line's value honestly: a null amount is "—" (never $0), with
-// the notional/partial note surfaced as a tooltip, per the run-log contract.
-function formatAmount(line: EconomicsLine): string {
-  if (line.amount === null) return '—';
-  switch (line.unit) {
-    case 'USD': return fmtUsd(line.amount);
-    case 'ms': return `${(line.amount / 1000).toFixed(1)}s`;
-    case 'kWh':
-    case 'L': return `${line.amount.toPrecision(3)} ${line.unit}`;
-    case 'gCO2e': return `${Math.round(line.amount)} ${line.unit}`;
-    case '%': return `${Math.round(line.amount)}%`;
-    default: return `${fmtInt(line.amount)} ${line.unit}`; // tokens, count
-  }
-}
-
-function StatTile({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <div className="econ-tile" title={note}>
-      <span className="econ-tile-value">{value}{note ? <span className="econ-notional"> *</span> : null}</span>
-      <span className="econ-tile-label">{sentence(label)}</span>
-    </div>
-  );
-}
-
-function CostGroup({ title, kind, lines }: { title: string; kind: string; lines: EconomicsLine[] }) {
-  if (lines.length === 0) return null;
-  return (
-    <section className={`econ-group econ-group--${kind}`}>
-      <h3 className="econ-group-title">{title}</h3>
-      <table className="econ-table">
-        <tbody>
-          {lines.map((l) => (
-            <tr key={`${l.label} ${l.unit}`}>
-              <td className="econ-line-label">{sentence(l.label)}</td>
-              <td className={`econ-line-amount${l.amount === null ? ' econ-notional' : ''}`} title={l.note}>
-                {formatAmount(l)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
-  );
-}
-
 type Props = { refreshKey: number };
 
 export default function EconomicsDashboard({ refreshKey }: Props) {
@@ -84,10 +35,7 @@ export default function EconomicsDashboard({ refreshKey }: Props) {
   const series = summary?.timeSeries ?? [];
   const points = linePoints({ values: series.map((p) => p.totalTokens), width: CHART_W, height: CHART_H, pad: CHART_PAD });
 
-  const tile = (label: string) => {
-    const l = summary?.headline.find((h) => h.label === label);
-    return l ? { value: formatAmount(l), note: l.note } : { value: '—', note: undefined };
-  };
+  const tile = (label: string) => headlineTile(summary?.headline ?? [], label);
 
   return (
     <div className="econ-dashboard">

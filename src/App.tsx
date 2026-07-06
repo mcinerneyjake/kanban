@@ -3,6 +3,7 @@ import { api } from './api.js';
 import Board from './components/Board.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import EconomicsDashboard from './components/EconomicsDashboard.jsx';
+import EconomicsRunDetail from './components/EconomicsRunDetail.jsx';
 import Sidebar, { type View } from './components/Sidebar.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
@@ -32,16 +33,24 @@ export default function App() {
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [view, setView] = useState<View>('board');
+  // `?runId=` deep-links straight to a single run's economics detail (the
+  // provenance-badge target). Read once on mount; the URL-sync effect keeps it
+  // in the address bar so the view is reload-safe and shareable.
+  const [runId, setRunId] = useState<string | null>(() => new URLSearchParams(location.search).get('runId'));
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(location.search).get('runId') ? 'economics' : 'board');
   const dash = useDashboardConfig();
   // Bumped on every ticket reload so the dashboard re-fetches its aggregates.
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const params = encode(filter);
+    // Preserve the single-run deep-link param alongside the board filter params
+    // so it survives filter changes (this effect owns the whole query string).
+    if (runId) params.set('runId', runId);
     const search = params.toString();
     history.replaceState(null, '', search ? `?${search}` : location.pathname);
-  }, [filter]);
+  }, [filter, runId]);
 
   useEffect(() => {
     const t = setTimeout(() => setSearchTerm(searchInput.trim()), 200);
@@ -171,6 +180,9 @@ export default function App() {
   // navigation action itself rather than a reactive effect.
   const handleViewChange = useCallback((next: View) => {
     setView(next);
+    // Any sidebar navigation drops the single-run deep-link — including clicking
+    // Economics itself, which returns to the aggregate rollup.
+    setRunId(null);
     closeTicket();
   }, [closeTicket]);
 
@@ -281,7 +293,22 @@ export default function App() {
             <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : view === 'economics' ? (
-          <EconomicsDashboard refreshKey={refreshKey} />
+          runId ? (
+            <EconomicsRunDetail
+              runId={runId}
+              onBack={() => setRunId(null)}
+              onOpen={(id) => {
+                // Authored-ticket links may point at tickets not in App's list
+                // (a run can create one that's since been archived/filtered), so
+                // fall back to a fetch rather than dead-clicking — same as Dashboard.
+                resolveTicket(id, ticketsRef.current, api.get)
+                  .then(openTicket)
+                  .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+              }}
+            />
+          ) : (
+            <EconomicsDashboard refreshKey={refreshKey} />
+          )
         ) : (
           <Dashboard
             project={dash.project}

@@ -3,15 +3,13 @@ import { STEPS, type StatusId, type StepId } from '../../shared/constants.js';
 import { api } from '../api.js';
 import { useTicketEvents } from '../useTicketEvents.js';
 import { pipelineView } from '../lib/pipelineView.js';
+import { formatIso } from '../lib/formatDate.js';
 
 function stepLabel(step: StepId): string {
   return STEPS.find((s) => s.id === step)?.label ?? step;
 }
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
-}
+const formatTime = (iso: string): string => formatIso(iso, (d) => d.toLocaleTimeString());
 
 // The "package tracking" timeline for a ticket, rendered inside TicketModal.
 // Shows the full canonical pipeline (greyed until each milestone lands), the

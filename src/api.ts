@@ -1,4 +1,4 @@
-import type { Ticket, DashboardSummary, EconomicsSummary, TicketEventsResponse } from '../shared/constants.js';
+import type { Ticket, DashboardSummary, EconomicsSummary, EconomicsRunDetail, TicketEventsResponse } from '../shared/constants.js';
 
 // Rejects with the server's {error} message (or a generic status string) when
 // the HTTP response is not ok. Does not intercept network-level fetch()
@@ -39,12 +39,22 @@ export const api = {
   get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),
-  // Agent economics: a rollup over a date range, or a single run when runId is set.
-  economics: (opts: { from?: string; to?: string; runId?: string } = {}): Promise<EconomicsSummary> => {
+  // Agent economics: a rollup over an optional date range.
+  economics: (opts: { from?: string; to?: string } = {}): Promise<EconomicsSummary> => {
     const qs = new URLSearchParams(
       Object.entries(opts).filter((e): e is [string, string] => Boolean(e[1]))
     ).toString();
     return get(`/api/economics${qs ? `?${qs}` : ''}`);
+  },
+  // Single-run economics detail — the `?runId=` deep-link target. Same endpoint,
+  // richer payload (run identity + authored ticket ids). A 404 (unknown run) is a
+  // normal outcome for a stale/mistyped link, so it RESOLVES to 'not-found' — the
+  // detail view renders that distinctly from a real fault. Any other non-ok
+  // status still rejects (surfaced as an error banner, not "run not found").
+  economicsRun: async (runId: string): Promise<EconomicsRunDetail | 'not-found'> => {
+    const res = await fetch(`/api/economics?runId=${encodeURIComponent(runId)}`);
+    if (res.status === 404) return 'not-found';
+    return json<EconomicsRunDetail>(res);
   },
   events: (id: string): Promise<TicketEventsResponse> => get(`/api/tickets/${id}/events`),
   review: (id: string, reviewed = true): Promise<TicketEventsResponse> =>

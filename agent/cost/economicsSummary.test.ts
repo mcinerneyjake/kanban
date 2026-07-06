@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeEconomics } from './economicsSummary.js';
+import { summarizeEconomics, summarizeRun } from './economicsSummary.js';
 import { type RunRecord } from './runLog.js';
 import { type CostLine } from './cost.js';
 import { emptyUsage, type RunUsage } from './usage.js';
@@ -191,5 +191,28 @@ describe('summarizeEconomics — real cost lines (buildSummary)', () => {
     // The measured token lines flow through with real labels.
     expect(s.measured.some((l) => l.label === 'total tokens')).toBe(true);
     expect(s.headline.some((l) => l.label === 'cost per accepted ticket')).toBe(true);
+  });
+});
+
+describe('summarizeRun', () => {
+  it('enriches a one-run summary with the run identity + authored ticket ids', () => {
+    const run = record({
+      runId: 'run-42',
+      at: '2026-07-04T09:00:00.000Z',
+      model: 'qwen2.5-coder',
+      usage: usage({ promptTokens: 100, completionTokens: 20, totalTokens: 120 }),
+      outcome: outcome({ created: 1, updated: 1 }),
+      ticketIds: { created: ['tkt-a'], updated: ['tkt-b'] },
+    });
+    const d = summarizeRun(run);
+    // The base summary is scoped to the single run.
+    expect(d.runs).toBe(1);
+    expect(d.totals.totalTokens).toBe(120);
+    expect(d.totals.acceptedTickets).toBe(2);
+    // Plus the fields the aggregate rollup drops.
+    expect(d.runId).toBe('run-42');
+    expect(d.model).toBe('qwen2.5-coder');
+    expect(d.at).toBe('2026-07-04T09:00:00.000Z');
+    expect(d.ticketIds).toEqual({ created: ['tkt-a'], updated: ['tkt-b'] });
   });
 });
