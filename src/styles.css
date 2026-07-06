@@ -598,6 +598,27 @@ body {
   color: #fff;
 }
 
+/* Provenance: a passive marker on agent-authored tickets (like the type/priority
+   badges — not interactive). The run-economics deep-link lives in the ticket
+   modal, not here. Tinted with the economics accent so it reads as "agent". */
+.badge.provenance {
+  background: var(--badge-bg);
+  color: var(--econ-line);
+  text-transform: none;
+}
+
+/* The modal's provenance row: badge · "created by the agent" teaser · deep-link. */
+.provenance-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.provenance-note .provenance-text { flex: 1 1 auto; }
+
 /* --- Parent crumb -------------------------------------------------------- */
 
 /* --- Sub-tickets --------------------------------------------------------- */
@@ -1145,12 +1166,23 @@ body {
 .econ-line-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
 .econ-line-amount.econ-notional { color: var(--muted); }
 
-/* Single-run detail view (?runId=) — the provenance-badge deep-link target. */
-.econ-back {
-  align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
+/* Single-run detail (?runId=) — a modal over the current view (provenance-badge
+   deep-link target). Wider than the form modal to fit the tiles + cost tables,
+   and a flex column so its sections space evenly (the base .modal has no gap). */
+.modal.modal--run {
+  width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* Explicit "return to the ticket editor" affordance at the top of the run peek.
+   The 16px .modal--run gap would over-space it from the title, so pull it in. */
+.modal-back {
+  align-self: flex-start; margin-bottom: -8px;
+  background: none; border: none; padding: 0; cursor: pointer;
   color: var(--muted); font-size: 13px;
 }
-.econ-back:hover { color: var(--text); }
+.modal-back:hover { color: var(--text); }
 .econ-run-header { display: flex; flex-direction: column; gap: 2px; }
 .econ-run-id { margin: 0; font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .econ-run-meta { margin: 0; font-size: 13px; color: var(--muted); }

@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { api } from '../api.js';
-import ErrorBanner from './ErrorBanner.jsx';
+import ErrorBanner from './ui/ErrorBanner.jsx';
 import { StatTile, CostGroup } from './EconomicsParts.jsx';
 import { usePolledSummary } from '../usePolledSummary.js';
 import { linePoints, toLinePath, toAreaPath } from '../lib/linePath.js';
