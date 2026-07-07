@@ -198,7 +198,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const showForm = ticket !== null || modelStatus === 'down' || drafted;
 
   return (
-    <Modal onClose={onClose} className={showForm ? undefined : 'modal--draft'}>
+    <Modal onClose={onClose} className={showForm ? undefined : 'modal--draft'} label={ticket ? 'Edit ticket' : 'New ticket'}>
       <form onSubmit={submit}>
           {showChecking && (
             <div className="draft-checking">

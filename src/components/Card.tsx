@@ -98,15 +98,32 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
     : dropMode === 'child' ? ' card--drop-child'
     : '';
 
+  // Keyboard access: the card is the primary "open ticket" target, so it acts as
+  // a button. Enter/Space open it; the guard ignores keys bubbling up from nested
+  // controls (the collapse toggle) so they don't also open the ticket.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onOpen(ticket);
+    }
+  };
+
   return (
     <div
       className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}${dropClass}`}
+      role="button"
+      tabIndex={0}
+      // No aria-label: let the accessible name derive from the card's contents so
+      // the type/priority/due/blocker badges stay announced to assistive tech. A
+      // cleaner title-as-button refactor is tracked as a follow-up (tkt below).
       draggable={draggable}
       onDragStart={draggable ? onDragStart : undefined}
       onDragOver={draggable ? onCardDragOver : undefined}
       onDragLeave={draggable ? () => setDropMode(null) : undefined}
       onDrop={onCardDrop}
       onClick={() => onOpen(ticket)}
+      onKeyDown={onKeyDown}
     >
       <div className="card-title">{ticket.title}</div>
       <div className="card-meta">
@@ -118,13 +135,14 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
         </span>
         {isAgentAuthored && <ProvenanceBadge title="Created by the intake agent" />}
         {childCount > 0 && (
-          <span
+          <button
+            type="button"
             className="badge subtasks"
             title={isCollapsed ? `Show ${plural(childCount, 'sub-ticket')}` : `Hide ${plural(childCount, 'sub-ticket')}`}
             onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(ticket.id); }}
           >
             {isCollapsed ? '▸' : '▾'} {childCount}
-          </span>
+          </button>
         )}
         {activeBlockerCount > 0 && (
           <span className="badge blocked" title={`Blocked by ${plural(activeBlockerCount, 'ticket')}`}>
