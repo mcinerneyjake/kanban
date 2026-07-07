@@ -592,6 +592,11 @@ body {
   color: var(--muted);
   cursor: pointer;
   user-select: none;
+  /* Reset native <button> chrome so the toggle matches the flat badge pills
+     (font-size stays 11px from .badge above). */
+  border: none;
+  font-family: inherit;
+  appearance: none;
 }
 .badge.subtasks:hover {
   background: var(--primary);

@@ -26,13 +26,15 @@ export default function Sidebar({ view, onViewChange, theme, onToggleTheme }: Pr
           overlays content as it expands, so hovering never reflows the board. */}
       <div className="sidebar-rail" aria-hidden="true" />
       <aside className="sidebar">
-        <nav className="sidebar-nav" role="tablist">
+        <nav className="sidebar-nav">
           {NAV.map((n) => (
             <button
               key={n.view}
               className={`sidebar-item${view === n.view ? ' active' : ''}`}
-              role="tab"
-              aria-selected={view === n.view}
+              // App navigation, not a tabs widget: aria-current marks the active
+              // view (dropping role="tab"/tablist, which would promise arrow-key
+              // navigation this rail doesn't implement).
+              aria-current={view === n.view ? 'page' : undefined}
               // withBlur: drop focus after click so the button doesn't hold the
               // rail open via :focus-within once the pointer leaves.
               onClick={withBlur(() => onViewChange(n.view))}

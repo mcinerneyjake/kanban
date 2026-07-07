@@ -57,7 +57,7 @@ export default function EconomicsRunDetail({ runId, onClose, onOpen }: Props) {
   const tile = (label: string) => headlineTile(run?.headline ?? [], label);
 
   return (
-    <Modal onClose={onClose} className="modal--run">
+    <Modal onClose={onClose} className="modal--run" label="Run details">
       {/* Explicit return path: this modal is always a peek stacked over the ticket
           editor, so a labelled "back" reads clearer than a bare × (and the sidebar
           sits above the backdrop, so an outside-click can miss). */}
