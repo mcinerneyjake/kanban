@@ -10,6 +10,9 @@ dist
 tickets/
 events/
 runs/
+# Local recorder output — real demo traces live with the viewer (portfolio site),
+# never in this repo. The committed schema fixture is test-support/sampleTrace.json.
+traces/
 test-results/
 playwright-report/
 coverage/

@@ -82,3 +82,21 @@ export function mergeUsage(a: RunUsage, b: RunUsage): RunUsage {
     cachedReported: a.cachedReported || b.cachedReported,
   };
 }
+
+// The marginal usage between a baseline and a later reading of the SAME meter —
+// e.g. an embedder used first to build the index and then to embed a run's
+// queries: subtracting the post-build baseline isolates just the run's cost, so
+// a one-time index build doesn't get charged to a single run. Fields are clamped
+// at 0 (the later reading is always ≥ the baseline for a monotonic meter).
+export function subtractUsage(later: RunUsage, baseline: RunUsage): RunUsage {
+  return {
+    promptTokens: Math.max(0, later.promptTokens - baseline.promptTokens),
+    completionTokens: Math.max(0, later.completionTokens - baseline.completionTokens),
+    totalTokens: Math.max(0, later.totalTokens - baseline.totalTokens),
+    calls: Math.max(0, later.calls - baseline.calls),
+    reportedCalls: Math.max(0, later.reportedCalls - baseline.reportedCalls),
+    activeMs: Math.max(0, later.activeMs - baseline.activeMs),
+    cachedTokens: Math.max(0, later.cachedTokens - baseline.cachedTokens),
+    cachedReported: later.cachedReported,
+  };
+}
