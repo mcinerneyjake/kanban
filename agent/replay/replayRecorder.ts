@@ -1,19 +1,19 @@
-// Records a REAL agent run into a replay Trace (shared/replayTrace.ts) by wrapping
+// Records a REAL agent run into a replay Trace (agent/replayTrace.ts) by wrapping
 // the three dependency seams runIntake already accepts — chat, index, approve —
 // so nothing in loop.ts / tools.ts / llm.ts changes. Each wrapper appends a typed
 // step to one shared, ordered sink (call order = true run order); buildTrace then
 // brackets that sink with the opening `note` and the closing `final`.
 
-import type { ChatClient, ChatMessage } from './runtime/llm.js';
-import type { ChatTool } from './runtime/tools.js';
-import type { ApproveFn } from './runtime/loop.js';
-import { DocumentIndex, type ScoredDocument } from './retrieval/retrieval.js';
-import type { RunUsage } from './cost/usage.js';
-import type { RunOutcome } from './cost/economics.js';
+import type { ChatClient, ChatMessage } from '../runtime/llm.js';
+import type { ChatTool } from '../runtime/tools.js';
+import type { ApproveFn } from '../runtime/loop.js';
+import { DocumentIndex, type ScoredDocument } from '../retrieval/retrieval.js';
+import type { RunUsage } from '../cost/usage.js';
+import type { RunOutcome } from '../cost/economics.js';
 import type {
   Trace, TraceStep, RetrievalHit, TraceUsage, TraceOutcome,
   NoteStep, FinalStep, LlmCallStep, RetrievalStep, ApprovalStep,
-} from '../shared/replayTrace.js';
+} from './replayTrace.js';
 
 // The chat wrapper needs per-call tokens, which the ChatClient interface doesn't
 // expose — only the RuntimeChatClient's accumulating meter does. We read it by

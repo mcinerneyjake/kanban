@@ -3,12 +3,12 @@ import {
   RecordingChatClient, instrumentIndexSearch, recordingApprove, buildTrace, ReplayRecorder,
   type MeteredChatClient,
 } from './replayRecorder.js';
-import { DocumentIndex, type Embedder, type Document } from './retrieval/retrieval.js';
-import { emptyUsage, type RunUsage } from './cost/usage.js';
-import type { RunOutcome } from './cost/economics.js';
-import type { ChatMessage } from './runtime/llm.js';
-import type { ChatTool } from './runtime/tools.js';
-import { isTrace, isLlmCallStep, isRetrievalStep, isApprovalStep, type TraceStep } from '../shared/replayTrace.js';
+import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
+import { emptyUsage, type RunUsage } from '../cost/usage.js';
+import type { RunOutcome } from '../cost/economics.js';
+import type { ChatMessage } from '../runtime/llm.js';
+import type { ChatTool } from '../runtime/tools.js';
+import { isTrace, isLlmCallStep, isRetrievalStep, isApprovalStep, type TraceStep } from './replayTrace.js';
 
 // A metered chat fake: returns a canned reply and advances its usage meter by a
 // fixed delta per call, so the RecordingChatClient's getUsage() diff is exact.

@@ -9,10 +9,10 @@ import { mergeUsage, subtractUsage } from './cost/usage.js';
 import { resolveCostConfig } from './cost/costConfig.js';
 import { buildSummary } from './cost/summary.js';
 import { appendRun } from './cost/runLog.js';
-import { ReplayRecorder } from './replayRecorder.js';
-import { isTrace } from '../shared/replayTrace.js';
+import { ReplayRecorder } from './replay/replayRecorder.js';
+import { isTrace } from './replay/replayTrace.js';
 
-// Records ONE real agent run into a replay-viewer trace JSON (shared/replayTrace).
+// Records ONE real agent run into a replay-viewer trace JSON (agent/replay/replayTrace).
 // Mirrors agent/index.ts's deps-building, but wraps chat/index/approve with the
 // ReplayRecorder so the full step trace is captured — no changes to the loop.
 //   npm run agent:record -- --out traces/create.json "the export button 500s"
