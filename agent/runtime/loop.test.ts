@@ -1,7 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { describe, it, expect } from 'vitest';
+import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
 import { runIntake } from './loop.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
 import { type ChatTool } from './tools.js';
@@ -35,20 +33,12 @@ class ScriptedChat implements ChatClient {
   }
 }
 
-// handleToolCall (via create_ticket/list_tickets) touches the service — isolate it.
-let tmpDir: string;
-beforeAll(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-loop-test-'));
-  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-});
-afterAll(async () => {
-  delete process.env.TICKETS_DIR_OVERRIDE;
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
-beforeEach(async () => {
-  const files = await fs.readdir(tmpDir);
-  await Promise.all(files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))));
-});
+// runIntake drives handleToolCall (via create_ticket/list_tickets), which
+// touches the service — redirect tickets + telemetry I/O to isolated temp dirs.
+// The events dir matters here: an approved status-changing update emits .jsonl
+// telemetry that a real id would otherwise write to the real events/ dir
+// (currently only masked by a 404).
+setupTempTicketDirs('agent-loop-test');
 
 describe('runIntake', () => {
   it('seeds the conversation with a system prompt and the user input', async () => {

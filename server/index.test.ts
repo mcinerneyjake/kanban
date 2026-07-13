@@ -12,34 +12,12 @@ import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 import { appendRun, type RunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
+import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
-let tmpDir: string;
 // The PATCH route drives updateTicket, which emits status-milestone telemetry;
-// redirect it to a temp dir so tests never touch the real events/ dir.
-let eventsTmpDir: string;
-
-beforeAll(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-'));
-  eventsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-index-test-events-'));
-  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-  process.env.EVENTS_DIR_OVERRIDE = eventsTmpDir;
-});
-
-afterAll(async () => {
-  delete process.env.TICKETS_DIR_OVERRIDE;
-  delete process.env.EVENTS_DIR_OVERRIDE;
-  await fs.rm(tmpDir, { recursive: true, force: true });
-  await fs.rm(eventsTmpDir, { recursive: true, force: true });
-});
-
-beforeEach(async () => {
-  const files = await fs.readdir(tmpDir);
-  await Promise.all(
-    files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))),
-  );
-  const eventFiles = await fs.readdir(eventsTmpDir);
-  await Promise.all(eventFiles.map((f) => fs.unlink(path.join(eventsTmpDir, f))));
-});
+// the helper redirects both the tickets and events I/O to isolated temp dirs
+// (fixtures below write to dirs.tickets directly).
+const dirs = setupTempTicketDirs('kanban-index-test');
 
 async function seedTicket(id: string, title = 'Test ticket', body = '') {
   const content = [
@@ -55,7 +33,7 @@ async function seedTicket(id: string, title = 'Test ticket', body = '') {
     '',
     body,
   ].join('\n');
-  await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+  await fs.writeFile(path.join(dirs.tickets, `${id}.md`), content, 'utf8');
 }
 
 describe('GET /api/tickets', () => {
@@ -82,7 +60,7 @@ describe('GET /api/dashboard', () => {
       'order: 1', `project: ${project}`,
       "created: '2026-01-01T00:00:00.000Z'", "updated: '2026-01-01T00:00:00.000Z'", '---', '',
     ].join('\n');
-    await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+    await fs.writeFile(path.join(dirs.tickets, `${id}.md`), content, 'utf8');
   }
 
   it('returns an all-zero summary for an empty board', async () => {
@@ -275,13 +253,9 @@ describe('DELETE /api/tickets/:id', () => {
 });
 
 describe('wrap error handler', () => {
-  it('maps HttpError status codes directly (e.g. 400, 404)', async () => {
-    // Path-traversal triggers a 400 HttpError from the service layer
-    const res = await request(app).get('/api/tickets/..%2Fetc%2Fpasswd');
-    expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error');
-  });
-
+  // HttpError status mapping (400 for path-traversal) is already asserted
+  // per-route (see "returns 400 for an invalid id (path traversal)"); only the
+  // stack-leak guarantee is unique to the wrap handler and lives here.
   it('does not leak stack traces in the error response body', async () => {
     // Unknown id gives a 404 with only { error: string }, no stack
     const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
@@ -291,10 +265,17 @@ describe('wrap error handler', () => {
   });
 });
 
+// A fixed non-DST week so the wall-clock bounds below are stable regardless of
+// when CI runs. msUntilNextSundayEvening does local setDate/setHours arithmetic;
+// seeding `at()` from the real clock (`new Date()`) meant a DST-transition week
+// (US fall-back, late Oct) stretched a "day" to 25h and blew past the ± bounds —
+// a latent red build. The day-of-week diff math is anchor-independent.
+const FIXED_WEEK = new Date('2026-06-15T12:00:00'); // Monday
+
 // Build a Date for a given day-of-week and hour (local time).
 // day: 0=Sun, 1=Mon, ... 6=Sat
 function at(day: number, hour: number): Date {
-  const d = new Date();
+  const d = new Date(FIXED_WEEK);
   const diff = (day - d.getDay() + 7) % 7;
   d.setDate(d.getDate() + diff);
   d.setHours(hour, 0, 0, 0);
@@ -379,14 +360,8 @@ describe('stopArchiveScheduler', () => {
 });
 
 describe('GET /api/tickets?q= (search)', () => {
-  it('returns all tickets when q is absent', async () => {
-    await seedTicket('abc111111111', 'First');
-    await seedTicket('abc222222222', 'Second');
-    const res = await request(app).get('/api/tickets');
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(2);
-  });
-
+  // "returns all when q absent" is covered by GET /api/tickets → "returns all
+  // tickets"; not restated here.
   it('returns only matching tickets when q is set', async () => {
     await seedTicket('abc333333333', 'Fix login bug');
     await seedTicket('abc444444444', 'Add dashboard');
@@ -432,7 +407,7 @@ describe('GET /api/projects', () => {
     // seedTicket writes no `project:` key, so inject it via raw frontmatter.
     const raw = (id: string, project: string) =>
       fs.writeFile(
-        path.join(tmpDir, `${id}.md`),
+        path.join(dirs.tickets, `${id}.md`),
         [
           '---', `title: '${id}'`, 'type: task', 'priority: medium',
           'status: backlog', 'order: 1', `project: '${project}'`,
@@ -461,7 +436,7 @@ describe('POST /api/archive', () => {
     // A done ticket updated >3 days ago is stale; a fresh one is not.
     const write = (id: string, updated: string) =>
       fs.writeFile(
-        path.join(tmpDir, `${id}.md`),
+        path.join(dirs.tickets, `${id}.md`),
         [
           '---', `title: '${id}'`, 'type: task', 'priority: medium',
           'status: done', 'order: 1', `updated: '${updated}'`,
@@ -775,7 +750,7 @@ describe('POST /api/tickets/:id/review', () => {
     const res = await request(app).post('/api/tickets/tkt-ghost99999999/review').send({ reviewed: true });
     expect(res.status).toBe(404);
     // the orphan events/<id>.jsonl must never have been created
-    const files = await fs.readdir(eventsTmpDir);
+    const files = await fs.readdir(dirs.events);
     expect(files.some((f) => f.includes('tkt-ghost99999999'))).toBe(false);
   });
 });

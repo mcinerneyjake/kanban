@@ -1,33 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { describe, it, expect } from 'vitest';
 import { handleToolCall, TOOLS, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from './handlers.js';
 import { createTicket, updateTicket, listTickets } from '../server/tickets.js';
+import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
 // The handlers call the service layer, which writes real files — redirect that
-// I/O to a temp dir so the real tickets/ folder is never touched.
-let tmpDir: string;
-
-beforeAll(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-mcp-test-'));
-  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-  // Status-changing ops emit telemetry; keep it out of the real events/ dir.
-  process.env.EVENTS_DIR_OVERRIDE = tmpDir;
-});
-
-afterAll(async () => {
-  delete process.env.TICKETS_DIR_OVERRIDE;
-  delete process.env.EVENTS_DIR_OVERRIDE;
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
-
-beforeEach(async () => {
-  const files = await fs.readdir(tmpDir);
-  await Promise.all(
-    files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))),
-  );
-});
+// I/O (tickets + telemetry) to isolated temp dirs so the real tickets/ folder is
+// never touched. Tests reach files through the service, so no path is needed here.
+setupTempTicketDirs('kanban-mcp-test');
 
 // ---------------------------------------------------------------------------
 // Parsing helpers — narrow JSON.parse output with predicates, no casts.

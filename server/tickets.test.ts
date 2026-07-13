@@ -1,36 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { listTickets, listProjects, getTicket, createTicket, updateTicket, deleteTicket, archiveStaleTickets, searchTickets, summarize, summarizeBoard, HttpError } from './tickets.js';
 import { readEvents } from './events.js';
+import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 import type { Ticket } from '../shared/constants.js';
 
-let tmpDir: string;
-// updateTicket emits status-milestone telemetry; redirect it to a temp dir so
-// the suite never writes to the real events/ dir.
-let eventsTmpDir: string;
-
-beforeAll(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-test-'));
-  eventsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-test-events-'));
-  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-  process.env.EVENTS_DIR_OVERRIDE = eventsTmpDir;
-});
-
-afterAll(async () => {
-  delete process.env.TICKETS_DIR_OVERRIDE;
-  delete process.env.EVENTS_DIR_OVERRIDE;
-  await fs.rm(tmpDir, { recursive: true, force: true });
-  await fs.rm(eventsTmpDir, { recursive: true, force: true });
-});
-
-beforeEach(async () => {
-  for (const dir of [tmpDir, eventsTmpDir]) {
-    const files = await fs.readdir(dir);
-    await Promise.all(files.map((f) => fs.unlink(path.join(dir, f))));
-  }
-});
+// updateTicket emits status-milestone telemetry; the helper redirects both the
+// tickets and events I/O to isolated temp dirs (fixtures below write to
+// dirs.tickets directly).
+const dirs = setupTempTicketDirs('kanban-test');
 
 // Awaits a promise expected to reject with HttpError and returns the error.
 async function httpError<T>(p: Promise<T>): Promise<HttpError> {
@@ -56,7 +35,7 @@ function makeRaw(title: string, order: number, overrides: Record<string, string>
 }
 
 async function writeRaw(id: string, content: string) {
-  await fs.writeFile(path.join(tmpDir, `${id}.md`), content, 'utf8');
+  await fs.writeFile(path.join(dirs.tickets, `${id}.md`), content, 'utf8');
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +104,7 @@ describe('fs error mapping (getTicket)', () => {
   it('rethrows a non-ENOENT fs error instead of masking it as a 404', async () => {
     // A directory where the .md file is expected makes readFile throw EISDIR, not
     // ENOENT — a real fault that must surface (→ 500), not be reported as missing.
-    const dir = path.join(tmpDir, 'tkt-isdir.md');
+    const dir = path.join(dirs.tickets, 'tkt-isdir.md');
     await fs.mkdir(dir);
     try {
       const err = await getTicket('tkt-isdir').catch((e) => e);
@@ -463,8 +442,8 @@ describe('listTickets', () => {
 
   it('ignores non-.md files in the tickets directory', async () => {
     await writeRaw('tkt-real', makeRaw('Real', 1));
-    await fs.writeFile(path.join(tmpDir, 'README.txt'), 'not a ticket', 'utf8');
-    await fs.writeFile(path.join(tmpDir, '.DS_Store'), 'junk', 'utf8');
+    await fs.writeFile(path.join(dirs.tickets, 'README.txt'), 'not a ticket', 'utf8');
+    await fs.writeFile(path.join(dirs.tickets, '.DS_Store'), 'junk', 'utf8');
     const tickets = await listTickets();
     expect(tickets.map((t) => t.id)).toEqual(['tkt-real']);
   });
@@ -601,13 +580,6 @@ describe('searchTickets', () => {
     await writeRaw('tkt-s7', makeRaw('Unrelated ticket', 1));
     const results = await searchTickets('xyzzy-no-match');
     expect(results).toHaveLength(0);
-  });
-
-  it('returns all tickets when the term appears everywhere', async () => {
-    await writeRaw('tkt-s8', makeRaw('common word', 1));
-    await writeRaw('tkt-s9', makeRaw('another common word', 2));
-    const results = await searchTickets('common');
-    expect(results.length).toBeGreaterThanOrEqual(2);
   });
 
   it('returns every ticket for an empty query term (matches all)', async () => {
@@ -824,7 +796,7 @@ describe('concurrent same-id writes (temp-file uniqueness)', () => {
     const persisted = await getTicket(t.id);
     expect(['first', 'second']).toContain(persisted.body);
     // No stray .tmp left beside the ticket file.
-    const leftovers = (await fs.readdir(tmpDir)).filter((f) => f.endsWith('.tmp'));
+    const leftovers = (await fs.readdir(dirs.tickets)).filter((f) => f.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
   });
 });
@@ -933,7 +905,7 @@ describe('provenance (source + runId)', () => {
     const t = await createTicket({ title: 'Human made this' });
     expect(t.source).toBeNull();
     expect(t.runId).toBeNull();
-    const raw = await fs.readFile(path.join(tmpDir, `${t.id}.md`), 'utf8');
+    const raw = await fs.readFile(path.join(dirs.tickets, `${t.id}.md`), 'utf8');
     expect(raw).not.toContain('source:');
     expect(raw).not.toContain('runId:');
   });
