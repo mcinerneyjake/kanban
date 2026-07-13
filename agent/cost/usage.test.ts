@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { UsageMeter, emptyUsage, mergeUsage } from './usage.js';
+import { UsageMeter, emptyUsage, mergeUsage, subtractUsage } from './usage.js';
 
 describe('UsageMeter', () => {
   it('starts empty', () => {
@@ -85,5 +85,25 @@ describe('mergeUsage', () => {
 
   it('reports cachedReported false only when neither side reported', () => {
     expect(mergeUsage(emptyUsage(), emptyUsage()).cachedReported).toBe(false);
+  });
+});
+
+describe('subtractUsage', () => {
+  it('isolates the marginal usage between a later reading and a baseline', () => {
+    const baseline = { ...emptyUsage(), promptTokens: 100, totalTokens: 100, activeMs: 5000, calls: 3, reportedCalls: 3 };
+    const later = { ...emptyUsage(), promptTokens: 130, totalTokens: 138, activeMs: 5200, calls: 5, reportedCalls: 5, cachedReported: true };
+    expect(subtractUsage(later, baseline)).toMatchObject({
+      promptTokens: 30, totalTokens: 38, activeMs: 200, calls: 2, reportedCalls: 2, cachedReported: true,
+    });
+  });
+
+  it('clamps every field at 0 (never negative)', () => {
+    const baseline = { ...emptyUsage(), promptTokens: 50, totalTokens: 50, activeMs: 100, calls: 2, reportedCalls: 2 };
+    expect(subtractUsage(emptyUsage(), baseline)).toEqual(emptyUsage());
+  });
+
+  it('subtracting a baseline from itself yields an empty delta', () => {
+    const u = { ...emptyUsage(), promptTokens: 7, totalTokens: 9, activeMs: 42, calls: 1, reportedCalls: 1 };
+    expect(subtractUsage(u, u)).toMatchObject({ promptTokens: 0, totalTokens: 0, activeMs: 0, calls: 0, reportedCalls: 0 });
   });
 });

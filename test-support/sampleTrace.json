@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "runId": "example-run-0000-0000-000000000001",
+    "at": "2026-01-01T00:00:00.000Z",
+    "model": "example-model",
+    "kind": "intake",
+    "input": "The date picker on the settings page does not open in Firefox.",
+    "outcome": { "created": 1, "updated": 0, "declined": 0 },
+    "totals": {
+      "promptTokens": 1840,
+      "completionTokens": 96,
+      "totalTokens": 1936,
+      "calls": 4,
+      "reportedCalls": 4,
+      "activeMs": 4200
+    }
+  },
+  "steps": [
+    { "type": "note", "text": "The date picker on the settings page does not open in Firefox." },
+    {
+      "type": "llm_call",
+      "content": null,
+      "toolCalls": [{ "name": "search_board", "args": { "query": "date picker settings firefox", "limit": 5 } }],
+      "ms": 1400,
+      "tokens": { "prompt": 720, "completion": 22, "total": 742 }
+    },
+    {
+      "type": "retrieval",
+      "query": "date picker settings firefox",
+      "limit": 5,
+      "ms": 63,
+      "hits": [
+        { "id": "example-ticket-1", "title": "Example ticket: settings page layout polish", "score": 0.41, "status": "todo", "source": "example" },
+        { "id": "example-ticket-2", "title": "Example ticket: form validation on save", "score": 0.37, "status": "done", "source": "example" },
+        { "id": "example-ticket-3", "title": "Example ticket: browser compatibility sweep", "score": 0.34, "status": "backlog", "source": "example" }
+      ]
+    },
+    {
+      "type": "llm_call",
+      "content": "No existing ticket covers this. I'll create a bug ticket for the Firefox date picker.",
+      "toolCalls": [{
+        "name": "create_ticket",
+        "args": { "title": "Date picker fails to open in Firefox", "type": "bug", "priority": "medium", "status": "todo" }
+      }],
+      "ms": 980,
+      "tokens": { "prompt": 840, "completion": 40, "total": 880 }
+    },
+    {
+      "type": "approval",
+      "action": "create_ticket",
+      "args": { "title": "Date picker fails to open in Firefox", "type": "bug", "priority": "medium", "status": "todo" },
+      "decision": "approved",
+      "reviewMs": 1
+    },
+    {
+      "type": "llm_call",
+      "content": "Created a bug ticket for the Firefox date picker issue.",
+      "toolCalls": [],
+      "ms": 314,
+      "tokens": { "prompt": 280, "completion": 34, "total": 314 }
+    },
+    {
+      "type": "final",
+      "text": "Created a bug ticket for the Firefox date picker issue.",
+      "createdIds": ["example-ticket-0001"],
+      "updatedIds": []
+    }
+  ]
+}

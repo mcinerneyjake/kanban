@@ -12,6 +12,7 @@
     "server": "tsx watch server/index.ts",
     "agent": "tsx agent/index.ts",
     "agent:search": "tsx agent/searchDemo.ts",
+    "agent:record": "tsx agent/recordRun.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
