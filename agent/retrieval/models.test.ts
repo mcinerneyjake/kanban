@@ -16,29 +16,26 @@ describe('resolveEmbedConfig', () => {
     expect(resolveEmbedConfig({ EMBED_BASE_URL: 'http://x/v1///' }).baseUrl).toBe('http://x/v1');
   });
 
-  it('Qwen3-Embedding prefixes the query only', () => {
-    const cfg = resolveEmbedConfig({ EMBED_MODEL: 'qwen3-embedding:0.6b' });
-    expect(cfg.queryInstruction).toContain('Instruct:');
-    expect(cfg.docInstruction).toBe('');
-  });
+  // Per-model prefix behaviour (Qwen3/nomic/unknown/env-override) is owned in
+  // full by embedPrefixes.test.ts. resolveEmbedConfig only delegates to
+  // resolvePrefixes; these two smokes pin the delegation wiring — both args must
+  // be forwarded, not just called.
 
-  it('nomic prefixes both sides', () => {
+  // The MODEL arg reaches resolvePrefixes: a known model resolves its prefixes.
+  it('forwards the model to resolvePrefixes', () => {
     const cfg = resolveEmbedConfig({ EMBED_MODEL: 'nomic-embed-text' });
     expect(cfg.queryInstruction).toBe('search_query: ');
     expect(cfg.docInstruction).toBe('search_document: ');
   });
 
-  it('an unknown model gets no prefixes', () => {
-    const cfg = resolveEmbedConfig({ EMBED_MODEL: 'some-other-model' });
-    expect(cfg.queryInstruction).toBe('');
-    expect(cfg.docInstruction).toBe('');
-  });
-
-  it('honors EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX overrides for any model', () => {
+  // The ENV arg reaches resolvePrefixes: an override wins over the model default
+  // (guards against a refactor to resolvePrefixes(model) that silently no-ops
+  // EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX).
+  it('forwards env overrides to resolvePrefixes', () => {
     const cfg = resolveEmbedConfig({
-      EMBED_MODEL: 'all-minilm-l6-v2', EMBED_QUERY_PREFIX: 'query: ', EMBED_DOC_PREFIX: 'passage: ',
+      EMBED_MODEL: 'nomic-embed-text', EMBED_QUERY_PREFIX: 'q: ', EMBED_DOC_PREFIX: 'd: ',
     });
-    expect(cfg.queryInstruction).toBe('query: ');
-    expect(cfg.docInstruction).toBe('passage: ');
+    expect(cfg.queryInstruction).toBe('q: ');
+    expect(cfg.docInstruction).toBe('d: ');
   });
 });

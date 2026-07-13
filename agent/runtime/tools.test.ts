@@ -1,7 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { describe, it, expect } from 'vitest';
+import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
 import { AGENT_TOOLS, dispatchTool } from './tools.js';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { TOOLS } from '../../mcp/handlers.js';
@@ -41,23 +39,10 @@ function parseResults(text: string): { id: string; title: string; status: string
   });
 }
 
-// handleToolCall touches the service (real files) — redirect to a temp dir.
-let tmpDir: string;
-beforeAll(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-tools-test-'));
-  process.env.TICKETS_DIR_OVERRIDE = tmpDir;
-  // Status-changing ops emit telemetry; keep it out of the real events/ dir.
-  process.env.EVENTS_DIR_OVERRIDE = tmpDir;
-});
-afterAll(async () => {
-  delete process.env.TICKETS_DIR_OVERRIDE;
-  delete process.env.EVENTS_DIR_OVERRIDE;
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
-beforeEach(async () => {
-  const files = await fs.readdir(tmpDir);
-  await Promise.all(files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))));
-});
+// handleToolCall touches the service (real files) — redirect tickets + telemetry
+// I/O to isolated temp dirs. Tests reach files through the service, so no path
+// is needed here.
+setupTempTicketDirs('agent-tools-test');
 
 describe('AGENT_TOOLS', () => {
   const names = AGENT_TOOLS.map((t) => t.function.name);
