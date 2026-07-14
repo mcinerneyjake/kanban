@@ -59,12 +59,37 @@ export function buildTicketForm(ticket: Ticket | null, allTickets: Ticket[], pre
     status: prefill?.status ?? ticket?.status ?? 'backlog',
     body: prefill?.body ?? ticket?.body ?? '',
     project: ticket?.project ?? null,
-    blockers: (ticket?.blockers ?? []).filter((id) => {
-      const blocker = allTickets.find((t) => t.id === id);
-      return blocker !== undefined && blocker.status !== 'archived';
-    }),
+    // Keep the FULL stored set (archived/dangling ids included) — the modal filters
+    // archived/dangling for DISPLAY only. Filtering here would silently drop those
+    // edges on any unrelated blocker edit, since the save PATCHes the whole array
+    // wholesale (tkt-c8b4b6aa948d).
+    blockers: ticket?.blockers ?? [],
     parent: activeParentId(ticket, allTickets),
     dueDate: ticket?.dueDate ?? null,
     assignee: ticket?.assignee ?? null,
   };
+}
+
+// A blocker edge is "hidden" when its target is archived (closed) or dangling (the
+// target ticket was deleted). Hidden edges are never shown as removable chips, so the
+// user can't see or intentionally remove them — every place that rewrites the blocker
+// set must therefore PRESERVE them, or it silently deletes data (tkt-c8b4b6aa948d).
+// ONE predicate, shared by the chip-display filter and blockersForProject, so the two
+// can't drift out of sync (a divergence would re-open the data-loss class).
+export function isHiddenBlockerEdge(id: string, allTickets: Ticket[]): boolean {
+  const blocker = allTickets.find((t) => t.id === id);
+  return blocker === undefined || blocker.status === 'archived';
+}
+
+// When a ticket is reassigned to `project`, decide which of its current blockers to
+// keep. Blockers are project-scoped, so a VISIBLE active blocker from another project
+// is dropped — but HIDDEN edges are KEPT (see isHiddenBlockerEdge): the user never saw
+// them and can't re-add them, so filtering them out here would silently delete the edge
+// — the same wipe, via the project-change trigger.
+export function blockersForProject(blockers: string[], allTickets: Ticket[], project: string | null): string[] {
+  if (project === null) return blockers;
+  return blockers.filter((id) => {
+    if (isHiddenBlockerEdge(id, allTickets)) return true;              // hidden — always keep
+    return allTickets.find((t) => t.id === id)?.project === project;   // visible active — same-project only
+  });
 }

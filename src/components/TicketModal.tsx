@@ -9,7 +9,7 @@ import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
 import { agentRunId } from '../lib/provenance.js';
 import { type Prefill } from '../lib/proposalPrefill.js';
-import { resolveProposalPlan, buildTicketForm } from '../lib/intakeApply.js';
+import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
 import Spinner from './ui/Spinner.js';
@@ -114,11 +114,10 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     setForm((f) => ({
       ...f,
       project,
-      // When a specific project is chosen, clear selections that don't belong to it.
-      // When clearing back to None, leave existing selections intact.
-      blockers: project === null
-        ? f.blockers
-        : f.blockers.filter((id) => allTickets.find((t) => t.id === id)?.project === project),
+      // When a specific project is chosen, clear selections that don't belong to it;
+      // when clearing back to None, leave them intact. Blockers preserve hidden
+      // archived/dangling edges through the change (see blockersForProject).
+      blockers: blockersForProject(f.blockers, allTickets, project),
       parent: project === null
         ? f.parent
         : (allTickets.find((t) => t.id === f.parent)?.project === project ? f.parent : null),
@@ -159,7 +158,14 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const availableBlockers = allTickets.filter(
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
   );
-  const blockerTickets = form.blockers.map((id) => allTickets.find((t) => t.id === id)).filter((t): t is Ticket => t !== undefined);
+  // Display only the ACTIVE blockers as removable chips. Archived/dangling ids stay in
+  // form.blockers — hidden here, preserved on save — so an edit can't silently drop those
+  // edges (tkt-c8b4b6aa948d). Same isHiddenBlockerEdge rule as blockersForProject, so the
+  // display filter and the preservation logic can't drift apart.
+  const blockerTickets = form.blockers
+    .filter((id) => !isHiddenBlockerEdge(id, allTickets))
+    .map((id) => allTickets.find((t) => t.id === id))
+    .filter((t): t is Ticket => t !== undefined);
   // Reverse edge: tickets that list this one as a blocker — i.e. what it blocks.
   // Derived (never stored) and read-only; only meaningful for a saved ticket.
   const blockedTickets = ticket ? ticketsBlockedBy(ticket.id, allTickets) : [];
