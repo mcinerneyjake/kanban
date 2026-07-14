@@ -101,10 +101,11 @@ describe('intake propose→apply round-trip', () => {
     expect((await getTicket(plan.target.id)).body).toBe('Repro: click login then 500');
   });
 
-  // EXPECTED FAIL until tkt-1dfa61b8830e (Bug E). Flip `it.fails` → `it` when fixed.
-  it.fails('E: an update proposal with an unknown id does not resolve to create', () => {
+  // tkt-1dfa61b8830e (Bug E, FIXED): an update proposal whose id isn't loaded resolves
+  // to 'not-found', NOT 'create' (which would silently draft a duplicate).
+  it('an update proposal with an unknown id resolves to not-found, not create', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-ghost-9999', body: 'x' } }, []);
-    expect(plan.mode).not.toBe('create');
+    expect(plan.mode).toBe('not-found');
   });
 
   // EXPECTED FAIL until tkt-727c5cacdfad (Bug G). Flip `it.fails` → `it` when fixed.

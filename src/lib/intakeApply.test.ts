@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTicketForm, blockersForProject, isHiddenBlockerEdge } from './intakeApply.js';
+import { buildTicketForm, blockersForProject, isHiddenBlockerEdge, resolveProposalPlan } from './intakeApply.js';
 import { changedFormFields } from './ticketDiff.js';
 import type { Ticket } from '../../shared/constants.js';
 
@@ -100,5 +100,43 @@ describe('isHiddenBlockerEdge', () => {
     expect(isHiddenBlockerEdge('a', [active, archived])).toBe(false);
     expect(isHiddenBlockerEdge('b', [active, archived])).toBe(true);
     expect(isHiddenBlockerEdge('gone', [active, archived])).toBe(true);
+  });
+});
+
+describe('resolveProposalPlan', () => {
+  it('routes a create proposal to create mode', () => {
+    expect(resolveProposalPlan({ action: 'create_ticket', args: { title: 'New' } }, []).mode).toBe('create');
+  });
+
+  it('routes an update proposal for a loaded ticket to update mode', () => {
+    const t = ticket({ id: 'tkt-real' });
+    const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-real', body: 'x' } }, [t]);
+    expect(plan.mode).toBe('update');
+    if (plan.mode === 'update') expect(plan.target.id).toBe('tkt-real');
+  });
+
+  // tkt-1dfa61b8830e: an update targeting a ticket that isn't loaded must NOT become a
+  // create (which drafts a duplicate) — it resolves to not-found, carrying the id.
+  it('routes an update proposal for an unloaded ticket to not-found', () => {
+    const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-ghost', body: 'x' } }, []);
+    expect(plan.mode).toBe('not-found');
+    if (plan.mode === 'not-found') expect(plan.targetId).toBe('tkt-ghost');
+  });
+
+  // Review finding C: an update proposal with a MISSING/non-string id must also be
+  // not-found (targetId null) — routing on the action, not just the id, so it can't
+  // slip back into a duplicate-drafting create.
+  it('routes an update proposal with a missing id to not-found (null targetId)', () => {
+    const plan = resolveProposalPlan({ action: 'update_ticket', args: { body: 'x' } }, []);
+    expect(plan.mode).toBe('not-found');
+    if (plan.mode === 'not-found') expect(plan.targetId).toBeNull();
+  });
+
+  // Review finding A: a blank id collapses to null (so the caller's notice, guarded
+  // on the object, still renders rather than a falsy-'' silent no-op).
+  it('collapses a blank update id to not-found with a null targetId', () => {
+    const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: '' } }, []);
+    expect(plan.mode).toBe('not-found');
+    if (plan.mode === 'not-found') expect(plan.targetId).toBeNull();
   });
 });
