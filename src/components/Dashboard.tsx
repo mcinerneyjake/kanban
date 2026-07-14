@@ -11,9 +11,7 @@ import {
   type Priority,
 } from '../../shared/constants.js';
 
-// Colours pulled from CSS custom properties so the charts track the active
-// theme. Priorities already have --prio-* vars; status vars are added in
-// styles.css alongside this view.
+// CSS custom properties so charts track the active theme.
 const STATUS_COLOR: Record<StatusId, string> = {
   backlog: 'var(--st-backlog)',
   todo: 'var(--st-todo)',
@@ -36,7 +34,6 @@ const STATUS_LABEL: Record<string, string> = Object.fromEntries(
 
 const AUTO_REFRESH_MS = 15_000;
 
-// Donut geometry.
 const RADIUS = 70;
 const STROKE = 26;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
@@ -46,18 +43,13 @@ type Props = {
   project: string
   visible: WidgetVisibility
   autoRefresh: boolean
-  // Bumped by App after any ticket mutation, so the aggregated counts re-fetch
-  // and stay correct without a manual refresh button.
+  // Bumped by App after any ticket mutation so counts re-fetch.
   refreshKey: number
   onOpen: (id: string) => void
 }
 
-// Renders the aggregated board metrics. Config (project filter, widget
-// visibility, auto-refresh) lives in the topbar's Config popover and arrives as
-// props; this component owns only the data fetch, polling, and rendering.
 export default function Dashboard({ project, visible, autoRefresh, refreshKey, onOpen }: Props) {
-  // Fetch on mount + project change + refreshKey; poll only while auto-refresh is
-  // on. Shared with the Economics view via usePolledSummary.
+  // Poll only while auto-refresh is on (shared with Economics via usePolledSummary).
   const fetcher = useCallback(() => api.dashboard(project || undefined), [project]);
   const { data: summary, error, setError } = usePolledSummary<DashboardSummary>(
     fetcher, refreshKey, autoRefresh ? AUTO_REFRESH_MS : 0,
@@ -68,8 +60,7 @@ export default function Dashboard({ project, visible, autoRefresh, refreshKey, o
     : [];
   const priorityMax = summary ? Math.max(1, ...summary.byPriority.map((p) => p.count)) : 1;
   const allHidden = !visible.status && !visible.priority && !visible.recent;
-  // Loading = the first fetch hasn't resolved yet (no summary, no error). Once
-  // either lands, the placeholder gives way; later refreshes swap data in place.
+  // First fetch pending (no summary, no error); later refreshes swap data in place.
   const isLoading = summary === null && error === null;
 
   return (

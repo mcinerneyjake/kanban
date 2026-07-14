@@ -10,13 +10,8 @@ import {
   LABEL_COST_PER_ACCEPTED, LABEL_NET_SAVINGS, LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
-// Agent economics: a FinOps rollup over the run log (GET /api/economics), read
-// only — never the board. Mirrors Dashboard.tsx's fetch/poll/render shape.
-// Colors track the theme via CSS custom properties (see styles.css --econ-*).
-
 const AUTO_REFRESH_MS = 30_000;
 
-// Chart geometry (viewBox units).
 const CHART_W = 480;
 const CHART_H = 150;
 const CHART_PAD = 18;
@@ -30,8 +25,7 @@ export default function EconomicsDashboard({ refreshKey }: Props) {
 
   const isLoading = summary === null && error === null;
 
-  // Time series: tokens/day — always real, unlike cost which is notional until a
-  // cost model is configured. Cost is surfaced in the headline tiles + tables.
+  // tokens/day is always real; cost is notional until a cost model is configured.
   const series = summary?.timeSeries ?? [];
   const points = linePoints({ values: series.map((p) => p.totalTokens), width: CHART_W, height: CHART_H, pad: CHART_PAD });
 
@@ -61,8 +55,7 @@ export default function EconomicsDashboard({ refreshKey }: Props) {
 
           <section className="econ-chart-card">
             <h3 className="econ-group-title">Tokens per day</h3>
-            {/* runs > 0 here (the empty state is handled above), so buildTimeSeries
-                always yields at least one point — no empty-chart branch needed. */}
+            {/* runs > 0 here, so there's always ≥1 point — no empty-chart branch needed. */}
             <svg className="econ-chart" viewBox={`0 0 ${CHART_W} ${CHART_H}`} role="img" aria-label="Tokens per day">
               <path className="econ-area" d={toAreaPath(points, BASELINE)} />
               <path className="econ-line" d={toLinePath(points)} fill="none" />

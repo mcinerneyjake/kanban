@@ -11,11 +11,6 @@ function stepLabel(step: StepId): string {
 
 const formatTime = (iso: string): string => formatIso(iso, (d) => d.toLocaleTimeString());
 
-// The "package tracking" timeline for a ticket, rendered inside TicketModal.
-// Shows the full canonical pipeline (greyed until each milestone lands), the
-// current phase, an on-demand raw event log, and the manual review gate: the
-// Review node is a clickable checkmark — empty while awaiting, green once
-// reviewed, toggleable both ways while the ticket is in-progress.
 export default function PipelineTracker({ ticketId, status }: { ticketId: string; status: StatusId }) {
   const live = status === 'in-progress' || status === 'qa';
   const [reload, setReload] = useState(0);
@@ -54,9 +49,7 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
 
       <ol className="tracker-steps">
         {view.nodes.map((n) => {
-          // Review-gate interactivity is derived in pipelineView (unit-tested)
-          // and consumed here — pulse when awaiting, ✓ control when showCheck,
-          // actionable (with a live toggle guard) when clickable.
+          // Review-gate interactivity derived in pipelineView (unit-tested).
           const { awaiting, reviewed, showCheck, clickable } = n;
           const isReview = n.key === 'review';
           const nodeClass = awaiting ? 'is-awaiting-review' : `is-${n.state}`;
@@ -64,9 +57,7 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
             ? (reviewed ? 'Reviewed'
               : awaiting ? 'Confirm your review'
               : n.state === 'skipped' ? 'Review skipped' : 'Awaiting the gate')
-            // State-aware: a status-derived node (e.g. Started) is `reached` with
-            // no event timestamp — it's Done, not Pending. Only truly-pending
-            // nodes read "Pending".
+            // A status-derived node (e.g. Started) is `reached` with no timestamp — Done, not Pending.
             : n.state === 'skipped' ? 'Skipped'
               : n.state === 'failed' ? 'Failed'
               : n.at ? formatTime(n.at)

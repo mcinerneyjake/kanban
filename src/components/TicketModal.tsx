@@ -28,8 +28,7 @@ type Props = {
   onOpenRun: (runId: string) => void
   onClose: () => void
   initial?: Prefill
-  // The runId of an agent draft carried in from the update-suggestion reopen path;
-  // non-null makes Save apply through the intake-apply endpoint.
+  // Non-null → Save applies through the intake-apply endpoint (update-suggestion reopen path).
   initialRunId?: string
 }
 
@@ -51,39 +50,24 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
   return ids;
 }
 
-// Create (ticket=null) and edit (ticket=object) share one form. The body is
-// Markdown with a live preview toggle.
 export default function TicketModal({ ticket, initial, initialRunId, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
-  // `form` overlays the agent prefill (`initial`) on the ticket; `baseline` is the
-  // ticket's open-time state WITHOUT the prefill. On save we PATCH only the fields
-  // that changed vs. baseline, so an unchanged field can't clobber a concurrent
-  // external edit (e.g. the agent moving status while the modal is open). Building
-  // baseline WITH the prefill (as it once did) made form == baseline, so an
-  // agent-proposed edit diffed to {} and was silently dropped (tkt-128ee05af9ba).
-  // Both captured once (useState initializer) — never re-baselined mid-edit.
+  // Save PATCHes only fields changed vs baseline (open-time state, WITHOUT the prefill) so an unchanged field can't clobber a concurrent external edit; baselining WITH the prefill made agent edits diff to {} and vanish (tkt-128ee05af9ba). Both captured once — never re-baselined.
   const [form, setForm] = useState<FormState>(() => buildTicketForm(ticket, allTickets, initial));
   const [baseline] = useState<FormState>(() => buildTicketForm(ticket, allTickets));
   const [preview, setPreview] = useState(false);
-  // Create mode only: live "related tickets" dedup as the title is typed.
+  // Create mode only: live dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
   const relatedState = relatedStripState(related.matches.length > 0, related.loading, related.error);
 
-  // Create mode: the AI "draft from a note" step is the primary create path. We
-  // probe the chat model on open; when it isn't running we fall back to the
-  // manual form. A successful draft fills the form for review.
+  // Create mode: probe the model on open; fall back to the manual form when it's down.
   const [note, setNote] = useState('');
   const [draftPhase, setDraftPhase] = useState<'idle' | 'loading' | 'error'>('idle');
   const [drafted, setDrafted] = useState(false);
   const [noProposal, setNoProposal] = useState(false);
   const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill; runId: string } | null>(null);
-  // The agent proposed updating a ticket that isn't on the loaded board (deleted,
-  // filtered out, or a wrong/blank id) — hold the id (may be null) + the drafted
-  // prefill so we can surface it (never silently duplicate) yet still let the user
-  // draft it as a new ticket without losing the agent's content.
+  // Agent targeted a ticket not on the board — hold id (may be null) + prefill to surface it (never silently duplicate).
   const [updateNotFound, setUpdateNotFound] = useState<{ targetId: string | null; prefill: Prefill; runId: string } | null>(null);
-  // The runId of the current agent draft, carried into Save so it applies through the
-  // provenance/metering endpoint. Seeded from initialRunId (the update-suggestion
-  // reopen path); set by draft() for a create / "draft as new".
+  // Carried into Save so the draft applies through the provenance/metering endpoint.
   const [draftRunId, setDraftRunId] = useState<string | null>(initialRunId ?? null);
   const [saving, setSaving] = useState(false); // in-flight Save guard — blocks a double-submit
   const [modelStatus, setModelStatus] = useState<'checking' | 'up' | 'down'>(ticket === null ? 'checking' : 'up');
@@ -112,8 +96,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
       if (plan.mode === 'update') {
         setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill, runId: result.runId });
       } else if (plan.mode === 'not-found') {
-        // The agent targeted a ticket we don't have — surface it; do NOT silently
-        // draft a duplicate of the ticket it meant to update (tkt-1dfa61b8830e).
+        // Surface it; do NOT silently draft a duplicate (tkt-1dfa61b8830e).
         setUpdateNotFound({ targetId: plan.targetId, prefill: plan.prefill, runId: result.runId });
       } else {
         setForm((f) => ({ ...f, ...plan.prefill }));
@@ -134,9 +117,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
     setForm((f) => ({
       ...f,
       project,
-      // When a specific project is chosen, clear selections that don't belong to it;
-      // when clearing back to None, leave them intact. Blockers preserve hidden
-      // archived/dangling edges through the change (see blockersForProject).
+      // Clear selections not in the chosen project; blockers preserve hidden archived/dangling edges (see blockersForProject).
       blockers: blockersForProject(f.blockers, allTickets, project),
       parent: project === null
         ? f.parent
@@ -157,12 +138,10 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
   const removeBlocker = (id: string) =>
     setForm((f) => ({ ...f, blockers: f.blockers.filter((b) => b !== id) }));
 
-  // children: direct children only, used for the sub-tickets display section
-  // descendantIds: full subtree — excludes all descendants from parent options to prevent cycles
+  // descendantIds = full subtree, excluded from parent options to prevent cycles.
   const children = ticket ? allTickets.filter((t) => t.parent === ticket.id) : [];
   const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>();
-  // Non-null only for an agent-authored existing ticket — gates the provenance
-  // note + its deep-link into the run's economics detail.
+  // Non-null only for an agent-authored existing ticket — gates the provenance note.
   const provenance = ticket ? ticketProvenance(ticket) : null;
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project;
   const parentOptions = allTickets.filter(
@@ -178,16 +157,12 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
   const availableBlockers = allTickets.filter(
     (t) => t.id !== ticket?.id && !form.blockers.includes(t.id) && t.status !== 'done' && BOARD_STATUS_SET.has(t.status) && sameProject(t),
   );
-  // Display only the ACTIVE blockers as removable chips. Archived/dangling ids stay in
-  // form.blockers — hidden here, preserved on save — so an edit can't silently drop those
-  // edges (tkt-c8b4b6aa948d). Same isHiddenBlockerEdge rule as blockersForProject, so the
-  // display filter and the preservation logic can't drift apart.
+  // Show only ACTIVE blockers as chips; archived/dangling ids stay in form.blockers (hidden, preserved on save) so an edit can't drop them (tkt-c8b4b6aa948d). Same isHiddenBlockerEdge rule as blockersForProject.
   const blockerTickets = form.blockers
     .filter((id) => !isHiddenBlockerEdge(id, allTickets))
     .map((id) => allTickets.find((t) => t.id === id))
     .filter((t): t is Ticket => t !== undefined);
-  // Reverse edge: tickets that list this one as a blocker — i.e. what it blocks.
-  // Derived (never stored) and read-only; only meaningful for a saved ticket.
+  // Reverse edge (what this blocks): derived, read-only, only for a saved ticket.
   const blockedTickets = ticket ? ticketsBlockedBy(ticket.id, allTickets) : [];
 
   const submit = async (e: React.FormEvent) => {
@@ -195,17 +170,14 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
     if (!form.title.trim() || saving) return; // guard re-entry — a double-submit would write twice
     setSaving(true);
     try {
-      // Existing ticket: PATCH only what changed vs the open-time baseline (so a
-      // stale unchanged field can't overwrite a concurrent external edit). New
-      // ticket: send the whole form (create needs every field).
+      // Existing: PATCH only what changed vs baseline; new: send the whole form.
       await onSave(ticket ? changedFormFields(form, baseline) : form, draftRunId ?? undefined);
     } finally {
       setSaving(false); // no-op if onSave closed the modal (success); re-enables on a handled error
     }
   };
 
-  // Create flow has three faces: probing the model, the draft-from-note step
-  // (model up), and the editable form (model down, or after a successful draft).
+  // Create flow's three faces: probing, draft-from-note, editable form.
   const showChecking = ticket === null && modelStatus === 'checking' && !drafted;
   const showDraftPanel = ticket === null && modelStatus === 'up' && !drafted;
   const showForm = ticket !== null || modelStatus === 'down' || drafted;
@@ -297,15 +269,13 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
             autoFocus
           />
 
-          {/* Live workflow tracker — only for an existing ticket (needs an id).
-              Renders null itself for un-started tickets. */}
+          {/* Live tracker — existing ticket only; renders null for un-started. */}
           {ticket && <PipelineTracker ticketId={ticket.id} status={ticket.status} />}
 
           {/* Provenance: agent-authored tickets link to their run's economics. */}
           {provenance && <ProvenanceNote source={provenance.source} runId={provenance.runId} onOpenRun={onOpenRun} />}
 
-          {/* Dedup: semantic matches as you type a new ticket. Click one to
-              edit it instead of creating a duplicate. */}
+          {/* Dedup: semantic matches as you type; click one to edit instead of duplicating. */}
           {relatedState !== 'hidden' && (
             <div className="subtasks-section">
               {relatedState === 'list' ? (
@@ -406,7 +376,6 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
             </label>
           </div>
 
-          {/* Sub-tickets — only shown when editing an existing ticket that has children */}
           {ticket && children.length > 0 && (
             <div className="subtasks-section">
               <div className="subtasks-head">

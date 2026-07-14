@@ -9,13 +9,7 @@ export interface RelatedTickets { matches: IntakeMatch[]; loading: boolean; erro
 
 type SearchState = { query: string; phase: 'loading' | 'done' | 'error'; matches: IntakeMatch[] };
 
-// Debounced semantic "related tickets" lookup for the create modal. The whole
-// search outcome (matches / loading / error) is kept in one query-tagged state
-// and reported for the CURRENT query only — so a stale response, a half-typed
-// new query, or a cleared title never shows the wrong state (no reset needed).
-// A `cancelled` flag drops a stale response; failures surface as `error` (a
-// hint, never a blocker). State is only set in async callbacks, never
-// synchronously in the effect body (react-hooks/set-state-in-effect).
+// Debounced semantic lookup. The whole outcome is one query-tagged state, reported for the CURRENT query only, so a stale/half-typed/cleared query never shows the wrong state. cancelled drops a stale response; state is set only in async callbacks (react-hooks/set-state-in-effect).
 export function useRelatedTickets(title: string, enabled: boolean): RelatedTickets {
   const [search, setSearch] = useState<SearchState>({ query: '', phase: 'done', matches: [] });
   const query = enabled ? intakeQuery(title) : null;

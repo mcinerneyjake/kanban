@@ -10,13 +10,7 @@ export interface TicketEventsState {
   error: boolean
 }
 
-// Fetches a ticket's workflow-milestone events, polling every 2s while `live`.
-// `live` should be true only for a non-terminal ticket whose tracker is on
-// screen (in-progress/qa); a terminal ticket fetches once. Bumping `reloadKey`
-// forces an immediate refetch (e.g. right after marking review). Polls are
-// chained via .finally() so requests never overlap, and a `cancelled` flag drops
-// any in-flight response after unmount — state is only set in async callbacks
-// (react-hooks/set-state-in-effect), matching useRelatedTickets.
+// Polls a ticket's events every 2s while live (true only for a non-terminal on-screen ticket; a terminal one fetches once). reloadKey forces an immediate refetch. Polls chain via .finally() so requests never overlap; cancelled drops an in-flight response after unmount (state set only in async callbacks).
 export function useTicketEvents(id: string, live: boolean, reloadKey = 0): TicketEventsState {
   const [state, setState] = useState<TicketEventsState>({ data: null, loading: true, error: false });
 

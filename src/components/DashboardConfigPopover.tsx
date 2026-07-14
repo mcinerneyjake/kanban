@@ -7,18 +7,13 @@ type Props = {
   dash: DashboardConfig
 }
 
-// Dashboard config as a single topbar popover — mirrors FilterPopover so the
-// dashboard's controls read like the board's Filters button. Holds the project
-// filter, per-widget visibility, and auto-refresh. Reuses the fp-* / filter-*
-// classes for visual consistency.
 export default function DashboardConfigPopover({ projects, dash }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useDismiss(ref, () => setOpen(false), { enabled: open });
 
-  // Badge counts everything diverging from the defaults: a project filter, any
-  // hidden widget, and auto-refresh being on.
+  // Badge counts everything diverging from defaults (project filter, hidden widgets, auto-refresh).
   const hiddenWidgets = WIDGETS.filter((w) => !dash.visible[w.key]).length;
   const activeCount = (dash.project ? 1 : 0) + hiddenWidgets + (dash.autoRefresh ? 1 : 0);
 

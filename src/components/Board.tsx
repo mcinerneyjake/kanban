@@ -8,9 +8,8 @@ import { doneParentsWithChildren, reconcileDoneCollapse } from '../lib/collapseD
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
 type Props = {
-  tickets: Ticket[]       // filtered/visible list — what the columns render
-  allTickets: Ticket[]    // full list — used for drag-drop order math so hidden
-                          // cards can't be collided with (see handleDrop)
+  tickets: Ticket[]
+  allTickets: Ticket[]    // full list for drag-drop math — hidden cards excluded from collisions (see handleDrop)
   sort: SortBy
   childCounts: Record<string, number>
   activeBlockerCounts: Record<string, number>
@@ -22,15 +21,10 @@ type Props = {
 
 export default function Board({ tickets, allTickets, sort, childCounts, activeBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
-  // The subset of `collapsed` we collapsed automatically because the parent is
-  // done — kept in a ref so a user expanding a done parent isn't undone, and so
-  // a parent leaving `done` can have its auto-collapse reverted. See reconcileDoneCollapse.
+  // Subset of `collapsed` we auto-collapsed for done parents — so a manual expand isn't undone and leaving `done` reverts it (see reconcileDoneCollapse).
   const autoCollapsedRef = useRef(new Set<string>());
 
-  // Collapse a done parent's children by default. Runs whenever the board (or a
-  // child count) changes; `collapsed` is a dependency so the reconcile sees the
-  // user's latest manual toggles and leaves them intact (the reconcile is a pure,
-  // idempotent function of these inputs, so this settles in one extra render).
+  // Auto-collapse done parents' children; `collapsed` is a dep so manual toggles survive (reconcile is idempotent, settles in one extra render).
   useEffect(() => {
     const doneParents = doneParentsWithChildren(tickets, childCounts);
     const result = reconcileDoneCollapse(
@@ -48,18 +42,15 @@ export default function Board({ tickets, allTickets, sort, childCounts, activeBl
       else next.add(id);
       return next;
     }), []);
-  // Order-based column. `source` is the FULL list for drag-drop math (so
-  // midpoints/appends account for cards hidden by the active filter) and the
-  // filtered list for display.
+  // source = FULL list for drag math (accounts for filtered-out cards), filtered list for display.
   const columnFrom = (source: Ticket[], status: Ticket['status']) =>
     source
       .filter((t) => t.status === status)
       .sort((a, b) => a.order - b.order);
 
-  // Applied only for display; drag math always uses inColumn.
-  // Children are grouped directly under their parent when both share the same column.
+  // Display only (drag math uses the full column); children grouped under same-column parents.
   const displayColumn = (status: Ticket['status']): { ordered: Ticket[]; depths: Record<string, number> } => {
-    const base = columnFrom(tickets, status); // filtered — display only
+    const base = columnFrom(tickets, status);
     const sorted = (() => {
       switch (sort) {
         case 'priority': return [...base].sort((a, b) => PRIO_RANK[a.priority] - PRIO_RANK[b.priority]);
@@ -71,7 +62,7 @@ export default function Board({ tickets, allTickets, sort, childCounts, activeBl
 
     const columnIds = new Set(base.map((t) => t.id));
 
-    // Build parent→children map in one pass (children inherit sorted order).
+    // parent→children map (children inherit sorted order).
     const childrenOf = new Map<string, Ticket[]>();
     for (const t of sorted) {
       if (t.parent && columnIds.has(t.parent)) {
@@ -85,7 +76,7 @@ export default function Board({ tickets, allTickets, sort, childCounts, activeBl
     const depths: Record<string, number> = {};
     const ordered: Ticket[] = [];
 
-    // DFS walk so each subtree is contiguous in the output (parent → children → grandchildren).
+    // DFS walk keeps each subtree contiguous in the output.
     const walk = (t: Ticket, depth: number) => {
       depths[t.id] = depth;
       ordered.push(t);
@@ -98,14 +89,10 @@ export default function Board({ tickets, allTickets, sort, childCounts, activeBl
     return { ordered, depths };
   };
 
-  // beforeId === null  -> append to end of column
-  // beforeId === <id>  -> insert immediately above that card
+  // beforeId === null -> append to end; beforeId === <id> -> insert immediately above that card.
   const handleDrop = (id: string, status: Ticket['status'], beforeId: string | null) => {
-    if (beforeId === id) return; // dropped onto itself: no-op
-    // Compute against the FULL column (allTickets), not the visible one: a drop
-    // between two visible cards must take the midpoint with the *actual* neighbor
-    // in the full ordering (which may be a filtered-out card), and an append must
-    // land after every card in the column, not just the last visible one.
+    if (beforeId === id) return;
+    // Use the FULL column so midpoints/appends account for filtered-out neighbors.
     const column = columnFrom(allTickets, status).filter((t) => t.id !== id);
     onMove(id, status, computeDropOrder(column, beforeId));
   };

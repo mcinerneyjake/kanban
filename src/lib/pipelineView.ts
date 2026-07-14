@@ -1,15 +1,6 @@
-// Pure view-model for the ticket tracking UI. Turns the server's reduced
-// `pipeline` (latest state per canonical step) plus the ticket status into
-// everything the stepper and card indicator render. Kept out of the components
-// so the non-trivial bits — the display grouping, the status-derived nodes, the
-// derived "Implementing…" gap, the stalled-on-failure behaviour — are testable.
-
 import { STEPS, type PipelineStep, type StepId, type StatusId } from '../../shared/constants.js';
 
-// Display grouping: how catalog steps collapse into stepper nodes. Keeps the
-// event stream granular (the timeline still shows typecheck/lint/test
-// separately) while the stepper stays uncluttered — the three gate checks
-// render as one "Gate" node. `review` is the manual "Ready to commit?" gate.
+// Display grouping: the three gate checks collapse into one "Gate" node (the timeline still shows them separately). review = the manual "Ready to commit?" gate.
 interface DisplayGroup { key: string; label: string; steps: StepId[] }
 const DISPLAY: readonly DisplayGroup[] = [
   { key: 'started', label: 'Started', steps: ['started'] },
@@ -22,13 +13,7 @@ const DISPLAY: readonly DisplayGroup[] = [
   { key: 'done', label: 'Done', steps: ['done'] },
 ];
 
-// A node's display state. Extends the pipeline states with `active` (the node
-// the agent — or the awaited human, e.g. review — is working toward, only while
-// in-progress) and `skipped` (a node that never registered but sits BEFORE the
-// furthest-reached milestone, so the pipeline passed it: a docs-only gate, a
-// husky-run gate the hook couldn't see, an un-clicked review). Rendering it as
-// `skipped` rather than `pending` keeps the pipeline monotonic — no grey "still
-// upcoming" node before a green one.
+// Adds 'active' (the node being worked toward, only while in-progress) and 'skipped' (a node before the furthest-reached milestone that never registered — rendered skipped, not pending, to keep the pipeline monotonic).
 export type NodeState = 'pending' | 'reached' | 'passed' | 'failed' | 'active' | 'skipped'
 
 export interface TrackerNode {
@@ -36,14 +21,11 @@ export interface TrackerNode {
   label: string
   state: NodeState
   at: string | null
-  // Review-gate interactivity, derived here (not in PipelineTracker) so the
-  // frontier-vs-status branching that once hid the pulse bug is unit-tested.
-  // All false on non-review nodes.
+  // Review-gate interactivity derived here (unit-tested); all false on non-review nodes.
   awaiting: boolean   // Review is the active frontier — pulses, invites a click
   reviewed: boolean   // Review is complete (reached/passed)
   showCheck: boolean  // render the ✓ control at all (awaiting || reviewed)
-  clickable: boolean  // the ✓ is actionable (awaiting && ticket in-progress);
-                      // a completed review locks — never re-clickable
+  clickable: boolean  // ✓ actionable (awaiting && in-progress); a completed review locks
 }
 
 export interface TrackerView {
@@ -56,9 +38,7 @@ export interface TrackerView {
 
 const isComplete = (s: NodeState): boolean => s === 'reached' || s === 'passed';
 
-// Status milestones the ticket's status alone proves complete — even if the
-// event never landed (e.g. an MCP server predating the emitter). in-progress ⇒
-// started; qa ⇒ started+qa; done/archived ⇒ all three.
+// Milestones the status alone proves complete even without an event: in-progress⇒started; qa⇒started+qa; done/archived⇒all three.
 function statusImplied(status: StatusId): StepId[] {
   switch (status) {
     case 'in-progress': return ['started'];
@@ -74,8 +54,7 @@ function stepLabel(step: StepId): string {
 }
 
 export function pipelineView(pipeline: PipelineStep[], status: StatusId): TrackerView {
-  // Effective per-step state: the reduced event state, upgraded to complete for
-  // any status-implied milestone that hasn't got its own event yet.
+  // Reduced event state, upgraded to complete for status-implied milestones without their own event.
   const stepState = new Map<StepId, PipelineStep['state']>();
   const stepAt = new Map<StepId, string | null>();
   for (const p of pipeline) { stepState.set(p.step, p.state); stepAt.set(p.step, p.at); }
@@ -87,7 +66,6 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   const failed = failedStep !== undefined;
   const live = status === 'in-progress' && !failed;
 
-  // Aggregate each display group from its member steps.
   const groups = DISPLAY.map((g) => {
     const states = g.steps.map((st) => stepState.get(st) ?? 'pending');
     const groupFailed = states.some((s) => s === 'failed');
@@ -103,8 +81,7 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
     return { key: g.key, label: g.label, state, at, started };
   });
 
-  // Frontier = the next incomplete group past the furthest complete one, so a
-  // never-emitted early step (a stale `started`) never traps the pulse behind it.
+  // Frontier = next incomplete group past the furthest complete one, so a stale never-emitted early step doesn't trap the pulse behind it.
   let lastDoneIdx = -1;
   groups.forEach((g, i) => { if (isComplete(g.state)) lastDoneIdx = i; });
   const activeIdx = live && lastDoneIdx + 1 < groups.length ? lastDoneIdx + 1 : -1;
@@ -112,13 +89,9 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   const nodes: TrackerNode[] = groups.map((g, i) => {
     let state: NodeState = g.state;
     if (i === activeIdx) state = 'active';
-    // A still-pending node before the furthest-reached one was passed over —
-    // show it as skipped, not pending, so the pipeline reads monotonically.
+    // A pending node before the furthest-reached one was passed over — show skipped, not pending (monotonic).
     else if (g.state === 'pending' && i < lastDoneIdx) state = 'skipped';
-    // Review gate interactivity. `awaiting` is true ONLY when Review is the
-    // active frontier (state==='active'), which the frontier logic sets only
-    // while in-progress — not merely because the ticket is in-progress. Once
-    // Review completes it locks (reviewed, not clickable).
+    // awaiting is true ONLY when Review is the active frontier — not merely because the ticket is in-progress; once complete it locks.
     const isReview = g.key === 'review';
     const reviewed = isReview && isComplete(state);
     const awaiting = isReview && state === 'active';
@@ -127,11 +100,7 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
     return { key: g.key, label: g.label, state, at: g.at, awaiting, reviewed, showCheck, clickable };
   });
 
-  // Progress = how far the pipeline has ADVANCED — the furthest node the green
-  // connector reaches: the active frontier while in-progress, else the last
-  // completed one. This makes the compact card bar match the stepper's green
-  // line in the detail view (skipped middle nodes sit on that line, so the reach
-  // runs through them). It is a position, not a completed-count.
+  // Progress = furthest node the green connector reaches (active frontier while in-progress, else last completed) — a position, not a completed-count, so skipped middle nodes sit on the line.
   const reachedIdx = activeIdx >= 0 ? activeIdx : lastDoneIdx;
   const done = reachedIdx + 1;
   const started =
@@ -141,9 +110,7 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   return { nodes, current: currentLabel(groups, status, lastDoneIdx, activeIdx, failedStep), failed, started, progress: { done, total: nodes.length } };
 }
 
-// The current-phase label. Special case: when the last completed group is
-// `branch` and the gate hasn't started, the agent is between milestones writing
-// code — the "Implementing…" gap that has no event of its own.
+// Current-phase label. Special case: between branch and a not-started gate, the agent is writing code — the "Implementing…" gap with no event of its own.
 function currentLabel(
   groups: { key: string; label: string; started: boolean }[],
   status: StatusId,
@@ -154,8 +121,7 @@ function currentLabel(
   if (status !== 'in-progress') return null;
   if (failedStep) return `${stepLabel(failedStep.id)} failed`;
   if (activeIdx === -1) return null;
-  // status === in-progress guarantees a status-derived `started`, so there is
-  // always a completed group before the frontier — prev is defined here.
+  // in-progress guarantees a status-derived started, so a completed group precedes the frontier — prev is defined.
   const prev = lastDoneIdx >= 0 ? groups[lastDoneIdx] : undefined;
   const active = groups[activeIdx];
   if (prev?.key === 'branch' && active.key === 'gate' && !active.started) return 'Implementing…';

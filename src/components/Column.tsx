@@ -19,8 +19,7 @@ type Props = {
   onArchiveAll?: () => void
 }
 
-// A drop target. Dropping on the column's empty space appends; dropping on a
-// card (handled in Card) inserts above that card.
+// Drop on empty space appends; drop on a card (in Card) inserts above it.
 export default function Column({ column, tickets, depths, childCounts, activeBlockerCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse, onArchiveAll }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
