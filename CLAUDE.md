@@ -70,6 +70,18 @@ Vitest patterns to follow:
 
 **Skip tests only when the change is pure UI** (React components, CSS, no logic). All other changes — service functions, API routes, utility modules — require at least a happy-path test. State the skip reason explicitly in the implementation summary.
 
+### Integration seams (end-to-end round-trip test) — MANDATORY for cross-module data flows
+
+The per-file table above catches per-**layer** regressions but **misses seam bugs** — defects in the *handoff* between modules, where a value is silently dropped, mangled, or misrouted as it crosses a boundary. These hide from isolated unit tests (every layer passes green) **and** from diff-scoped review (no single diff owns the whole path).
+
+**Rule:** when a change threads data across **≥2 modules** — e.g. `model proposal → proposalToPrefill → form → changedFormFields → createTicket/updateTicket → provenance` — add (or extend) **one end-to-end round-trip test** that drives the *real* chain with stubbed I/O (a fake chat client, `TICKETS_DIR_OVERRIDE`/`RUNS_DIR_OVERRIDE`) and asserts **source input == persisted output** across the full path. Include a **fidelity invariant**: for a valid input `P`, `apply(P)` yields a result whose fields equal `P` (modulo server-forced defaults) — asserting "no field silently dropped/mangled at the boundary" as a *class*, not case-by-case. Write the round-trip test **first** and TDD the feature/fix against it.
+
+Two reinforcements that make the seam load-bearing (prefer these over piling on more test cases):
+- **Types:** make a cross-layer mapping/DTO the *full* field set (or force an explicit, commented exclusion) so adding a field upstream fails to **compile** until the mapping handles it; derive shared validation sets (e.g. create-valid statuses) from **one** constant used on both sides.
+- **Review:** for integration-heavy PRs, run a **flow-scoped** review angle — "trace this value from source to sink; list every transformation or drop" — not only the default diff-scoped pass.
+
+> **Why this rule exists:** the in-app intake feature shipped ~8 real bugs (silent no-op saves, update→duplicate-create misrouting, dropped agent-proposed fields, stripped provenance, untracked spend) that all lived in the propose→apply seam and survived a green unit suite + per-ticket reviews. They were built as separate tickets and reviewed diff-by-diff, so nothing exercised the whole path. See the agentic-rag-demo round-trip harness ticket (`tkt-345255727ffe`).
+
 When asked to create a ticket, use `create_ticket`. When asked what's on the board or what's left to do, call `list_tickets`.
 
 ### Ticket creation flow

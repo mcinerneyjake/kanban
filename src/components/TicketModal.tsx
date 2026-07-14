@@ -8,7 +8,8 @@ import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
 import { agentRunId } from '../lib/provenance.js';
-import { proposalToPrefill, proposalTargetId, type Prefill } from '../lib/proposalPrefill.js';
+import { type Prefill } from '../lib/proposalPrefill.js';
+import { resolveProposalPlan } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
 import Spinner from './ui/Spinner.js';
@@ -109,13 +110,11 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
       const result = await api.intake.propose(note.trim());
       const proposal = result.proposal;
       if (!proposal) { setNoProposal(true); setDraftPhase('idle'); return; }
-      const prefill = proposalToPrefill(proposal.args);
-      const targetId = proposalTargetId(proposal);
-      const target = targetId ? allTickets.find((t) => t.id === targetId) : undefined;
-      if (target) {
-        setUpdateSuggestion({ ticket: target, prefill });
+      const plan = resolveProposalPlan(proposal, allTickets);
+      if (plan.mode === 'update') {
+        setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill });
       } else {
-        setForm((f) => ({ ...f, ...prefill }));
+        setForm((f) => ({ ...f, ...plan.prefill }));
         setDrafted(true);
       }
       setDraftPhase('idle');
