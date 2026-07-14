@@ -306,7 +306,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                         <button key={m.id} type="button" className="subtask-item" onClick={() => onOpen(full)}>
                           <span className={`subtask-dot prio-${full.priority}`} />
                           <span className="subtask-title">{m.title}</span>
-                          <span className="subtask-status">{Math.round(m.score * 100)}% · {m.status}</span>
+                          <span className="subtask-status">{Math.round(m.score * 100)}%{m.status ? ` · ${m.status}` : ''}</span>
                         </button>
                       ) : null;
                     })}

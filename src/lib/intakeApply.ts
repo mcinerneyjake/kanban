@@ -1,6 +1,6 @@
 import { proposalToPrefill, proposalTargetId, type Prefill } from './proposalPrefill.js';
 import type { TicketFormFields } from './ticketDiff.js';
-import type { Ticket } from '../../shared/constants.js';
+import { CREATE_STATUS_IDS, type Ticket } from '../../shared/constants.js';
 
 // The shape the intake agent returns as its captured proposal — a create/update
 // tool call (agent/runtime/propose.ts's IntakeProposal). Declared structurally
@@ -18,6 +18,18 @@ export type IntakePlan =
   | { mode: 'update'; target: Ticket; prefill: Prefill }
   | { mode: 'not-found'; targetId: string | null; prefill: Prefill };
 
+// A prefill destined for the CREATE form: drop a status the create path rejects — only
+// `qa` among the board statuses (CREATE_STATUS_IDS is the board columns minus qa; the
+// off-board `archived` can't be proposed as a create status either) — so createTicket
+// defaults it instead of 400ing (tkt-727c5cacdfad). Update targets keep the full status
+// — updateTicket accepts every status.
+function createSafePrefill(prefill: Prefill): Prefill {
+  if (prefill.status === undefined || CREATE_STATUS_IDS.includes(prefill.status)) return prefill;
+  const clamped: Prefill = { ...prefill };
+  delete clamped.status;
+  return clamped;
+}
+
 // Decide create-vs-update for a captured intake proposal and project its args to
 // the safe form prefill. Extracted from TicketModal.draft() so the decision is
 // unit-testable against the SAME code the modal runs — not a reimplementation.
@@ -25,15 +37,16 @@ export type IntakePlan =
 // Routed on the ACTION, not just the id: an `update_ticket` proposal MUST resolve
 // to a real, loaded ticket. A missing / blank / unloaded id is 'not-found' — never
 // a create, which would silently draft a DUPLICATE of the ticket the agent meant to
-// update (tkt-1dfa61b8830e). The prefill rides along so the caller can offer to
-// draft it as a new ticket without losing the agent's content.
+// update (tkt-1dfa61b8830e). The prefill rides along so the caller can offer to draft
+// it as a new ticket without losing the agent's content; a create-bound prefill is
+// status-clamped (createSafePrefill) so that draft can't 400.
 export function resolveProposalPlan(proposal: CapturedProposal, allTickets: Ticket[]): IntakePlan {
   const prefill = proposalToPrefill(proposal.args);
-  if (proposal.action !== 'update_ticket') return { mode: 'create', prefill };
+  if (proposal.action !== 'update_ticket') return { mode: 'create', prefill: createSafePrefill(prefill) };
   const targetId = proposalTargetId(proposal) || null; // '' (blank id) collapses to null
   const target = targetId !== null ? allTickets.find((t) => t.id === targetId) : undefined;
   if (target) return { mode: 'update', target, prefill };
-  return { mode: 'not-found', targetId, prefill };
+  return { mode: 'not-found', targetId, prefill: createSafePrefill(prefill) };
 }
 
 // The parent link to seed the form with: the ticket's parent, but only if it's
@@ -46,8 +59,10 @@ function activeParentId(ticket: Ticket | null, allTickets: Ticket[]): string | n
 }
 
 // Build the modal's form fields for an existing ticket (edit) or a blank draft
-// (create). An optional `prefill` overlays the agent's proposed values onto the
-// prefill-able fields (title/type/priority/status/body).
+// (create). An optional `prefill` overlays the agent's proposed CONTENT fields
+// (title/type/priority/status/body/dueDate/assignee). The structural fields
+// (project/blockers/parent) stay ticket-derived — the prefill can't carry them
+// (proposalPrefill), so their guards can't be bypassed.
 //
 // Pass `prefill` for the editable `form` the user sees; OMIT it for the `baseline`
 // the save diffs against. The baseline MUST be the ticket's open-time state — with
@@ -60,15 +75,16 @@ export function buildTicketForm(ticket: Ticket | null, allTickets: Ticket[], pre
     priority: prefill?.priority ?? ticket?.priority ?? 'medium',
     status: prefill?.status ?? ticket?.status ?? 'backlog',
     body: prefill?.body ?? ticket?.body ?? '',
+    // dueDate/assignee overlay the agent's proposal (explicit undefined check so a
+    // proposed null clears the field). project/blockers/parent are STRUCTURAL — the
+    // prefill can't carry them (proposalPrefill), so they stay ticket-derived and their
+    // guards (project-scoping, hidden-edge preservation tkt-c8b4b6aa948d, archived-parent
+    // strip) can't be bypassed.
+    dueDate: prefill?.dueDate !== undefined ? prefill.dueDate : (ticket?.dueDate ?? null),
+    assignee: prefill?.assignee !== undefined ? prefill.assignee : (ticket?.assignee ?? null),
     project: ticket?.project ?? null,
-    // Keep the FULL stored set (archived/dangling ids included) — the modal filters
-    // archived/dangling for DISPLAY only. Filtering here would silently drop those
-    // edges on any unrelated blocker edit, since the save PATCHes the whole array
-    // wholesale (tkt-c8b4b6aa948d).
     blockers: ticket?.blockers ?? [],
     parent: activeParentId(ticket, allTickets),
-    dueDate: ticket?.dueDate ?? null,
-    assignee: ticket?.assignee ?? null,
   };
 }
 

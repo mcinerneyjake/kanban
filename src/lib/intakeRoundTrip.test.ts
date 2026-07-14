@@ -108,17 +108,17 @@ describe('intake propose→apply round-trip', () => {
     expect(plan.mode).toBe('not-found');
   });
 
-  // EXPECTED FAIL until tkt-727c5cacdfad (Bug G). Flip `it.fails` → `it` when fixed.
-  it.fails('G: a create proposal with status qa yields a prefill createTicket accepts', async () => {
+  // tkt-727c5cacdfad (Bug G, FIXED): a create-bound prefill clamps a non-create status,
+  // so createTicket accepts it (defaults) instead of 400ing.
+  it('G: a create proposal with status qa yields a prefill createTicket accepts', async () => {
     const plan = resolveProposalPlan({ action: 'create_ticket', args: { title: 'X', status: 'qa' } }, []);
-    // Today prefill.status === 'qa' → createTicket rejects with 400 (qa is not create-valid).
     await expect(createTicket({ status: 'backlog', ...plan.prefill })).resolves.toBeTruthy();
   });
 
-  // EXPECTED FAIL until tkt-727c5cacdfad (Bug H). Flip `it.fails` → `it` when fixed.
-  it.fails('H: an agent-proposed assignee survives into the persisted ticket', async () => {
+  // tkt-727c5cacdfad (Bug H, FIXED): proposalToPrefill now carries assignee/dueDate/etc,
+  // so an agent-proposed field survives into the persisted ticket.
+  it('H: an agent-proposed assignee survives into the persisted ticket', async () => {
     const plan = resolveProposalPlan({ action: 'create_ticket', args: { title: 'Bug for Alice', assignee: 'Alice', dueDate: '2026-07-20' } }, []);
-    // proposalToPrefill drops assignee/dueDate today, so the create form never carries them.
     const created = await createTicket({ status: 'backlog', ...plan.prefill });
     const persisted = await getTicket(created.id);
     expect(persisted.assignee).toBe('Alice');

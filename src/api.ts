@@ -30,7 +30,10 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
     body: JSON.stringify(data),
   }).then((res) => json<T>(res));
 
-export interface IntakeMatch { id: string; title: string; status: Ticket['status']; score: number }
+// `status` is optional: the search projection reads it from the document's meta
+// (`r.meta?.status`), which is absent for a non-ticket source — so the wire type
+// stays honest rather than claiming a status that may not ship (tkt-727c5cacdfad).
+export interface IntakeMatch { id: string; title: string; status?: Ticket['status']; score: number }
 export interface IntakeProposal { action: string; args: Record<string, unknown> }
 export interface ProposeResult { proposal: IntakeProposal | null; summary: string }
 
