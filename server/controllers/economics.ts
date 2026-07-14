@@ -4,9 +4,8 @@ import { summarizeRun, summarizeEconomicsFromLog } from '../../agent/cost/econom
 import { parseRunId, parseDateBound } from '../schemas/query.js';
 import { HttpError } from '../tickets.js';
 
-// Read-side economics aggregation over the agent run log (run-scoped, never the
-// board). `?runId=` returns a single run's breakdown (404 if unknown — it's the
-// provenance-badge deep-link target); otherwise a rollup over `?from=`/`?to=`.
+// Economics aggregation over the run log (run-scoped). ?runId= returns one run's
+// breakdown (404 if unknown — the badge deep-link target); else a rollup over ?from=/?to=.
 export async function economics(req: Request, res: Response): Promise<void> {
   const runId = parseRunId(req.query.runId);
   if (runId) {

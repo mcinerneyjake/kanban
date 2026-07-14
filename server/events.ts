@@ -12,30 +12,20 @@ import {
 } from '../shared/constants.js';
 import { HttpError } from './tickets.js';
 
-// ---------------------------------------------------------------------------
-// Workflow-step telemetry. Append-only JSONL, one file per worked ticket, kept
-// OUT of the (already git-ignored) tickets/ dir in its own events/ dir. Writers
-// persist directly to disk (this module's appendEvent for status milestones +
-// the PostToolUse hook for shell milestones); the server only READS — so a
-// ticket worked with no web server running never loses events. See
-// tkt-512f9b15ddb8.
-//
-// NOTE: this module imports HttpError from tickets.ts, which imports appendEvent
-// back from here — a cycle. It's safe because both sides use the imported
-// binding only inside function bodies (never at module-eval time), so ESM has
-// resolved everything before either runs.
-// ---------------------------------------------------------------------------
+// Workflow-step telemetry: append-only JSONL, one file per ticket, in events/
+// (outside tickets/). Writers persist directly (appendEvent + PostToolUse hook);
+// server only READS, so events survive with no web server running (tkt-512f9b15ddb8).
+// Import cycle with tickets.ts (HttpError ↔ appendEvent) is safe: both use the
+// binding only inside function bodies, so ESM resolves before either runs.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Tests redirect telemetry I/O to a temp dir via this env var (mirrors
-// TICKETS_DIR_OVERRIDE) so the real events/ dir is never touched.
+// EVENTS_DIR_OVERRIDE redirects telemetry I/O to a temp dir (tests); real events/ never touched.
 function getEventsDir() {
   return process.env.EVENTS_DIR_OVERRIDE ?? path.join(__dirname, '..', 'events');
 }
 
-// Same path-traversal guard as tickets.ts: a crafted id can never escape the
-// events dir.
+// Path-traversal guard (as tickets.ts): a crafted id can't escape the events dir.
 const ID_RE = /^[a-zA-Z0-9-]+$/;
 
 function eventsPath(ticketId: string): string {
@@ -43,9 +33,8 @@ function eventsPath(ticketId: string): string {
   return path.join(getEventsDir(), `${ticketId}.jsonl`);
 }
 
-// Append one milestone event. `step`/`state` are typed loosely so untyped
-// callers can't smuggle an invalid value past validation; the guards narrow
-// them to the enum types before the record is built.
+// Append one milestone event. step/state typed loosely so untyped callers can't
+// smuggle an invalid value past the guards that narrow them.
 export async function appendEvent(event: {
   ticketId: string
   step: string
@@ -68,8 +57,7 @@ export async function appendEvent(event: {
   await fs.appendFile(file, `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
 }
 
-// A single JSONL line whose keys are present but not yet type-checked. Built via
-// `in`-narrowing so no cast is needed (per the repo's no-`as` convention).
+// A JSONL line with keys present but not type-checked; in-narrowed, no cast.
 type RawEvent = { ticketId: unknown; step: unknown; state: unknown; at: unknown; detail?: unknown }
 
 function asRawEvent(v: unknown): RawEvent | null {
@@ -78,8 +66,7 @@ function asRawEvent(v: unknown): RawEvent | null {
   return v;
 }
 
-// Parse + validate one JSONL line into a TicketEvent, or null if malformed
-// (telemetry robustness: a corrupt line is skipped, never fatal).
+// Parse+validate one JSONL line → TicketEvent, or null (a corrupt line is skipped, never fatal).
 function parseEventLine(line: string): TicketEvent | null {
   let data: unknown;
   try {
@@ -102,8 +89,7 @@ function parseEventLine(line: string): TicketEvent | null {
   };
 }
 
-// All events for a ticket in chronological (file) order. A ticket that has never
-// been worked has no file → empty list (not an error).
+// All events for a ticket in file order. No file (never worked) → empty list, not an error.
 export async function readEvents(ticketId: string): Promise<TicketEvent[]> {
   const file = eventsPath(ticketId);
   let raw: string;
@@ -121,16 +107,13 @@ export async function readEvents(ticketId: string): Promise<TicketEvent[]> {
   return events;
 }
 
-// Marker used to un-set a toggleable milestone (only `review`). Appended rather
-// than deleting the prior line, so the log stays append-only and race-free with
-// the hook's concurrent writes; the reducer maps a cleared-latest back to
-// pending. The timeline keeps the honest "reviewed … then cleared …" history.
+// Marker to un-set the toggleable review milestone. Appended (not deleting the
+// prior line) so the log stays append-only and race-free with the hook's
+// concurrent writes; the reducer maps a cleared-latest back to pending.
 export const REVIEW_CLEARED = 'cleared';
 
-// Reduce the raw event stream to the tracking-view pipeline: every canonical
-// step in order, showing the LATEST event's state (last write wins — so a
-// failed-then-passed retry lands on `passed`), or `pending` if none arrived. A
-// latest event tagged `cleared` (an un-review) reverts that step to pending.
+// Reduce events to the pipeline: each step's LATEST state (last-write-wins), or
+// pending if none. A latest 'cleared' event reverts that step to pending.
 export function reducePipeline(events: TicketEvent[]): PipelineStep[] {
   const latest = new Map<StepId, TicketEvent>();
   for (const e of events) latest.set(e.step, e);
@@ -146,8 +129,7 @@ export function reducePipeline(events: TicketEvent[]): PipelineStep[] {
   });
 }
 
-// Read-side aggregation for the tracking endpoint: raw events + the reduced
-// pipeline. Validates the id (throws 400 on a bad shape).
+// Read-side aggregation: raw events + reduced pipeline. Validates the id (400 on bad shape).
 export async function getTicketEvents(ticketId: string): Promise<TicketEventsResponse> {
   const events = await readEvents(ticketId);
   return { ticketId, pipeline: reducePipeline(events), events };

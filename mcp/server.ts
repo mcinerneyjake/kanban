@@ -3,9 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS, handleToolCall } from './handlers.js';
 
-// Thin entrypoint: advertise the tools and delegate every call to the testable
-// handlers in ./handlers.ts. All logic lives there; this file only wires the
-// handlers to a stdio transport so the MCP runtime can reach them.
+// Thin entrypoint: advertise tools + delegate to the testable handlers in ./handlers.ts. Only wires them to a stdio transport.
 
 const server = new Server(
   { name: 'kanban', version: '0.1.0' },

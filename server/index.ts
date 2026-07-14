@@ -6,9 +6,8 @@ import { startTicketWatcher, stopTicketWatcher } from './ticketWatcher.js';
 import { closeAllStreamClients } from './stream.js';
 import { getTicketIndex } from '../agent/retrieval/indexCache.js';
 
-// Process entrypoint. Assembly moved to app.ts and the archive scheduler to
-// archiveScheduler.ts; these re-exports keep ./index.js a stable import surface
-// for tests and tooling.
+// Process entrypoint. Assembly in app.ts, scheduler in archiveScheduler.ts; these
+// re-exports keep ./index.js a stable import surface for tests and tooling.
 export { app, scheduleWeeklyArchive, stopArchiveScheduler, msUntilNextSundayEvening, stopTicketWatcher };
 
 // Only bind port and start the scheduler when run directly, not when imported in tests.
@@ -17,11 +16,9 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // Load local model config if present; tolerate its absence (defaults apply).
   try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
   scheduleWeeklyArchive();
-  // Watch tickets/ so MCP-process and direct-file writes push a live refresh to
-  // the board. Started here (not on import) so tests never spin up a real watcher.
+  // Watch tickets/ so MCP + direct-file writes push a live refresh. Started here (not on import) so tests never spin up a real watcher.
   startTicketWatcher();
-  // Clean shutdown: stop the timers/watcher and end open SSE responses so a
-  // restart doesn't leak a watcher or hang on live connections.
+  // Clean shutdown: stop timers/watcher and end open SSE responses so a restart doesn't leak or hang.
   const shutdown = () => {
     stopArchiveScheduler();
     closeAllStreamClients();
@@ -32,10 +29,9 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => {
     console.log(`Kanban API → http://localhost:${PORT}`);
-    // Best-effort warm so the first intake search is instant. Free locally; if
-    // the embedder is down it silently falls back to a lazy build on first use.
-    // Before keeping this on a paid (cloud) embedder, see the cloud-migration
-    // notes in agent/indexCache.ts — it re-embeds the whole board on each boot.
+    // Best-effort warm so the first intake search is instant. Free locally; embedder
+    // down → lazy build on first use. On a paid embedder this re-embeds the whole
+    // board each boot (see agent/indexCache.ts).
     getTicketIndex()
       .then((ix) => console.log(`[intake] index warmed (${ix.size} tickets)`))
       .catch((e: unknown) => console.warn(`[intake] index warm skipped: ${e instanceof Error ? e.message : String(e)}`));

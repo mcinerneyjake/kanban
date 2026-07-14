@@ -10,9 +10,7 @@ import {
 import { parseSearchTerm } from '../schemas/query.js';
 import { ticketId } from '../schemas/params.js';
 
-// Thin orchestration only: read off the request, call the service, shape the
-// response. The `:id` narrowing lives in ticketId(); the service owns id
-// *format* validation (ID_RE), so MCP callers hit the same guard.
+// Thin orchestration: read request → service → response. :id narrowing in ticketId(); the service owns id-format validation.
 
 export async function list(req: Request, res: Response): Promise<void> {
   const q = parseSearchTerm(req.query.q);

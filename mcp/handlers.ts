@@ -9,25 +9,16 @@ import {
   type Ticket, type StatusId, type Provenance,
 } from '../shared/constants.js';
 
-// ---------------------------------------------------------------------------
-// MCP tool handlers — the testable core of the kanban MCP server. mcp/server.ts
-// is a thin entrypoint that wires these into a stdio transport; everything with
-// logic lives here so it can be unit-tested without connecting a transport.
-// ---------------------------------------------------------------------------
+// MCP tool handlers — the testable core; mcp/server.ts is the thin transport entrypoint.
 
-// Result shape returned to the MCP runtime. Text-only content keeps callers
-// from needing `as const` on the literal 'text' tag.
 export type ToolResult = {
   content: { type: 'text'; text: string }[]
   isError?: boolean
 }
 
-// Advertised status enums for the create/update tool schemas. Deliberately
-// asymmetric: a ticket is CREATED in a pre-work state and only TRANSITIONS into
-// `qa` via update — `qa` is a review gate you move a ticket into, never one you
-// create a ticket in. Both derive from the single source of truth in
-// shared/constants so the advertised contract, the MCP validator, and the HTTP
-// service (createTicket) can never drift on which statuses are creatable.
+// Create/update status enums. Asymmetric: qa is a gate you transition INTO, never
+// create in. Both derive from shared/constants so contract, MCP validator, and
+// HTTP service can't drift on which statuses are creatable.
 export const UPDATE_STATUS_ENUM = BOARD_STATUSES.map((s) => s.id);
 export const CREATE_STATUS_ENUM = CREATE_STATUS_IDS;
 
@@ -39,11 +30,7 @@ function textContent(text: string): { type: 'text'; text: string } {
   return { type: 'text', text };
 }
 
-// ---------------------------------------------------------------------------
-// Arg converters: map Record<string, unknown> → concrete typed objects. Each
-// reads only the properties it cares about and validates their types via typeof
-// / predicate — no casts at any point.
-// ---------------------------------------------------------------------------
+// Arg converters: Record<string, unknown> → typed objects, validated via typeof/predicate (no casts).
 
 function extractId(args: Record<string, unknown> | undefined): string | null {
   return typeof args?.id === 'string' ? args.id : null;
@@ -53,9 +40,8 @@ function isStringArray(val: unknown): val is string[] {
   return Array.isArray(val) && val.every((item) => typeof item === 'string');
 }
 
-// Validate a status string against the per-call allowed set, returning the
-// narrowed StatusId. Shared by the create/update field extractor and the
-// list_tickets status filter so the two validation paths can't drift.
+// Validate a status against the per-call allowed set → narrowed StatusId. Shared
+// by the field extractor and the list filter so the two paths can't drift.
 function validatedStatus(value: string, allowedStatuses: readonly string[]): StatusId {
   if (!isStatusId(value) || !allowedStatuses.includes(value)) {
     throw new HttpError(400, `Invalid status: ${value} (allowed: ${allowedStatuses.join(', ')})`);
@@ -65,23 +51,18 @@ function validatedStatus(value: string, allowedStatuses: readonly string[]): Sta
 
 type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
-// `allowedStatuses` is the per-operation status set (create vs update) — passed
-// in so the converter enforces the *advertised* schema at runtime, not just in
-// the JSON schema. An invalid enum value is rejected (matching the HTTP route's
-// `validateEnums` 400) rather than silently dropped, so a caller's typo or an
-// impossible state (e.g. status `qa` at create) surfaces as an error instead of
-// a no-op. Enum membership reuses the shared predicates — one source of truth.
+// allowedStatuses is the per-operation set (create vs update), enforcing the
+// advertised schema at runtime. Invalid values are rejected (parity with the HTTP
+// 400), not silently dropped, so an impossible state (qa at create) surfaces.
 export function extractTicketFields(
   args: Record<string, unknown> | undefined,
   allowedStatuses: readonly string[],
 ): TicketFields {
   const out: TicketFields = {};
   if (!args) return out;
-  // A field that is PRESENT but wrong-typed is REJECTED (400), not silently
-  // dropped — parity with the HTTP path's validateWritableTypes (#82). Without
-  // this, `update_ticket {id, title: 42}` would drop title and report a
-  // successful no-op rename. `!== undefined` distinguishes absent (skip) from
-  // present-and-malformed (throw).
+  // Present-but-wrong-typed is REJECTED (400), not silently dropped (parity with
+  // validateWritableTypes, #82) — else update_ticket {title:42} drops title and
+  // reports a no-op success. !== undefined: absent (skip) vs present-malformed (throw).
   if (args.title !== undefined) {
     if (typeof args.title !== 'string') throw new HttpError(400, 'title must be a string');
     out.title = args.title;
@@ -128,14 +109,9 @@ export function extractTicketFields(
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// list_tickets projection + filtering. The list view returns a LIGHTWEIGHT
-// summary of every ticket — never the full markdown body, which can be many KB
-// each (long `## Implementation summary` blocks) and belongs to get_ticket.
-// This keeps the result well under the MCP tool-result token limit and matches
-// the tool's advertised contract. The service layer (listTickets) is left
-// returning full Ticket[] so the agent's retrieval/embedding path is untouched.
-// ---------------------------------------------------------------------------
+// list_tickets returns a LIGHTWEIGHT summary, never the full body (belongs to
+// get_ticket) — keeps results under the MCP token limit. The service still
+// returns full Ticket[] for the agent's retrieval path.
 
 type TicketSummary = Pick<Ticket, 'id' | 'title' | 'status' | 'priority' | 'type' | 'project'> & {
   summary: string
@@ -143,12 +119,9 @@ type TicketSummary = Pick<Ticket, 'id' | 'title' | 'status' | 'priority' | 'type
 
 const SUMMARY_MAX = 100;
 
-// One-glance gist: the first non-empty body line, with only *proper* leading
-// markdown markers stripped — a heading (`#`..`######`) or list/quote marker
-// (`-`/`*`/`>`) that is followed by whitespace. Content like "#1 priority" or
-// "-5C offset" is preserved (no following space → not a marker). Capped at
-// SUMMARY_MAX, counting by code point (Array.from) so the cut never splits a
-// surrogate pair. Loops and returns early — no full-body transform.
+// First non-empty body line, stripping only proper leading markdown markers
+// (marker + space, so "#1 priority" is preserved). Capped at SUMMARY_MAX by code
+// point (Array.from) so the cut never splits a surrogate pair.
 function summarize(body: string): string {
   for (const raw of body.split('\n')) {
     const line = raw.trim().replace(/^(?:#{1,6}\s+|[-*>]\s+)+/, '').trim();
@@ -173,19 +146,15 @@ function toSummary(t: Ticket): TicketSummary {
 
 type ListFilters = { status: StatusId | null; project: string | null; query: string | null }
 
-// Trim a string filter arg; a non-string or blank value → null (no filter),
-// matching the trim convention of the HTTP /api/tickets route.
+// Trim a string filter arg; non-string/blank → null (matches the HTTP route's trim convention).
 function normalizeFilter(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
-// The status filter is validated against ALL valid statuses (STATUS_IDS,
-// including `archived` so archived tickets can be listed) — matching the tool's
-// advertised enum. A present-but-invalid status (wrong type, or outside the
-// enum) is REJECTED rather than coerced to "no filter", so a malformed scope
-// can never silently return the whole board.
+// Status validated against all STATUS_IDS (incl. archived). Present-but-invalid is
+// REJECTED, not coerced to "no filter", so a malformed scope can't silently return the whole board.
 function extractListFilters(args: Record<string, unknown> | undefined): ListFilters {
   let status: StatusId | null = null;
   if (args?.status !== undefined && args.status !== null) {
@@ -304,18 +273,15 @@ export const TOOLS: Tool[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Dispatch: one tool call → one ToolResult. Errors are normalized to an
-// isError result carrying the message (HttpError messages pass through; any
-// other throw is wrapped) so the MCP client always gets structured content.
-// ---------------------------------------------------------------------------
+// Dispatch: one tool call → one ToolResult. Errors normalized to an isError
+// result (HttpError message passes through; anything else wrapped) so the client
+// always gets structured content.
 
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown> | undefined,
-  // Trusted authorship stamp — passed ONLY by the agent write path. The human
-  // MCP server and HTTP routes call without it, so their writes stay unstamped.
-  // Provenance never comes from `args`, so the model can't forge or omit it.
+  // Trusted authorship stamp — passed ONLY by the agent write path (human MCP/HTTP
+  // call without it). Never from `args`, so the model can't forge or omit it.
   provenance?: Provenance,
 ): Promise<ToolResult> {
   try {
@@ -323,9 +289,7 @@ export async function handleToolCall(
       case 'list_tickets': {
         const filters = extractListFilters(args); // throws on a present-but-invalid status
         const summaries = applyListFilters(await listTickets(), filters).map(toSummary);
-        // Compact (no indent): this is a potentially large array, and the extra
-        // whitespace from pretty-printing is pure token cost for an LLM reader.
-        // Single-object results (get_ticket etc.) stay pretty-printed below.
+        // Compact (no indent): a large array's pretty-print whitespace is pure token cost. Single-object results stay pretty below.
         return { content: [textContent(JSON.stringify(summaries))] };
       }
 
@@ -350,10 +314,8 @@ export async function handleToolCall(
       case 'record_review': {
         const id = extractId(args);
         if (!id) throw new HttpError(400, 'Missing required field: id');
-        // Verify the ticket exists first (throws 404) — otherwise a typo'd id
-        // would silently create a ghost events/<id>.jsonl for a nonexistent
-        // ticket. Writes the events file directly via the service layer — no
-        // HTTP, so it works whether or not the web server is running.
+        // Verify existence first (404) — else a typo'd id creates a ghost
+        // events/<id>.jsonl. Writes via the service directly, so it works with no web server running.
         await getTicket(id);
         await appendEvent({ ticketId: id, step: 'review', state: 'reached' });
         return { content: [textContent(JSON.stringify(await getTicketEvents(id), null, 2))] };

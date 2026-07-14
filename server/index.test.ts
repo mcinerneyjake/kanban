@@ -4,9 +4,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js';
-// Namespace import so a single service function can be stubbed to throw a
-// non-HttpError, exercising the wrap() 500 branch (live ESM binding — index.ts
-// reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
@@ -14,9 +11,6 @@ import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
-// The PATCH route drives updateTicket, which emits status-milestone telemetry;
-// the helper redirects both the tickets and events I/O to isolated temp dirs
-// (fixtures below write to dirs.tickets directly).
 const dirs = setupTempTicketDirs('kanban-index-test');
 
 async function seedTicket(id: string, title = 'Test ticket', body = '') {
@@ -53,7 +47,6 @@ describe('GET /api/tickets', () => {
 });
 
 describe('GET /api/dashboard', () => {
-  // Seeds a ticket with an explicit project line in its frontmatter.
   async function seedWithProject(id: string, project: string) {
     const content = [
       '---', `title: '${id}'`, 'type: task', 'priority: medium', 'status: todo',
@@ -253,11 +246,7 @@ describe('DELETE /api/tickets/:id', () => {
 });
 
 describe('wrap error handler', () => {
-  // HttpError status mapping (400 for path-traversal) is already asserted
-  // per-route (see "returns 400 for an invalid id (path traversal)"); only the
-  // stack-leak guarantee is unique to the wrap handler and lives here.
   it('does not leak stack traces in the error response body', async () => {
-    // Unknown id gives a 404 with only { error: string }, no stack
     const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
     expect(res.status).toBe(404);
     expect(res.body).not.toHaveProperty('stack');
@@ -265,14 +254,9 @@ describe('wrap error handler', () => {
   });
 });
 
-// A fixed non-DST week so the wall-clock bounds below are stable regardless of
-// when CI runs. msUntilNextSundayEvening does local setDate/setHours arithmetic;
-// seeding `at()` from the real clock (`new Date()`) meant a DST-transition week
-// (US fall-back, late Oct) stretched a "day" to 25h and blew past the ± bounds —
-// a latent red build. The day-of-week diff math is anchor-independent.
+// Fixed non-DST week — a DST-transition week blew past the ± bounds.
 const FIXED_WEEK = new Date('2026-06-15T12:00:00'); // Monday
 
-// Build a Date for a given day-of-week and hour (local time).
 // day: 0=Sun, 1=Mon, ... 6=Sat
 function at(day: number, hour: number): Date {
   const d = new Date(FIXED_WEEK);
@@ -294,8 +278,7 @@ describe('msUntilNextSundayEvening', () => {
   it('Sunday at exactly 6 PM — schedules next Sunday (already past)', () => {
     const now = at(0, 18); // Sunday 6 PM sharp
     const ms = msUntilNextSundayEvening(now);
-    // setHours(18,0,0,0) on the same day gives target === now → 0 ms
-    // The || 7 branch kicks in for day===0 after-18 → next Sunday
+    // target === now → 0ms; the || 7 branch schedules next Sunday
     expect(ms).toBeGreaterThan(6 * 24 * 60 * 60 * 1000); // > 6 days
     expect(ms).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000 + 1000); // ≤ 7 days
   });
@@ -334,8 +317,6 @@ describe('msUntilNextSundayEvening', () => {
 
 describe('stopArchiveScheduler', () => {
   it('is exported and callable with no timer running without throwing', () => {
-    // The scheduler is never started in tests (entry-point guard), so archiveTimer
-    // is null. Calling stop should be a safe no-op.
     expect(() => stopArchiveScheduler()).not.toThrow();
   });
 
@@ -360,8 +341,6 @@ describe('stopArchiveScheduler', () => {
 });
 
 describe('GET /api/tickets?q= (search)', () => {
-  // "returns all when q absent" is covered by GET /api/tickets → "returns all
-  // tickets"; not restated here.
   it('returns only matching tickets when q is set', async () => {
     await seedTicket('abc333333333', 'Fix login bug');
     await seedTicket('abc444444444', 'Add dashboard');
@@ -404,7 +383,6 @@ describe('GET /api/projects', () => {
   });
 
   it('returns unique project names sorted ascending', async () => {
-    // seedTicket writes no `project:` key, so inject it via raw frontmatter.
     const raw = (id: string, project: string) =>
       fs.writeFile(
         path.join(dirs.tickets, `${id}.md`),
@@ -459,8 +437,6 @@ describe('POST /api/archive', () => {
 
 describe('wrap error funnel — 500 branch', () => {
   it('maps an unexpected (non-HttpError) throw to 500 with only { error }', async () => {
-    // Stub a service call to throw a plain Error (not HttpError). wrap() must
-    // map it to 500, log it, and respond with { error } — never a stack.
     const spy = vi.spyOn(tickets, 'listProjects').mockRejectedValueOnce(new Error('boom'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -468,8 +444,6 @@ describe('wrap error funnel — 500 branch', () => {
       expect(res.status).toBe(500);
       expect(Object.keys(res.body)).toEqual(['error']);
       expect(res.body).not.toHaveProperty('stack');
-      // The raw internal message must not reach the client (it can embed fs paths
-      // or other internals); a generic message is returned and detail is logged.
       expect(res.body.error).toBe('Internal server error');
       expect(res.body.error).not.toContain('boom');
       expect(errSpy).toHaveBeenCalled();
@@ -483,19 +457,14 @@ describe('wrap error funnel — 500 branch', () => {
 describe('scheduleWeeklyArchive — timer callback fires', () => {
   it('runs the archive sweep when the timer fires, then reschedules', async () => {
     vi.useFakeTimers();
-    // Stub the sweep itself (its archiving logic is covered elsewhere). This
-    // isolates the scheduler's own contract: fire the callback, then re-arm.
     const sweep = vi.spyOn(tickets, 'archiveStaleTickets').mockResolvedValue(0);
     const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
     try {
       scheduleWeeklyArchive();          // arms the first timer
       expect(sweep).not.toHaveBeenCalled();
-      // Advance past the longest possible delay (≤7 days) to fire the callback,
-      // which awaits archiveStaleTickets() and then reschedules.
+      // advance past the max delay (≤7 days) to fire the callback
       await vi.advanceTimersByTimeAsync(8 * 24 * 60 * 60 * 1000);
       expect(sweep).toHaveBeenCalled();
-      // A new timer must have been armed (recursive reschedule); stopping it
-      // calls clearTimeout, proving a live timer existed after the fire.
       stopArchiveScheduler();
       expect(clearSpy).toHaveBeenCalled();
     } finally {
@@ -536,8 +505,7 @@ function isEmbedReq(v: unknown): v is { input: string[] } {
 }
 
 describe('POST /api/intake/search', () => {
-  // "login"-bearing inputs get a vector aligned with a "login" query, so a
-  // login report ranks the login ticket first — deterministic, no real model.
+  // "login" inputs align with a "login" query — deterministic, no real model.
   function stubEmbeddings(): void {
     vi.stubGlobal('fetch', vi.fn((_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
@@ -588,8 +556,6 @@ describe('POST /api/intake/search', () => {
   });
 
   it('returns an empty list for an empty board without calling the runtime', async () => {
-    // No tickets seeded and no fetch stub — search short-circuits on an empty
-    // index, so this must succeed even with no model running.
     const res = await request(app).post('/api/intake/search').send({ query: 'anything' });
     expect(res.status).toBe(200);
     expect(res.body.results).toEqual([]);
@@ -597,8 +563,6 @@ describe('POST /api/intake/search', () => {
 });
 
 describe('POST /api/intake/propose', () => {
-  // propose now meters the run (every propose spends tokens) — isolate the run log so
-  // these tests never touch the real runs/ dir. Mirrors the apply describe below.
   let runsDir: string | null = null;
   beforeAll(async () => {
     runsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-propose-runs-'));
@@ -609,8 +573,6 @@ describe('POST /api/intake/propose', () => {
     if (runsDir) { await fs.rm(runsDir, { recursive: true, force: true }); runsDir = null; }
   });
 
-  // Stubs both /embeddings (for the index) and /chat/completions (scripted turns). The
-  // chat response carries usage so the metered propose run records non-zero tokens.
   function stubProposeFlow(turns: { content: string | null; tool_calls?: unknown[] }[]): void {
     let chatTurn = 0;
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -648,8 +610,7 @@ describe('POST /api/intake/propose', () => {
     expect((await tickets.listTickets()).some((t) => t.title === 'New bug')).toBe(false);
   });
 
-  // tkt-098da79e168d: every propose spends tokens, so it must reach the run log even
-  // when never applied — the "measure agent cost" thesis undercounts otherwise.
+  // tkt-098da79e168d: every propose spends tokens → must reach the run log even if never applied.
   it('meters a run at propose time (captured proposal → noProposal:false, 0 accepted)', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     stubProposeFlow([
@@ -717,9 +678,6 @@ describe('POST /api/intake/apply', () => {
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  // Scripts the propose flow (embeddings + chat turns with usage) so a real runId +
-  // captured usage land in the server's pending map — the precondition for apply to
-  // stamp provenance + meter (provenance is stamped ONLY when the run is recorded).
   function stubProposeFlow(turns: { content: string | null; tool_calls?: unknown[] }[]): void {
     let turn = 0;
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -742,9 +700,7 @@ describe('POST /api/intake/apply', () => {
     return res.body.runId;
   }
 
-  // B + A (create): the fix for "the in-app agent shows no badge / no usage" — a
-  // proposed→applied create stamps source:'assisted' + runId (badge + run link) AND
-  // records the run's economics from the captured usage.
+  // B + A (create): a proposed→applied create stamps source:'assisted' + runId and records economics.
   it('create: stamps assisted + runId and records the run', async () => {
     const runId = await proposeRunId('a metered bug', [
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Metered bug"}' } }] },
@@ -760,9 +716,7 @@ describe('POST /api/intake/apply', () => {
     expect(run?.usage.totalTokens).toBeGreaterThan(0);
   });
 
-  // tkt-098da79e168d seam invariant: propose meters the spend, apply re-meters enriched
-  // → TWO append-only records share one runId. The rollup must dedupe last-wins so the
-  // run is counted ONCE (not double-counted), matching readRun's detail view.
+  // tkt-098da79e168d seam invariant: two append-only records share one runId; rollup dedupes last-wins → counted once.
   it('propose→apply meters one run in the rollup despite two log records (seam)', async () => {
     const runId = await proposeRunId('a seam bug', [
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Seam"}' } }] },
@@ -786,8 +740,6 @@ describe('POST /api/intake/apply', () => {
     expect((await readRun(runId))?.ticketIds.created).toContain(applyRes.body.id);
   });
 
-  // An abandoned propose (never applied) still contributes its spend to the rollup, with
-  // zero accepted — the undercount fix.
   it('an abandoned propose is metered with its spend and 0 accepted', async () => {
     const runId = await proposeRunId('an abandoned draft', [
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Abandoned"}' } }] },
@@ -801,10 +753,7 @@ describe('POST /api/intake/apply', () => {
     expect(s.totals.acceptedTickets).toBe(0); // but nothing accepted
   });
 
-  // Seam fidelity (CLAUDE.md integration-seam rule): drive the FULL content field set
-  // through the real propose→apply endpoint and assert every field lands in the
-  // persisted ticket == input. Guards the client-args→extractTicketFields→createTicket
-  // path against a silent per-field drop that title-only tests would miss.
+  // Seam fidelity: drive the full content field set through propose→apply; every field lands == input.
   it('create: every proposed content field survives the apply boundary (fidelity)', async () => {
     const args = {
       title: 'Full fidelity', body: 'repro steps here', type: 'bug',
@@ -820,9 +769,7 @@ describe('POST /api/intake/apply', () => {
     expect(res.body).toMatchObject({ ...args, source: 'assisted', runId });
   });
 
-  // Endpoint idempotency (review): a replayed apply with the same runId (a retry after
-  // a lost response, or a second tab) returns the same ticket — no duplicate, no
-  // double-meter — so the endpoint doesn't rely solely on the modal's in-flight guard.
+  // Idempotency: a replayed apply with the same runId returns the same ticket — no duplicate, no double-meter.
   it('is idempotent on runId — a replay returns the same ticket, no duplicate', async () => {
     const runId = await proposeRunId('idempotent bug', [
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Idem"}' } }] },
@@ -835,8 +782,7 @@ describe('POST /api/intake/apply', () => {
     expect((await tickets.listTickets()).filter((t) => t.title === 'Idem')).toHaveLength(1);
   });
 
-  // Replay after the applied ticket was deleted: the run still applied, so a retry
-  // acknowledges (200) instead of surfacing the getTicket 404 — a benign retry mustn't error.
+  // Replay after the applied ticket was deleted: a benign retry acknowledges (200), not 404.
   it('replay after the ticket was deleted → 200 ack, not 404', async () => {
     const runId = await proposeRunId('deletable bug', [
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Deletable"}' } }] },
@@ -850,8 +796,7 @@ describe('POST /api/intake/apply', () => {
     expect(replay.body).toMatchObject({ id: first.body.id, deleted: true });
   });
 
-  // B (update): an assisted update threads the runId (cost link) but leaves authorship
-  // (source) — updateTicket sets it once at create, same rule as the CLI agent.
+  // B (update): an assisted update threads the runId but leaves authorship (source) unchanged.
   it('update: threads the runId but does not reassign authorship', async () => {
     await seedTicket('tkt-upd12345678', 'Original'); // human-seeded → source null
     const runId = await proposeRunId('update the login ticket', [
@@ -872,9 +817,7 @@ describe('POST /api/intake/apply', () => {
     expect(res.status).toBe(400);
   });
 
-  // An apply whose runId has no captured usage (server restarted, or evicted before
-  // the user saved) falls back to a PLAIN human write — no provenance, so the badge's
-  // "View economics" link can't dangle to a missing run.
+  // An apply whose runId has no captured usage falls back to a plain human write — no provenance, no run.
   it('applies with an unknown runId — plain write (no provenance, no run)', async () => {
     const res = await request(app).post('/api/intake/apply')
       .send({ action: 'create_ticket', runId: 'run-orphan', args: { title: 'Orphan' } });
@@ -1051,8 +994,7 @@ describe('GET /api/economics', () => {
     await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
     const res = await request(app).get('/api/economics?runId=run-2');
     expect(res.status).toBe(200);
-    // The aggregate rollup drops these; the detail payload carries them so the
-    // deep-link view can name the run and link back to its tickets.
+    // The aggregate rollup drops these; the detail payload carries them.
     expect(res.body.runId).toBe('run-2');
     expect(res.body.model).toBe('test');
     expect(res.body.at).toBe('2026-07-02T10:00:00.000Z');
