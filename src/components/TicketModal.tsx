@@ -9,7 +9,7 @@ import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
 import { agentRunId } from '../lib/provenance.js';
 import { type Prefill } from '../lib/proposalPrefill.js';
-import { resolveProposalPlan } from '../lib/intakeApply.js';
+import { resolveProposalPlan, buildTicketForm } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
 import Spinner from './ui/Spinner.js';
@@ -51,32 +51,15 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
 export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
-  const makeInitialForm = (): FormState => ({
-    title: initial?.title ?? ticket?.title ?? '',
-    type: initial?.type ?? ticket?.type ?? 'task',
-    priority: initial?.priority ?? ticket?.priority ?? 'medium',
-    status: initial?.status ?? ticket?.status ?? 'backlog',
-    body: initial?.body ?? ticket?.body ?? '',
-    project: ticket?.project ?? null,
-    blockers: (ticket?.blockers ?? []).filter((id) => {
-      const t = allTickets.find((bt) => bt.id === id);
-      return t && t.status !== 'archived';
-    }),
-    parent: (() => {
-      const id = ticket?.parent ?? null;
-      if (!id) return null;
-      const p = allTickets.find((t) => t.id === id);
-      return p && p.status !== 'archived' ? id : null;
-    })(),
-    dueDate: ticket?.dueDate ?? null,
-    assignee: ticket?.assignee ?? null,
-  });
-  const [form, setForm] = useState<FormState>(makeInitialForm);
-  // Open-time snapshot of the form. On save we PATCH only the fields the user
-  // actually changed vs. this baseline, so an unchanged field can't clobber a
-  // concurrent external edit (e.g. the agent moving status while the modal is
-  // open). Captured once (useState initializer) — never re-baselined mid-edit.
-  const [baseline] = useState<FormState>(makeInitialForm);
+  // `form` overlays the agent prefill (`initial`) on the ticket; `baseline` is the
+  // ticket's open-time state WITHOUT the prefill. On save we PATCH only the fields
+  // that changed vs. baseline, so an unchanged field can't clobber a concurrent
+  // external edit (e.g. the agent moving status while the modal is open). Building
+  // baseline WITH the prefill (as it once did) made form == baseline, so an
+  // agent-proposed edit diffed to {} and was silently dropped (tkt-128ee05af9ba).
+  // Both captured once (useState initializer) — never re-baselined mid-edit.
+  const [form, setForm] = useState<FormState>(() => buildTicketForm(ticket, allTickets, initial));
+  const [baseline] = useState<FormState>(() => buildTicketForm(ticket, allTickets));
   const [preview, setPreview] = useState(false);
   // Create mode only: live "related tickets" dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
