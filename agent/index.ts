@@ -2,14 +2,12 @@ import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
 import { buildBoardIndex } from './retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
-import { AGENT_TOOLS } from './runtime/tools.js';
-import { runIntake, SYSTEM_PROMPT } from './runtime/loop.js';
+import { runIntake, RUN_PREFIX_TEXT } from './runtime/loop.js';
 import { getTicket } from '../server/tickets.js';
 import { askApproval } from './runtime/approval.js';
 import { mergeUsage } from './cost/usage.js';
-import { resolveCostConfig } from './cost/costConfig.js';
-import { buildSummary, renderSummary } from './cost/summary.js';
-import { appendRun } from './cost/runLog.js';
+import { renderSummary } from './cost/summary.js';
+import { meterRun } from './cost/meterRun.js';
 
 // CLI entry for the local agentic-intake agent. Reads a report from argv,
 // builds the live index + chat client from env, and runs the intake loop with
@@ -80,38 +78,22 @@ async function main(): Promise<void> {
     const result = await runIntake(input, { chat, index, approve });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
 
-    // Per-run cost & economics summary (assembled from the run's measured usage
-    // + the configured assumptions). Reads usage from both runtime clients.
+    // Per-run cost & economics: build the summary + persist the run (usage, cost,
+    // outcome, and the ids of the tickets it authored) through the shared meterRun,
+    // then render it. Reads usage from both runtime clients. meterRun is best-effort —
+    // the tickets are already written, so a run-log failure won't fail the run.
     const usage = mergeUsage(chat.getUsage(), embedder.getUsage());
-    const summary = buildSummary({
+    const summary = await meterRun({
+      runId: result.runId,
+      model,
       usage,
       outcome: result.outcome,
       reviewMs,
-      cfg: resolveCostConfig(),
-      model,
-      prefixText: SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS),
+      ticketIds: { created: result.createdIds, updated: result.updatedIds },
+      prefixText: RUN_PREFIX_TEXT,
       dynamicText: input,
     });
     console.log(`\n${renderSummary(summary)}`);
-
-    // Persist the run: usage + cost + outcome, keyed by the run's id and joined
-    // to the tickets it authored (which now carry runId in their frontmatter).
-    // Best-effort — the tickets are already written, so a run-log failure must
-    // NOT report the whole run as failed (that would trigger spurious retries).
-    try {
-      await appendRun({
-        runId: result.runId,
-        at: new Date().toISOString(),
-        model,
-        usage,
-        outcome: result.outcome,
-        reviewMs,
-        cost: summary,
-        ticketIds: { created: result.createdIds, updated: result.updatedIds },
-      });
-    } catch (err) {
-      console.warn(`[runlog] failed to persist run ${result.runId}: ${err instanceof Error ? err.message : String(err)}`);
-    }
   } finally {
     rl.close();
   }
