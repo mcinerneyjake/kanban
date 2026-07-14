@@ -5,9 +5,8 @@ import { DocumentIndex, type Embedder, type Document } from '../../agent/retriev
 import type { ChatMessage, ChatClient } from '../../agent/runtime/llm.js';
 import type { ChatTool } from '../../agent/runtime/tools.js';
 import { createTicket, updateTicket, getTicket } from '../../server/tickets.js';
-import { changedFormFields, type TicketFormFields } from './ticketDiff.js';
-import { resolveProposalPlan } from './intakeApply.js';
-import type { Ticket } from '../../shared/constants.js';
+import { changedFormFields } from './ticketDiff.js';
+import { resolveProposalPlan, buildTicketForm } from './intakeApply.js';
 
 // END-TO-END round-trip test for the in-app intake seam: the regression net for
 // the propose→apply chain (proposeIntake → resolveProposalPlan → proposalToPrefill
@@ -53,15 +52,6 @@ function toolCallReply(name: string, args: Record<string, unknown>): ChatMessage
 
 const finalReply: ChatMessage = { role: 'assistant', content: 'Done.' };
 
-// Project a persisted Ticket to the modal's editable form fields — the open-time
-// baseline the edit form diffs against.
-function toFormFields(t: Ticket): TicketFormFields {
-  return {
-    title: t.title, type: t.type, priority: t.priority, status: t.status, body: t.body,
-    project: t.project, blockers: t.blockers, parent: t.parent, dueDate: t.dueDate, assignee: t.assignee,
-  };
-}
-
 async function newIndex(): Promise<DocumentIndex> {
   return DocumentIndex.build(new StubEmbedder(), [doc('seed', 'seed')]);
 }
@@ -88,28 +78,27 @@ describe('intake propose→apply round-trip', () => {
     expect(persisted.priority).toBe('high');
   });
 
-  it('routes an update proposal to update mode; its diff persists against a correct (prefill-free) baseline', async () => {
+  it('round-trips an update proposal through the modal form builders and persists the change', async () => {
     const existing = await createTicket({ title: 'Login is broken', body: 'old body', type: 'bug', priority: 'medium', status: 'backlog' });
     const chat = new ScriptedChat([toolCallReply('update_ticket', { id: existing.id, body: 'Repro: click login then 500' }), finalReply]);
     const { proposal } = await proposeIntake('login 500', { chat, index: await newIndex() });
     if (!proposal) throw new Error('expected a proposal');
 
-    // Routing is the REAL modal decision (resolveProposalPlan is what draft() calls).
-    const plan = resolveProposalPlan(proposal, [existing]);
+    const plan = resolveProposalPlan(proposal, [existing]); // the real modal routing decision
     expect(plan.mode).toBe('update');
     if (plan.mode !== 'update') return;
     expect(plan.target.id).toBe(existing.id);
 
-    // Apply the diff the way the FIX should: prefilled form vs a prefill-FREE baseline.
-    // This locks the diff+persist LEAF (changedFormFields + updateTicket) — the invariant
-    // Bug D's fix must produce. It deliberately does NOT exercise the modal's *current*
-    // baseline, which folds the prefill in (makeInitialForm → Bug D) and yields an empty
-    // patch. That gap is the it.todo below; it lands when tkt-128ee05af9ba extracts the
-    // form/baseline builders so the modal's real composition can be driven headlessly.
-    const patch = changedFormFields({ ...toFormFields(existing), ...plan.prefill }, toFormFields(existing));
-    await updateTicket(existing.id, patch);
-    const persisted = await getTicket(existing.id);
-    expect(persisted.body).toBe('Repro: click login then 500');
+    // Drive the modal's REAL builders: `form` overlays the prefill, `baseline` does NOT.
+    // If baseline still folded the prefill in (Bug D, tkt-128ee05af9ba) the diff would be
+    // {} and the body would never persist — so this asserts the fix end-to-end.
+    const patch = changedFormFields(
+      buildTicketForm(plan.target, [existing], plan.prefill),
+      buildTicketForm(plan.target, [existing]),
+    );
+    expect(patch.body).toBe('Repro: click login then 500');
+    await updateTicket(plan.target.id, patch);
+    expect((await getTicket(plan.target.id)).body).toBe('Repro: click login then 500');
   });
 
   // EXPECTED FAIL until tkt-1dfa61b8830e (Bug E). Flip `it.fails` → `it` when fixed.
@@ -133,14 +122,6 @@ describe('intake propose→apply round-trip', () => {
     const persisted = await getTicket(created.id);
     expect(persisted.assignee).toBe('Alice');
   });
-
-  // TODO(tkt-128ee05af9ba, Bug D): the test above uses a CORRECT baseline; the modal
-  // currently builds `baseline` WITH the prefill (makeInitialForm), so its real update
-  // path yields an empty patch and silently drops the change. Once D extracts the
-  // form/baseline builders, drive the modal's actual composition here and assert an
-  // update proposal's change persists through it. Activate (it.todo → it) then — this
-  // it.todo, not the green test above, owns the modal-baseline coverage.
-  it.todo("D: the modal's own baseline excludes the prefill so an update persists its change");
 
   // TODO(tkt-67de93c44726 / tkt-7aa8c73735a9, Bugs A+B): once an intake-apply endpoint
   // exists, applying a proposal stamps {source:agent, runId} provenance and appends a
