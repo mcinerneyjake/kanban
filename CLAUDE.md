@@ -223,6 +223,15 @@ These are **lint-enforced** (`eslint.config.js`): `consistent-type-assertions` (
 - **No non-null assertions** (`foo!`, `bar!.baz`). Restructure so TypeScript can narrow the type itself — e.g. check `if (foo && bar)` at the closure level so the truthy branch carries the narrowed type.
 - **No `any` or `unknown` in your own types.** Define concrete interfaces at external boundaries (library data, API responses). Let TypeScript infer types where possible; use type predicates to narrow instead of widening to `any`/`unknown`.
 
+## Comment philosophy
+
+Comments are sparse. Keep only a non-obvious *why*: invariants, security/concurrency/atomicity decisions, gotchas, and ticket refs that add traceability — as terse one-liners, not per-function prose headers. Delete anything that restates the *what* the code already says.
+
+- **Exempt (keep):** directives (`/* v8 ignore */`, `@ts-expect-error`, the `vite/client` reference) and the "commented exclusion" pattern that documents a deliberate cross-layer field omission (see **Integration seams**).
+- **Tests:** trim verbose "why this test exists" headers, but keep bug-ticket refs (`// tkt-… (Bug X, FIXED)`) and terse assertion glosses (`// counted once`).
+
+This **supersedes** any instinct to match the codebase's former high comment density — do not re-add narration when editing existing files.
+
 ## Stack
 
 React + Vite frontend, Express API, markdown files as the database (no SQL).
