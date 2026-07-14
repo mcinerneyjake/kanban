@@ -2,16 +2,9 @@ import { type EmbedConfig, resolveEmbedConfig } from './models.js';
 import { chunkText, type ChunkOptions } from './chunk.js';
 import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
 
-// ---------------------------------------------------------------------------
-// Retrieval layer (RAG) — Phase 1 of the agent. An `Embedder` seam plus an
-// in-memory cosine index over the board. Provider access is the OpenAI-
-// compatible /v1/embeddings endpoint via fetch — no SDK dependency (the openai
-// SDK lands with the chat loop in Phase 3).
-// ---------------------------------------------------------------------------
+// Retrieval layer (RAG): an `Embedder` seam + an in-memory cosine index over the board. Provider access is the OpenAI-compatible /v1/embeddings endpoint via fetch, no SDK.
 
-// Provider-agnostic embedding seam. Documents and queries are embedded via
-// separate methods because some models prefix the query (or both sides) with a
-// task instruction — see models.ts.
+// Provider-agnostic embedding seam. Documents and queries embed via separate methods because some models prefix the query (or both sides) with a task instruction — see models.ts.
 export interface Embedder {
   embedDocuments(texts: string[]): Promise<number[][]>;
   embedQuery(text: string): Promise<number[]>;
@@ -36,8 +29,7 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
     && 'data' in v && Array.isArray(v.data) && v.data.every(isEmbeddingDatum);
 }
 
-// Embedding usage is optional + best-effort (embeddings report prompt/total, no
-// completion); omit when absent or malformed so it never breaks the response.
+// Usage is optional + best-effort (embeddings report prompt/total, no completion); omit when absent/malformed so it never breaks the response.
 function embedUsageOf(v: unknown): CallTokens | undefined {
   if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
   const u = v.usage;
@@ -65,13 +57,11 @@ export class RuntimeEmbedder implements Embedder {
     return new RuntimeEmbedder(resolveEmbedConfig(env));
   }
 
-  // Accumulated embedding usage + active-compute time over this embedder's
-  // lifetime. Tokens are "available" only if reportedCalls > 0.
+  // Accumulated usage over this embedder's lifetime. Tokens are "available" only if reportedCalls > 0.
   getUsage(): RunUsage {
     return this.meter.get();
   }
 
-  // Embed inputs in batches, concatenating results in input order.
   private async post(inputs: string[]): Promise<number[][]> {
     const out: number[][] = [];
     for (let i = 0; i < inputs.length; i += EMBED_BATCH_SIZE) {
@@ -91,7 +81,6 @@ export class RuntimeEmbedder implements Embedder {
     if (!isEmbeddingResponse(json)) {
       throw new Error('Unexpected /v1/embeddings response shape');
     }
-    // Record the batch's duration + token usage (when the runtime reported it).
     this.meter.record(this.now() - start, embedUsageOf(json));
     // The API may return data out of input order; sort by index to realign.
     return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
@@ -144,10 +133,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 // --- document model + in-memory index --------------------------------------
 
-// A source-agnostic unit of retrieval. Connectors (tickets, docs, email, …) map
-// their own records to this shape; the index embeds `text` and grounds over it.
-// `meta` carries source-specific extras (e.g. a ticket's status) through to
-// search results without leaking those field names into this generic model.
+// A source-agnostic unit of retrieval. Connectors map their records to this shape; the index embeds `text`. `meta` carries source-specific extras (e.g. a ticket's status) without leaking field names into this generic model.
 export interface Document {
   id: string;
   source: string;                 // connector the document came from, e.g. 'ticket'
@@ -158,10 +144,7 @@ export interface Document {
   meta?: Record<string, string>;
 }
 
-// A search hit: the document's identity + relevance score. `text` is dropped
-// (callers rank/display by title); `meta` is carried through from the document.
-// `chunk` is present only on non-rolled-up (chunk-granularity) results — it
-// names which chunk of the parent document matched, and its text.
+// A search hit: identity + score (`text` dropped, `meta` carried through). `chunk` is present only on non-rolled-up results — which chunk of the parent matched, and its text.
 export interface ScoredDocument {
   id: string;
   source: string;
@@ -174,11 +157,7 @@ export interface ScoredDocument {
 
 const DEFAULT_TOP_K = 5;
 
-// One embedded unit in the index: the `chunkIndex`-th chunk of parent `doc`.
-// When chunking is off there is exactly one entry per document (chunkIndex 0).
-// The chunk's text is NOT stored — it's re-derived from doc.text on the rare
-// rollup:false path (see toScored), so the index doesn't duplicate document
-// text in memory alongside the parent Document it already retains.
+// One embedded unit: the `chunkIndex`-th chunk of parent `doc` (chunking off ⇒ one entry per doc, index 0). Chunk text is NOT stored — re-derived from doc.text on the rare rollup:false path, so the index doesn't duplicate text in memory.
 interface Entry {
   doc: Document;
   chunkIndex: number;
@@ -188,8 +167,7 @@ interface Entry {
 export class DocumentIndex {
   private entries: Entry[] = [];
 
-  // `chunk` splits each document's text into multiple embedded vectors; omit it
-  // to index each document as a single vector (the default, unchanged behavior).
+  // `chunk` splits each document's text into multiple vectors; omit to index each document as a single vector (the default).
   constructor(
     private readonly embedder: Embedder,
     private readonly chunk?: ChunkOptions,
@@ -201,21 +179,14 @@ export class DocumentIndex {
     return index;
   }
 
-  // Split a document into its embeddable units — chunks when chunking is on, the
-  // whole (trimmed) text as a single unit otherwise. A document with no
-  // chunkable text contributes NO units in either mode, so an empty/whitespace
-  // document is consistently absent from the index (chunkText already drops it;
-  // the no-chunk path must match, or the same record would be indexed with
-  // chunking off but silently dropped with it on).
+  // Embeddable units — chunks (chunking on) or the whole trimmed text. Empty/whitespace text yields NO units in EITHER mode, so such a doc is consistently absent (the no-chunk path must match chunkText, or the same record would index off but drop on).
   private unitsOf(doc: Document): string[] {
     if (this.chunk) return chunkText(doc.text, this.chunk);
     const trimmed = doc.text.trim();
     return trimmed ? [trimmed] : [];
   }
 
-  // (Re)embed the given corpus into the in-memory index, replacing any prior
-  // contents. Each document is exploded into chunks (keyed back to their parent)
-  // before embedding. The caller owns the source→Document mapping (connectors).
+  // (Re)embed the corpus, replacing prior contents. Each document is exploded into chunks (keyed back to their parent) before embedding.
   async rebuild(documents: Document[]): Promise<void> {
     const pending = documents.flatMap((doc) =>
       this.unitsOf(doc).map((text, chunkIndex) => ({ doc, chunkIndex, text })),
@@ -224,8 +195,7 @@ export class DocumentIndex {
     if (vectors.length !== pending.length) {
       throw new Error(`Embedder returned ${vectors.length} vectors for ${pending.length} chunks`);
     }
-    // Keep only (doc, chunkIndex, vector) — the chunk text was needed to embed
-    // but is re-derivable, so it's dropped rather than retained.
+    // Keep only (doc, chunkIndex, vector) — chunk text is re-derivable, so it's dropped rather than retained.
     this.entries = pending.map((p, i) => ({ doc: p.doc, chunkIndex: p.chunkIndex, vector: vectors[i] }));
   }
 
@@ -234,10 +204,7 @@ export class DocumentIndex {
     return this.entries.length;
   }
 
-  // Semantic top-k by cosine similarity. By default results are rolled up to the
-  // parent document (the best-scoring chunk per document, keyed by the real
-  // document id) — the shape every consumer expects. Pass `{ rollup: false }`
-  // for per-chunk hits, each carrying the matched chunk's index + text.
+  // Semantic top-k by cosine similarity. Default rolls up to the best-scoring chunk per parent document (the shape every consumer expects); `{ rollup: false }` returns per-chunk hits with the matched chunk's index + text.
   async search(query: string, k: number = DEFAULT_TOP_K, opts: { rollup?: boolean } = {}): Promise<ScoredDocument[]> {
     if (this.entries.length === 0) return [];
     const q = await this.embedder.embedQuery(query);
@@ -250,10 +217,7 @@ export class DocumentIndex {
       .map(({ entry, score }) => this.toScored(entry, score, rollup));
   }
 
-  // Build a result. For a rolled-up hit that's just the parent document's
-  // identity + score. For a chunk-level hit we also attach the matched chunk's
-  // index + text — re-derived from the parent (unitsOf is deterministic for a
-  // fixed doc + chunk config) rather than stored on every entry.
+  // Rolled-up hit = parent identity + score. Chunk-level hit also attaches the matched chunk's index + text, re-derived from the parent (unitsOf is deterministic) rather than stored per entry.
   private toScored(entry: Entry, score: number, rolledUp: boolean): ScoredDocument {
     const { doc, chunkIndex } = entry;
     const base: ScoredDocument = {
@@ -271,9 +235,7 @@ export class DocumentIndex {
 
 type ScoredEntry = { entry: Entry; score: number };
 
-// Collapse chunk hits to one per parent document, keeping the best score.
-// Grouped by the document object (not its id) so ids may collide across sources
-// without being merged.
+// Collapse chunk hits to one per parent, keeping the best score. Grouped by the document OBJECT (not its id) so ids may collide across sources without being merged.
 function bestChunkPerDocument(scored: ScoredEntry[]): ScoredEntry[] {
   const best = new Map<Document, ScoredEntry>();
   for (const s of scored) {

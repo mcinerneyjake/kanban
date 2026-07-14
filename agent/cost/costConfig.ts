@@ -1,14 +1,9 @@
-// Single home for every ASSUMED cost input, each default annotated with its
-// source — so "assumed" reads as "modeled," not "made up." Env-overridable via
-// COST_* vars. A value left null is NOTIONAL: the consuming cost line must mark
-// itself notional rather than substitute a silent zero. Measurements (tokens,
-// active-compute time, sampled power) live elsewhere; this file is assumptions.
+// Every ASSUMED cost input (env-overridable via COST_*). A null value is NOTIONAL: the consuming cost line must mark itself notional, never substitute a silent zero.
 
 export interface Sourced {
   /** null = unset → the consuming cost line is notional, not zero. */
   value: number | null;
   unit: string;
-  /** Provenance: where the number comes from, or how to obtain it. */
   source: string;
 }
 
@@ -28,8 +23,7 @@ export interface CostConfig {
   manualMinutesPerReport: Sourced;   // minutes
   gridCarbonIntensity: Sourced;      // gCO2e/kWh
   gridWaterIntensity: Sourced;       // L/kWh
-  /** Per-model cloud prices for the local-vs-cloud comparison (#5). Empty until
-   *  populated from CURRENT vendor pricing — never hardcode stale rates. */
+  /** Per-model cloud prices (#5). Empty until populated from current vendor pricing — never hardcode stale rates. */
   apiPrices: Record<string, ApiPrice>;
 }
 
@@ -37,9 +31,7 @@ function sourced(value: number | null, unit: string, source: string): Sourced {
   return { value, unit, source };
 }
 
-// Read a COST_<KEY> override; fall back to the documented default. Invalid
-// overrides — non-numeric, empty, whitespace, NaN/Infinity, or negative — are
-// ignored (a cost input can't be negative or infinite). 0 is valid.
+// COST_<KEY> override, falling back to the default. Negative/NaN/Infinity/empty are ignored (a cost input can't be negative or infinite); 0 is valid.
 function envNum(env: NodeJS.ProcessEnv, key: string, fallback: Sourced): Sourced {
   const raw = env[key];
   if (raw !== undefined && raw.trim() !== '') {
@@ -51,7 +43,6 @@ function envNum(env: NodeJS.ProcessEnv, key: string, fallback: Sourced): Sourced
 
 export function resolveCostConfig(env: NodeJS.ProcessEnv = process.env): CostConfig {
   return {
-    // Region/process assumptions ship as clearly-illustrative defaults.
     electricityRate: envNum(env, 'COST_ELECTRICITY_RATE',
       sourced(0.17, '$/kWh', 'illustrative US avg residential — set COST_ELECTRICITY_RATE to your tariff')),
     utilizationRunsPerHour: envNum(env, 'COST_UTILIZATION_RUNS_PER_HOUR',
@@ -80,8 +71,7 @@ export function resolveCostConfig(env: NodeJS.ProcessEnv = process.env): CostCon
   };
 }
 
-// A value is usable iff it was actually set (default or override). 0 is valid.
-// Type predicate so consumers narrow `value` to `number` after the check.
+// Usable iff actually set (default or override); 0 is valid. Narrows `value` to `number`.
 export function isSet(s: Sourced): s is Sourced & { value: number } {
   return s.value !== null;
 }

@@ -1,19 +1,14 @@
-// Shared per-run accounting for runtime calls (chat + embeddings): token usage
-// when the runtime reports it, plus active-compute time — the summed duration of
-// the model calls, NOT run wall-clock (which includes retrieval I/O and the
-// human approval-gate pause, and would overstate energy downstream).
+// Per-run accounting for runtime calls (chat + embeddings). activeMs is summed model-call duration, NOT run wall-clock — wall-clock includes retrieval I/O + the approval-gate pause and would overstate energy.
 
 export interface RunUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  /** Total runtime calls timed. */
   calls: number;
   /** Calls that returned a usage block — tokens are "available" iff this is > 0. */
   reportedCalls: number;
-  /** Summed active-compute time across calls, in milliseconds. */
   activeMs: number;
-  /** Sum of runtime-reported cached prompt tokens (prompt_tokens_details.cached_tokens). */
+  /** Runtime-reported cached prompt tokens (from prompt_tokens_details.cached_tokens). */
   cachedTokens: number;
   /** True once any call reported cached_tokens — distinguishes "0 hits" from "not reported". */
   cachedReported: boolean;
@@ -26,9 +21,7 @@ export function emptyUsage(): RunUsage {
   };
 }
 
-// Cast-free validator for a persisted RunUsage (run log reads). Every numeric
-// field must be a number and cachedReported a boolean — a malformed record is
-// rejected rather than trusted.
+// Cast-free validator for a persisted RunUsage (run log reads) — a malformed record is rejected, not trusted.
 export function isRunUsage(v: unknown): v is RunUsage {
   return typeof v === 'object' && v !== null
     && 'promptTokens' in v && typeof v.promptTokens === 'number'
@@ -43,8 +36,7 @@ export function isRunUsage(v: unknown): v is RunUsage {
 
 export interface CallTokens { prompt: number; completion: number; total: number; cached?: number }
 
-// Accumulates timed runtime calls. Every call records its duration; token
-// figures are added only when the runtime actually reported them.
+// Accumulates timed runtime calls; token figures are added only when the runtime reported them.
 export class UsageMeter {
   private readonly u = emptyUsage();
 
@@ -69,7 +61,6 @@ export class UsageMeter {
   }
 }
 
-// Combine two run usages (e.g. the chat client + the embedder) into one total.
 export function mergeUsage(a: RunUsage, b: RunUsage): RunUsage {
   return {
     promptTokens: a.promptTokens + b.promptTokens,
@@ -83,11 +74,7 @@ export function mergeUsage(a: RunUsage, b: RunUsage): RunUsage {
   };
 }
 
-// The marginal usage between a baseline and a later reading of the SAME meter —
-// e.g. an embedder used first to build the index and then to embed a run's
-// queries: subtracting the post-build baseline isolates just the run's cost, so
-// a one-time index build doesn't get charged to a single run. Fields are clamped
-// at 0 (the later reading is always ≥ the baseline for a monotonic meter).
+// Marginal usage between a baseline and a later reading of the SAME meter — isolates a run's cost so a one-time index build isn't charged to it. Clamped at 0 (a monotonic meter's later reading is always ≥ baseline).
 export function subtractUsage(later: RunUsage, baseline: RunUsage): RunUsage {
   return {
     promptTokens: Math.max(0, later.promptTokens - baseline.promptTokens),

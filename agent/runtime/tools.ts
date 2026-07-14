@@ -3,16 +3,9 @@ import { TOOLS, handleToolCall, type ToolResult } from '../../mcp/handlers.js';
 import { type DocumentIndex } from '../retrieval/retrieval.js';
 import { type Provenance } from '../../shared/constants.js';
 
-// ---------------------------------------------------------------------------
-// Tool layer (Phase 2). The agent's tool set = a safe whitelist of the MCP
-// tools (reused verbatim via handleToolCall) plus search_board, which wraps the
-// Phase 1 retrieval index. Tool defs are adapted to the OpenAI function-tool
-// shape; no SDK dependency yet (that lands with the chat loop in Phase 3).
-// ---------------------------------------------------------------------------
+// Tool layer: a safe whitelist of MCP tools (reused verbatim via handleToolCall) + search_board over the retrieval index, adapted to the OpenAI function-tool shape.
 
-// Read + non-destructive writes only. Deliberately EXCLUDES delete_ticket
-// (destructive, reachable from untrusted intake) and start_ticket (a
-// dev-workflow tool). search_board is agent-only — it needs the embedding index.
+// Read + non-destructive writes only. Deliberately EXCLUDES delete_ticket (destructive, reachable from untrusted intake) and start_ticket (dev-workflow). search_board is agent-only — it needs the embedding index.
 const AGENT_TOOL_NAMES = new Set<string>([
   'list_tickets', 'get_ticket', 'search_board', 'create_ticket', 'update_ticket',
 ]);
@@ -58,23 +51,15 @@ async function searchBoard(args: Record<string, unknown> | undefined, index: Doc
   if (!query) return textResult('Missing required field: query', true);
   const limit = typeof args?.limit === 'number' ? args.limit : 5;
   const results = await index.search(query, limit);
-  // Project to the flat shape the model expects (the system prompt references
-  // `status`). Explicit fields — not a `...meta` spread — so a future source
-  // whose meta carries a `score`/`title` key can't overwrite a core field, and
-  // generic fields like `source` don't leak in as prompt noise.
+  // Explicit fields, NOT a `...meta` spread — so a future source's meta `score`/`title` key can't overwrite a core field, and generic fields like `source` don't leak in as prompt noise.
   const flat = results.map((r) => ({ id: r.id, title: r.title, status: r.meta?.status, score: r.score }));
   return textResult(JSON.stringify(flat, null, 2));
 }
 
-// Tools whose writes get stamped with the run's provenance (source: agent + the
-// runId), so an agent-authored ticket is traceable back to its run's usage/cost.
+// Writes stamped with run provenance (source: agent + runId), so an agent-authored ticket traces back to its run's usage/cost.
 const PROVENANCE_TOOLS = new Set(['create_ticket', 'update_ticket']);
 
-// One tool call -> one ToolResult. search_board hits the index; whitelisted MCP
-// tools reuse handleToolCall verbatim; anything else is refused (double-gating
-// so delete_ticket/start_ticket can never reach the service via the agent).
-// `runId`, when supplied, stamps create/update writes with agent provenance —
-// this is the agent-only boundary the human MCP client never crosses.
+// One tool call → one ToolResult. Anything outside the whitelist is refused — double-gating so delete_ticket/start_ticket can never reach the service via the agent. `runId` stamps create/update writes with provenance — the agent-only boundary the human MCP client never crosses.
 export async function dispatchTool(
   name: string,
   args: Record<string, unknown> | undefined,

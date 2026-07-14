@@ -9,21 +9,15 @@ import { mergeUsage } from './cost/usage.js';
 import { renderSummary } from './cost/summary.js';
 import { meterRun } from './cost/meterRun.js';
 
-// CLI entry for the local agentic-intake agent. Reads a report from argv,
-// builds the live index + chat client from env, and runs the intake loop with
-// a stdin approval gate on every mutating action.
+// CLI entry for the local agentic-intake agent, with a stdin approval gate on every mutating action. Requires running embedding + chat models (e.g. LM Studio).
 //   npm run agent -- "the dashboard crashes when I export to CSV"
 //   npm run agent -- --yes "…"   auto-approve every write (non-interactive; for
 //                                driving a metered run from a Claude Code session)
-// Requires running embedding + chat models (e.g. LM Studio).
 
-// Load local config if a .env is present; tolerate its absence (config then
-// falls back to process env + the localhost defaults in models.ts/llm.ts).
 try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
 
 async function main(): Promise<void> {
-  // Consume LEADING flags only, so a `-y` inside the report text isn't mistaken
-  // for the option (and isn't stripped from the intake).
+  // LEADING flags only, so a `-y` inside the report text isn't mistaken for the option.
   const argv = process.argv.slice(2);
   let autoApprove = false;
   while (argv.length > 0 && (argv[0] === '--yes' || argv[0] === '-y')) {
@@ -38,8 +32,7 @@ async function main(): Promise<void> {
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let reviewMs = 0; // measured HITL gate-open time, fed to the run summary
-  // --yes auto-approves every write (no gate, no review time) so a create/update
-  // happens INSIDE the metered run — the run→ticket linkage the run log needs.
+  // --yes auto-approves so a create/update happens INSIDE the metered run — the run→ticket linkage the run log needs.
   const interactiveApprove = async (name: string, args: Record<string, unknown> | undefined): Promise<boolean> => {
     console.log(`\n⚠  The agent wants to ${name}:`);
     console.log(JSON.stringify(args ?? {}, null, 2));
@@ -48,10 +41,7 @@ async function main(): Promise<void> {
       try {
         const current = await getTicket(args.id);
         console.log(`Current: "${current.title}" — ${current.status}/${current.priority}`);
-        // A body replacement is destructive and unrecoverable (tickets/ is
-        // gitignored — no undo). Show the current body so the reviewer isn't
-        // approving a blind full-body overwrite; the proposed body is in the
-        // args JSON printed above.
+        // Body replacement is destructive + unrecoverable (tickets/ is gitignored — no undo); show the current body so the reviewer isn't approving a blind overwrite.
         if (typeof args.body === 'string' && args.body !== current.body) {
           console.log('Current body (will be REPLACED by the proposed `body` above):');
           console.log(current.body || '(empty)');
@@ -78,10 +68,7 @@ async function main(): Promise<void> {
     const result = await runIntake(input, { chat, index, approve });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
 
-    // Per-run cost & economics: build the summary + persist the run (usage, cost,
-    // outcome, and the ids of the tickets it authored) through the shared meterRun,
-    // then render it. Reads usage from both runtime clients. meterRun is best-effort —
-    // the tickets are already written, so a run-log failure won't fail the run.
+    // Per-run cost & economics via the shared meterRun (usage from both runtime clients). Best-effort — the tickets are already written, so a run-log failure won't fail the run.
     const usage = mergeUsage(chat.getUsage(), embedder.getUsage());
     const summary = await meterRun({
       runId: result.runId,
