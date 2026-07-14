@@ -11,6 +11,7 @@ import type { RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
 import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../../mcp/handlers.js';
 import { createTicket, updateTicket, getTicket, HttpError } from '../tickets.js';
+import { BoundedMap } from '../lib/boundedMap.js';
 import type { Ticket, Provenance } from '../../shared/constants.js';
 import type { IntakeSearchRequest, IntakeProposeRequest, IntakeApplyRequest } from '../schemas/intake.js';
 
@@ -27,20 +28,25 @@ async function requireRuntime<T>(op: () => Promise<T>): Promise<T> {
   }
 }
 
+// pendingRuns / appliedRuns evict by count only (FIFO) via BoundedMap — the rationale
+// (why a count cap and not a wall-clock TTL) lives on that class. MAX_RUNS is a pure
+// backstop set comfortably above any realistic single-user in-flight count, so it
+// never fires in normal use; it only bounds a long-lived process against accumulating
+// abandoned drafts (each PendingRun holds a full report string, so this is not huge).
+const MAX_RUNS = 200;
+
 // A drafted-but-not-yet-applied intake run: propose() spends the tokens and the
 // agent mints a runId; we stash the usage here so apply() can meter the run
-// WITHOUT trusting a client-sent usage figure. Server-local + ephemeral — a
-// restart just means an in-flight draft's apply logs no economics (best-effort),
-// and abandoned drafts are evicted once the map passes MAX_PENDING.
+// WITHOUT trusting a client-sent usage figure. Server-local + ephemeral — a restart
+// just means an in-flight draft's apply logs no economics (best-effort).
 interface PendingRun { usage: RunUsage; model: string; report: string; at: number }
-const pendingRuns = new Map<string, PendingRun>();
-const MAX_PENDING = 100;
+const pendingRuns = new BoundedMap<PendingRun>(MAX_RUNS);
 
 // runId → the ticket id it applied, so a replayed apply (a retry after a lost
 // response, or a second tab) returns the SAME ticket instead of minting a duplicate
 // + re-metering the run. Bounded like pendingRuns; ephemeral (a restart resets it,
 // which just re-opens the small duplicate window a client retry could hit).
-const appliedRuns = new Map<string, string>();
+const appliedRuns = new BoundedMap<string>(MAX_RUNS);
 
 // runIds whose apply is mid-write. appliedRuns is only populated AFTER the awaited
 // write, so it can't guard the CONCURRENT case (two applies for one runId racing
@@ -49,19 +55,7 @@ const appliedRuns = new Map<string, string>();
 // second apply past it: the loser 409s instead of writing a duplicate.
 const inFlightRuns = new Set<string>();
 
-function rememberApplied(runId: string, ticketId: string): void {
-  if (appliedRuns.size >= MAX_PENDING) {
-    const oldest = appliedRuns.keys().next().value;
-    if (oldest !== undefined) appliedRuns.delete(oldest);
-  }
-  appliedRuns.set(runId, ticketId);
-}
-
 function rememberRun(runId: string, usage: RunUsage, report: string): void {
-  if (pendingRuns.size >= MAX_PENDING) {
-    const oldest = pendingRuns.keys().next().value;
-    if (oldest !== undefined) pendingRuns.delete(oldest);
-  }
   // Captures the CHAT usage — the LLM generation, which dominates the (energy) cost.
   // The board index is process-cached (indexCache), so a propose's embedder cost is
   // only a query embed and isn't cleanly per-run attributable here (the CLI, which
@@ -153,8 +147,8 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
   inFlightRuns.add(input.runId);
   try {
     // Stamp provenance only when a captured run exists to attribute it to — a missing
-    // pending run (restart, or evicted past MAX_PENDING before the user saved) falls back
-    // to a plain human write, so the COMMON no-run case can't dangle the badge's "View
+    // pending run (a fresh process, or dropped by the MAX_RUNS backstop) falls back to a
+    // plain human write, so the COMMON no-run case can't dangle the badge's "View
     // economics" link. NOTE: an assisted UPDATE of a human-authored ticket keeps
     // source:null (authorship-once), so it earns the run link only if the ticket already
     // had a source — a create, or an update of an agent/assisted ticket. (Metering below
@@ -173,7 +167,7 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
       ticket = await createTicket(extractTicketFields(input.args, CREATE_STATUS_ENUM), provenance);
       created = true;
     }
-    rememberApplied(input.runId, ticket.id);
+    appliedRuns.set(input.runId, ticket.id);
     if (pending) {
       pendingRuns.delete(input.runId);
       await meterIntakeRun(input.runId, pending, created, ticket.id);

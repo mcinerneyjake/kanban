@@ -18,6 +18,7 @@ export default defineConfig({
         'server/events.ts',
         'server/stream.ts',
         'server/ticketWatcher.ts',
+        'server/lib/**/*.ts',
         'server/middleware/**/*.ts',
         'server/schemas/**/*.ts',
         'mcp/handlers.ts',
