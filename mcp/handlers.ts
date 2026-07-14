@@ -71,7 +71,7 @@ type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status
 // `validateEnums` 400) rather than silently dropped, so a caller's typo or an
 // impossible state (e.g. status `qa` at create) surfaces as an error instead of
 // a no-op. Enum membership reuses the shared predicates — one source of truth.
-function extractTicketFields(
+export function extractTicketFields(
   args: Record<string, unknown> | undefined,
   allowedStatuses: readonly string[],
 ): TicketFields {

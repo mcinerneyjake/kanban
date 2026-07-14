@@ -33,10 +33,11 @@ export const TYPES = ['bug', 'feature', 'task', 'chore'] as const;
 
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 
-// Provenance: who authored a ticket. Only `agent` is ever stamped — a manual
-// (human/CLI/HTTP) write leaves `source` null. Distinct from Document.source
-// (which names a retrieval connector); this names the WRITER of the record.
-export const SOURCES = ['agent'] as const;
+// Provenance: who authored a ticket. `agent` = an autonomous CLI run wrote it
+// directly; `assisted` = a human reviewed + saved an in-app agent draft (the
+// intake-apply endpoint). A plain human/MCP/HTTP write leaves `source` null.
+// Distinct from Document.source (a retrieval connector); this names the WRITER.
+export const SOURCES = ['agent', 'assisted'] as const;
 
 // Trusted provenance stamp, threaded only through the agent write path (never
 // from HTTP bodies or model tool args) so authorship can't be spoofed.

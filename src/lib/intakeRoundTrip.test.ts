@@ -124,8 +124,13 @@ describe('intake propose→apply round-trip', () => {
     expect(persisted.assignee).toBe('Alice');
   });
 
-  // TODO(tkt-67de93c44726 / tkt-7aa8c73735a9, Bugs A+B): once an intake-apply endpoint
-  // exists, applying a proposal stamps {source:agent, runId} provenance and appends a
-  // run record. Activate when that endpoint lands.
-  it.todo('A/B: an intake-apply stamps agent provenance and records the run');
+  // A+B (tkt-67de93c44726 / tkt-7aa8c73735a9): the intake-apply write path stamps
+  // provenance (source:'assisted') + the runId, so the ticket earns the badge + run
+  // link. The full HTTP endpoint — propose→apply metering + routing — is covered by
+  // server/index.test.ts's `POST /api/intake/apply`; here we lock the write contract.
+  it('A/B: an assisted write stamps source:assisted + runId', async () => {
+    const t = await createTicket({ title: 'Drafted' }, { source: 'assisted', runId: 'run-ab' });
+    expect(t.source).toBe('assisted');
+    expect(t.runId).toBe('run-ab');
+  });
 });

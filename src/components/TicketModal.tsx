@@ -7,7 +7,7 @@ import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
-import { agentRunId } from '../lib/provenance.js';
+import { ticketProvenance } from '../lib/provenance.js';
 import { type Prefill } from '../lib/proposalPrefill.js';
 import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
@@ -22,12 +22,15 @@ type Props = {
   allTickets: Ticket[]
   projects: string[]
   assignees: string[]
-  onSave: (data: Partial<FormState>) => void
+  onSave: (data: Partial<FormState>, runId?: string) => void | Promise<void>
   onDelete: (id: string) => void
-  onOpen: (ticket: Ticket, initial?: Prefill) => void
+  onOpen: (ticket: Ticket, initial?: Prefill, runId?: string) => void
   onOpenRun: (runId: string) => void
   onClose: () => void
   initial?: Prefill
+  // The runId of an agent draft carried in from the update-suggestion reopen path;
+  // non-null makes Save apply through the intake-apply endpoint.
+  initialRunId?: string
 }
 
 const BOARD_STATUS_SET = new Set<StatusId>(BOARD_STATUSES.map((s) => s.id));
@@ -50,7 +53,7 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
 
 // Create (ticket=null) and edit (ticket=object) share one form. The body is
 // Markdown with a live preview toggle.
-export default function TicketModal({ ticket, initial, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
+export default function TicketModal({ ticket, initial, initialRunId, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
   // `form` overlays the agent prefill (`initial`) on the ticket; `baseline` is the
   // ticket's open-time state WITHOUT the prefill. On save we PATCH only the fields
   // that changed vs. baseline, so an unchanged field can't clobber a concurrent
@@ -72,12 +75,17 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const [draftPhase, setDraftPhase] = useState<'idle' | 'loading' | 'error'>('idle');
   const [drafted, setDrafted] = useState(false);
   const [noProposal, setNoProposal] = useState(false);
-  const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill } | null>(null);
+  const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill; runId: string } | null>(null);
   // The agent proposed updating a ticket that isn't on the loaded board (deleted,
   // filtered out, or a wrong/blank id) — hold the id (may be null) + the drafted
   // prefill so we can surface it (never silently duplicate) yet still let the user
   // draft it as a new ticket without losing the agent's content.
-  const [updateNotFound, setUpdateNotFound] = useState<{ targetId: string | null; prefill: Prefill } | null>(null);
+  const [updateNotFound, setUpdateNotFound] = useState<{ targetId: string | null; prefill: Prefill; runId: string } | null>(null);
+  // The runId of the current agent draft, carried into Save so it applies through the
+  // provenance/metering endpoint. Seeded from initialRunId (the update-suggestion
+  // reopen path); set by draft() for a create / "draft as new".
+  const [draftRunId, setDraftRunId] = useState<string | null>(initialRunId ?? null);
+  const [saving, setSaving] = useState(false); // in-flight Save guard — blocks a double-submit
   const [modelStatus, setModelStatus] = useState<'checking' | 'up' | 'down'>(ticket === null ? 'checking' : 'up');
 
   useEffect(() => {
@@ -95,20 +103,22 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     setNoProposal(false);
     setUpdateSuggestion(null);
     setUpdateNotFound(null);
+    setDraftRunId(null);
     try {
       const result = await api.intake.propose(note.trim());
       const proposal = result.proposal;
       if (!proposal) { setNoProposal(true); setDraftPhase('idle'); return; }
       const plan = resolveProposalPlan(proposal, allTickets);
       if (plan.mode === 'update') {
-        setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill });
+        setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill, runId: result.runId });
       } else if (plan.mode === 'not-found') {
         // The agent targeted a ticket we don't have — surface it; do NOT silently
         // draft a duplicate of the ticket it meant to update (tkt-1dfa61b8830e).
-        setUpdateNotFound({ targetId: plan.targetId, prefill: plan.prefill });
+        setUpdateNotFound({ targetId: plan.targetId, prefill: plan.prefill, runId: result.runId });
       } else {
         setForm((f) => ({ ...f, ...plan.prefill }));
         setDrafted(true);
+        setDraftRunId(result.runId);
       }
       setDraftPhase('idle');
     } catch {
@@ -153,7 +163,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const descendantIds = ticket ? getDescendantIds(ticket.id, allTickets) : new Set<string>();
   // Non-null only for an agent-authored existing ticket — gates the provenance
   // note + its deep-link into the run's economics detail.
-  const provenanceRunId = ticket ? agentRunId(ticket) : null;
+  const provenance = ticket ? ticketProvenance(ticket) : null;
   const sameProject = (t: Ticket) => form.project === null || t.project === form.project;
   const parentOptions = allTickets.filter(
     (t) =>
@@ -180,13 +190,18 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   // Derived (never stored) and read-only; only meaningful for a saved ticket.
   const blockedTickets = ticket ? ticketsBlockedBy(ticket.id, allTickets) : [];
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.title.trim()) return;
-    // Existing ticket: PATCH only what changed vs the open-time baseline (so a
-    // stale unchanged field can't overwrite a concurrent external edit). New
-    // ticket: send the whole form (create needs every field).
-    onSave(ticket ? changedFormFields(form, baseline) : form);
+    if (!form.title.trim() || saving) return; // guard re-entry — a double-submit would write twice
+    setSaving(true);
+    try {
+      // Existing ticket: PATCH only what changed vs the open-time baseline (so a
+      // stale unchanged field can't overwrite a concurrent external edit). New
+      // ticket: send the whole form (create needs every field).
+      await onSave(ticket ? changedFormFields(form, baseline) : form, draftRunId ?? undefined);
+    } finally {
+      setSaving(false); // no-op if onSave closed the modal (success); re-enables on a handled error
+    }
   };
 
   // Create flow has three faces: probing the model, the draft-from-note step
@@ -236,7 +251,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                   <button
                     type="button"
                     className="link"
-                    onClick={() => onOpen(updateSuggestion.ticket, updateSuggestion.prefill)}
+                    onClick={() => onOpen(updateSuggestion.ticket, updateSuggestion.prefill, updateSuggestion.runId)}
                   >
                     Open &amp; apply →
                   </button>
@@ -251,7 +266,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                     <button
                       type="button"
                       className="link"
-                      onClick={() => { setForm((f) => ({ ...f, ...updateNotFound.prefill })); setDrafted(true); }}
+                      onClick={() => { setForm((f) => ({ ...f, ...updateNotFound.prefill })); setDrafted(true); setDraftRunId(updateNotFound.runId); }}
                     >
                       draft it as a new ticket →
                     </button>
@@ -287,7 +302,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
           {ticket && <PipelineTracker ticketId={ticket.id} status={ticket.status} />}
 
           {/* Provenance: agent-authored tickets link to their run's economics. */}
-          {provenanceRunId && <ProvenanceNote runId={provenanceRunId} onOpenRun={onOpenRun} />}
+          {provenance && <ProvenanceNote source={provenance.source} runId={provenance.runId} onOpenRun={onOpenRun} />}
 
           {/* Dedup: semantic matches as you type a new ticket. Click one to
               edit it instead of creating a duplicate. */}
@@ -498,8 +513,8 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
             <button type="button" className="btn" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="btn primary">
-              {ticket ? 'Save' : 'Create'}
+            <button type="submit" className="btn primary" disabled={saving}>
+              {saving ? 'Saving…' : ticket ? 'Save' : 'Create'}
             </button>
           </div>
           </>

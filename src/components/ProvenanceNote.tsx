@@ -1,17 +1,22 @@
-// Shown in TicketModal for an agent-authored ticket: the provenance badge and a
-// deep-link into the single-run economics view. Reads only the ticket's `runId`
-// (a reference) — the economics themselves live in the run log and are one click
-// away in the detail view, so this component fetches nothing (per the ticket's
-// data contract: provenance is a pointer, not economics).
+// Shown in TicketModal for a ticket authored via the intake agent: the provenance
+// badge and a deep-link into the single-run economics view. Reads only the ticket's
+// `source`/`runId` (a reference) — the economics live in the run log, one click away
+// in the detail view, so this component fetches nothing (provenance is a pointer).
 import ProvenanceBadge from './ProvenanceBadge.js';
+import { type TicketSource } from '../../shared/constants.js';
 
-type Props = { runId: string; onOpenRun: (runId: string) => void };
+const NOTE: Record<TicketSource, string> = {
+  agent: 'Created by the intake agent',
+  assisted: 'Drafted with the intake agent, saved by you',
+};
 
-export default function ProvenanceNote({ runId, onOpenRun }: Props) {
+type Props = { source: TicketSource; runId: string; onOpenRun: (runId: string) => void };
+
+export default function ProvenanceNote({ source, runId, onOpenRun }: Props) {
   return (
     <div className="provenance-note">
-      <ProvenanceBadge />
-      <span className="provenance-text">Created by the intake agent</span>
+      <ProvenanceBadge source={source} />
+      <span className="provenance-text">{NOTE[source]}</span>
       <button type="button" className="link" onClick={() => onOpenRun(runId)}>
         View economics →
       </button>

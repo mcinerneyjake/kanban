@@ -35,7 +35,7 @@ const send = <T>(url: string, method: string, data?: unknown): Promise<T> =>
 // stays honest rather than claiming a status that may not ship (tkt-727c5cacdfad).
 export interface IntakeMatch { id: string; title: string; status?: Ticket['status']; score: number }
 export interface IntakeProposal { action: string; args: Record<string, unknown> }
-export interface ProposeResult { proposal: IntakeProposal | null; summary: string }
+export interface ProposeResult { proposal: IntakeProposal | null; summary: string; runId: string }
 
 export const api = {
   list: (): Promise<Ticket[]> => get('/api/tickets'),
@@ -67,6 +67,10 @@ export const api = {
       send('/api/intake/search', 'POST', { query, limit }),
     propose: (report: string): Promise<ProposeResult> =>
       send('/api/intake/propose', 'POST', { report }),
+    // Persist a reviewed agent draft through the provenance/metering endpoint (stamps
+    // source:'assisted' + the runId), instead of the plain human create/update routes.
+    apply: (body: { action: 'create_ticket' | 'update_ticket'; runId: string; args: Record<string, unknown> }): Promise<Ticket> =>
+      send('/api/intake/apply', 'POST', body),
     health: (): Promise<{ available: boolean }> => get('/api/intake/health'),
   },
   create: (data: Partial<Ticket>): Promise<Ticket> => send('/api/tickets', 'POST', data),

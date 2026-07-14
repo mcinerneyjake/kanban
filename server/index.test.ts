@@ -9,7 +9,7 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 // reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
-import { appendRun, type RunRecord } from '../agent/cost/runLog.js';
+import { appendRun, readRun, type RunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
@@ -658,6 +658,145 @@ describe('POST /api/intake/propose', () => {
     }));
     const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
+  });
+});
+
+describe('POST /api/intake/apply', () => {
+  let runsDir: string | null = null;
+  beforeAll(async () => {
+    runsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-apply-runs-'));
+    process.env.RUNS_DIR_OVERRIDE = runsDir;
+  });
+  afterAll(async () => {
+    delete process.env.RUNS_DIR_OVERRIDE;
+    if (runsDir) { await fs.rm(runsDir, { recursive: true, force: true }); runsDir = null; }
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  // Scripts the propose flow (embeddings + chat turns with usage) so a real runId +
+  // captured usage land in the server's pending map — the precondition for apply to
+  // stamp provenance + meter (provenance is stamped ONLY when the run is recorded).
+  function stubProposeFlow(turns: { content: string | null; tool_calls?: unknown[] }[]): void {
+    let turn = 0;
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/embeddings')) {
+        const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+        const inputs = isEmbedReq(parsed) ? parsed.input : [];
+        return Promise.resolve(new Response(JSON.stringify({ data: inputs.map((_s, i) => ({ index: i, embedding: [1, 0, 0] })) }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      const message = turns[turn] ?? { content: '(end)' };
+      turn++;
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 } }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    }));
+  }
+  async function proposeRunId(report: string, turns: { content: string | null; tool_calls?: unknown[] }[]): Promise<string> {
+    stubProposeFlow(turns);
+    const res = await request(app).post('/api/intake/propose').send({ report });
+    expect(res.status).toBe(200);
+    vi.unstubAllGlobals(); // apply never calls the model
+    return res.body.runId;
+  }
+
+  // B + A (create): the fix for "the in-app agent shows no badge / no usage" — a
+  // proposed→applied create stamps source:'assisted' + runId (badge + run link) AND
+  // records the run's economics from the captured usage.
+  it('create: stamps assisted + runId and records the run', async () => {
+    const runId = await proposeRunId('a metered bug', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Metered bug"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const res = await request(app).post('/api/intake/apply')
+      .send({ action: 'create_ticket', runId, args: { title: 'Metered bug' } });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ source: 'assisted', runId, title: 'Metered bug' });
+    const run = await readRun(runId);
+    expect(run?.ticketIds.created).toContain(res.body.id);
+    expect(run?.outcome.created).toBe(1);
+    expect(run?.usage.totalTokens).toBeGreaterThan(0);
+  });
+
+  // Seam fidelity (CLAUDE.md integration-seam rule): drive the FULL content field set
+  // through the real propose→apply endpoint and assert every field lands in the
+  // persisted ticket == input. Guards the client-args→extractTicketFields→createTicket
+  // path against a silent per-field drop that title-only tests would miss.
+  it('create: every proposed content field survives the apply boundary (fidelity)', async () => {
+    const args = {
+      title: 'Full fidelity', body: 'repro steps here', type: 'bug',
+      priority: 'high', status: 'todo', assignee: 'Alice', dueDate: '2026-07-20',
+    };
+    const runId = await proposeRunId('a fully specified bug', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: JSON.stringify(args) } }] },
+      { content: 'Proposed.' },
+    ]);
+    const res = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args });
+    expect(res.status).toBe(201);
+    // source-input == persisted-output across every field the agent proposed.
+    expect(res.body).toMatchObject({ ...args, source: 'assisted', runId });
+  });
+
+  // Endpoint idempotency (review): a replayed apply with the same runId (a retry after
+  // a lost response, or a second tab) returns the same ticket — no duplicate, no
+  // double-meter — so the endpoint doesn't rely solely on the modal's in-flight guard.
+  it('is idempotent on runId — a replay returns the same ticket, no duplicate', async () => {
+    const runId = await proposeRunId('idempotent bug', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Idem"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const first = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
+    const second = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
+    expect(first.status).toBe(201);
+    expect(second.body.id).toBe(first.body.id);
+    expect((await tickets.listTickets()).filter((t) => t.title === 'Idem')).toHaveLength(1);
+  });
+
+  // Replay after the applied ticket was deleted: the run still applied, so a retry
+  // acknowledges (200) instead of surfacing the getTicket 404 — a benign retry mustn't error.
+  it('replay after the ticket was deleted → 200 ack, not 404', async () => {
+    const runId = await proposeRunId('deletable bug', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Deletable"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const first = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
+    expect(first.status).toBe(201);
+    await request(app).delete(`/api/tickets/${first.body.id}`).expect(204);
+    const replay = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({ id: first.body.id, deleted: true });
+  });
+
+  // B (update): an assisted update threads the runId (cost link) but leaves authorship
+  // (source) — updateTicket sets it once at create, same rule as the CLI agent.
+  it('update: threads the runId but does not reassign authorship', async () => {
+    await seedTicket('tkt-upd12345678', 'Original'); // human-seeded → source null
+    const runId = await proposeRunId('update the login ticket', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'update_ticket', arguments: '{"id":"tkt-upd12345678","title":"Updated"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const res = await request(app).post('/api/intake/apply')
+      .send({ action: 'update_ticket', runId, args: { id: 'tkt-upd12345678', title: 'Updated' } });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'tkt-upd12345678', title: 'Updated', runId });
+    expect(res.body.source).toBeNull();
+    expect(await readRun(runId)).not.toBeNull();
+  });
+
+  it('update with a missing id → 400 (not a silent create)', async () => {
+    const res = await request(app).post('/api/intake/apply')
+      .send({ action: 'update_ticket', runId: 'run-x', args: { title: 'No id' } });
+    expect(res.status).toBe(400);
+  });
+
+  // An apply whose runId has no captured usage (server restarted, or evicted before
+  // the user saved) falls back to a PLAIN human write — no provenance, so the badge's
+  // "View economics" link can't dangle to a missing run.
+  it('applies with an unknown runId — plain write (no provenance, no run)', async () => {
+    const res = await request(app).post('/api/intake/apply')
+      .send({ action: 'create_ticket', runId: 'run-orphan', args: { title: 'Orphan' } });
+    expect(res.status).toBe(201);
+    expect(res.body.source).toBeNull();
+    expect(res.body.runId).toBeNull();
+    expect(await readRun('run-orphan')).toBeNull();
   });
 });
 
