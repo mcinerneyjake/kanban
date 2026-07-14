@@ -29,6 +29,9 @@ export default function App() {
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
   // Optional agent-triage prefill carried into the create/edit modal.
   const [prefill, setPrefill] = useState<Prefill | null>(null);
+  // The runId of an agent draft carried into the modal — non-null means Save routes
+  // through the intake-apply endpoint (provenance + metering), not the human route.
+  const [draftRunId, setDraftRunId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
@@ -160,14 +163,16 @@ export default function App() {
   // Open the modal — create ('new') or edit (a ticket) — with an optional prefill
   // (the agent's triage proposal). Always (re)sets prefill so a normal open never
   // inherits a stale one.
-  const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null) => {
+  const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null, runId: string | null = null) => {
     setPrefill(initial);
+    setDraftRunId(runId);
     setEditing(target);
   }, []);
 
   const closeTicket = useCallback(() => {
     setEditing(null);
     setPrefill(null);
+    setDraftRunId(null);
   }, []);
 
   // Navigating between views (board ↔ dashboard) closes any open modal — an
@@ -202,10 +207,19 @@ export default function App() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [openTicket]);
 
-  const handleSave = useCallback(async (data: Partial<Ticket>) => {
+  const handleSave = useCallback(async (data: Partial<Ticket>, runId?: string) => {
+    const target = editing !== 'new' ? editing : null; // the ticket being edited, or null for a create
     try {
-      if (editing === 'new') await api.create(data);
-      else if (editing) await api.update(editing.id, data);
+      if (runId) {
+        // An agent-drafted ticket: apply through the provenance/metering endpoint so it
+        // earns the 🤖 Assisted badge + a run-log link (not the plain human route).
+        await api.intake.apply({
+          action: target ? 'update_ticket' : 'create_ticket',
+          runId,
+          args: target ? { ...data, id: target.id } : data,
+        });
+      } else if (target) await api.update(target.id, data);
+      else await api.create(data);
       closeTicket();
       load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -325,6 +339,7 @@ export default function App() {
             key={editing === 'new' ? 'new' : editing.id}
             ticket={editing === 'new' ? null : editing}
             initial={prefill ?? undefined}
+            initialRunId={draftRunId ?? undefined}
             allTickets={tickets}
             projects={projects}
             assignees={assignees}

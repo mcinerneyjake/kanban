@@ -1,17 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { agentRunId } from './provenance.js';
+import { ticketProvenance } from './provenance.js';
 
-describe('agentRunId', () => {
-  it('returns the runId when the ticket is a trusted agent write', () => {
-    expect(agentRunId({ source: 'agent', runId: 'run-1' })).toBe('run-1');
+describe('ticketProvenance', () => {
+  it('returns source+runId for a trusted agent write', () => {
+    expect(ticketProvenance({ source: 'agent', runId: 'run-1' })).toEqual({ source: 'agent', runId: 'run-1' });
   });
-  it('returns null without the agent source stamp (a runId alone is not trusted)', () => {
-    expect(agentRunId({ source: null, runId: 'run-1' })).toBeNull();
-    expect(agentRunId({ source: undefined, runId: 'run-1' })).toBeNull();
+  it('returns source+runId for an assisted (in-app draft) write', () => {
+    expect(ticketProvenance({ source: 'assisted', runId: 'run-2' })).toEqual({ source: 'assisted', runId: 'run-2' });
+  });
+  it('returns null without a source stamp (a runId alone is not trusted)', () => {
+    expect(ticketProvenance({ source: null, runId: 'run-1' })).toBeNull();
+    expect(ticketProvenance({ source: undefined, runId: 'run-1' })).toBeNull();
   });
   it('returns null without a runId (nothing to deep-link to)', () => {
-    expect(agentRunId({ source: 'agent', runId: null })).toBeNull();
-    expect(agentRunId({ source: 'agent', runId: undefined })).toBeNull();
-    expect(agentRunId({ source: 'agent', runId: '' })).toBeNull();
+    expect(ticketProvenance({ source: 'agent', runId: null })).toBeNull();
+    expect(ticketProvenance({ source: 'assisted', runId: undefined })).toBeNull();
+    expect(ticketProvenance({ source: 'agent', runId: '' })).toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import type { Ticket, TicketType } from '../../shared/constants.js';
 import CardProgress from './CardProgress.js';
 import ProvenanceBadge from './ProvenanceBadge.js';
-import { agentRunId } from '../lib/provenance.js';
+import { ticketProvenance } from '../lib/provenance.js';
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' };
 
@@ -53,7 +53,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
   // A passive marker on agent-authored tickets (like the type/priority badges).
   // The run's economics deep-link lives in the ticket modal (ProvenanceNote), so
   // the card stays a single click target — the badge just bubbles to onOpen.
-  const isAgentAuthored = agentRunId(ticket) !== null;
+  const provenance = ticketProvenance(ticket);
 
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     _dragSrcStatus = columnId ?? '';
@@ -133,7 +133,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
         <span className={`badge prio prio-${ticket.priority}`}>
           {ticket.priority}
         </span>
-        {isAgentAuthored && <ProvenanceBadge title="Created by the intake agent" />}
+        {provenance && <ProvenanceBadge source={provenance.source} title="Authored via the intake agent" />}
         {childCount > 0 && (
           <button
             type="button"

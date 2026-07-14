@@ -11,6 +11,8 @@ export interface ProposeResult {
   /** The proposed write, or null if the agent proposed none (e.g. only searched). */
   proposal: IntakeProposal | null;
   summary: string;
+  /** The run's id — links the (later) intake-apply write + its economics back here. */
+  runId: string;
 }
 
 // Run the intake loop in "propose" mode: the agent searches + proposes a
@@ -30,5 +32,5 @@ export async function proposeIntake(report: string, deps: Omit<IntakeDeps, 'appr
       return false; // capture only — never execute
     },
   });
-  return { proposal, summary: result.final };
+  return { proposal, summary: result.final, runId: result.runId };
 }
