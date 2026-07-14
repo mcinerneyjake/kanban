@@ -24,6 +24,20 @@ describe('proposalToPrefill', () => {
   it('returns {} for empty args', () => {
     expect(proposalToPrefill({})).toEqual({});
   });
+
+  it('carries the content fields dueDate and assignee', () => {
+    expect(proposalToPrefill({ title: 'X', dueDate: '2026-07-20', assignee: 'Alice' }))
+      .toEqual({ title: 'X', dueDate: '2026-07-20', assignee: 'Alice' });
+  });
+
+  it('drops the structural fields project/parent/blockers (set via the modal guarded controls)', () => {
+    expect(proposalToPrefill({ title: 'X', project: 'kanban', parent: 'tkt-p', blockers: ['tkt-a'] }))
+      .toEqual({ title: 'X' });
+  });
+
+  it('keeps explicit null for nullable content fields (assignee/dueDate)', () => {
+    expect(proposalToPrefill({ assignee: null, dueDate: null })).toEqual({ assignee: null, dueDate: null });
+  });
 });
 
 describe('proposalTargetId', () => {

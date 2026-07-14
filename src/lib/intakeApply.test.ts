@@ -28,6 +28,26 @@ describe('buildTicketForm', () => {
     expect(form.title).toBe('Login broken');
   });
 
+  // tkt-727c5cacdfad (Bug H): the prefill carries every editable field, and the
+  // overlay reaches the form — not just title/type/priority/status/body.
+  it('overlays the content prefill fields (assignee/dueDate) onto the form', () => {
+    const t = ticket();
+    const form = buildTicketForm(t, [t], { assignee: 'Alice', dueDate: '2026-07-20' });
+    expect(form.assignee).toBe('Alice');
+    expect(form.dueDate).toBe('2026-07-20');
+  });
+
+  // tkt-727c5cacdfad: the STRUCTURAL fields (project/blockers/parent) can't be carried
+  // in the prefill (type-level), so buildTicketForm always keeps the guarded ticket-
+  // derived values — no agent proposal can wipe hidden edges or relink an archived parent.
+  it('keeps ticket-derived project/blockers/parent regardless of the prefill', () => {
+    const t = ticket({ blockers: ['tkt-x'], parent: null, project: 'kanban' });
+    const form = buildTicketForm(t, [t], { assignee: 'Alice' });
+    expect(form.blockers).toEqual(['tkt-x']);
+    expect(form.parent).toBeNull();
+    expect(form.project).toBe('kanban');
+  });
+
   // The regression assertion for tkt-128ee05af9ba: form (with prefill) vs baseline
   // (without) must diff to the proposed change, not {}.
   it('makes an agent-proposed change a real diff vs the prefill-free baseline', () => {
@@ -138,5 +158,24 @@ describe('resolveProposalPlan', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: '' } }, []);
     expect(plan.mode).toBe('not-found');
     if (plan.mode === 'not-found') expect(plan.targetId).toBeNull();
+  });
+
+  // tkt-727c5cacdfad (Bug G): a create-bound prefill drops a non-create status so
+  // createTicket can't 400; an update target keeps the full status.
+  it('clamps a non-create status out of a create-bound prefill', () => {
+    const plan = resolveProposalPlan({ action: 'create_ticket', args: { title: 'X', status: 'qa' } }, []);
+    expect(plan.mode).toBe('create');
+    expect(plan.prefill.status).toBeUndefined();
+  });
+
+  it('keeps a create-valid status in a create-bound prefill', () => {
+    expect(resolveProposalPlan({ action: 'create_ticket', args: { status: 'todo' } }, []).prefill.status).toBe('todo');
+  });
+
+  it('keeps a non-create status for an update target (update accepts every status)', () => {
+    const t = ticket({ id: 'tkt-u' });
+    const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-u', status: 'qa' } }, [t]);
+    expect(plan.mode).toBe('update');
+    expect(plan.prefill.status).toBe('qa');
   });
 });
