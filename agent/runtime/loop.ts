@@ -24,6 +24,12 @@ export const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given 
 4. Only call create_ticket when nothing OPEN on the board already covers the issue.
 When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created or updated (its id and title), or states that no action was taken and why. Never reply with an empty message.`;
 
+// The cost model's fixed, cacheable prompt prefix (system prompt + tool schema) shared
+// by every run — priced separately from the per-run dynamic text. Composed ONCE here so
+// the CLI and the in-app intake controller can't drift apart on the cost basis (both feed
+// it to meterRun as prefixText). Serialized at module load, not per request.
+export const RUN_PREFIX_TEXT = SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS);
+
 // Read-only tools run without approval. Everything else is gated — so a tool
 // added later defaults to requiring approval rather than slipping through
 // unguarded (fail-safe, not fail-open).

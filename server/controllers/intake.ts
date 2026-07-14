@@ -2,11 +2,9 @@ import type { Request, Response } from 'express';
 import { getTicketIndex } from '../../agent/retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from '../../agent/runtime/llm.js';
 import { proposeIntake } from '../../agent/runtime/propose.js';
-import { SYSTEM_PROMPT } from '../../agent/runtime/loop.js';
-import { AGENT_TOOLS } from '../../agent/runtime/tools.js';
-import { appendRun, type RunRecord } from '../../agent/cost/runLog.js';
-import { buildSummary } from '../../agent/cost/summary.js';
-import { resolveCostConfig } from '../../agent/cost/costConfig.js';
+import { RUN_PREFIX_TEXT } from '../../agent/runtime/loop.js';
+import { type RunRecord } from '../../agent/cost/runLog.js';
+import { meterRun } from '../../agent/cost/meterRun.js';
 import type { RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
 import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../../mcp/handlers.js';
@@ -68,44 +66,23 @@ function rememberRun(runId: string, usage: RunUsage, report: string): PendingRun
 
 const NO_TICKETS: RunRecord['ticketIds'] = { created: [], updated: [] };
 
-// The cost model's fixed prefix (system prompt + tool schema) — the cacheable prompt
-// prefix shared by every run. Serialize AGENT_TOOLS once at module load, not per request.
-const RUN_PREFIX_TEXT = SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS);
+// Meter an intake run through the shared cost path (agent/cost/meterRun). Called on the
+// propose path (records the spend the moment it happens, before any ticket exists) and
+// the apply path (re-records the same runId enriched with the created/updated ticket +
+// real review latency). The rollup dedupes duplicate runIds last-wins (economicsSummary),
+// so an applied run's two records collapse to the apply record — counted once, attributed.
+async function meterIntakeRun(runId: string, pending: PendingRun, outcome: RunOutcome, ticketIds: RunRecord['ticketIds'], reviewMs: number): Promise<void> {
+  await meterRun({
+    runId, model: pending.model, usage: pending.usage, outcome, reviewMs,
+    ticketIds, prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
+  });
+}
 
 // Outcome for a run that spent tokens but hasn't produced an applied ticket: a propose
 // (which either captured a proposal — pending review — or the agent proposed nothing).
 // Zero accepted; if the proposal is later applied, apply re-meters with the real outcome.
 function proposeOutcome(proposed: boolean): RunOutcome {
   return { created: 0, updated: 0, declined: 0, noProposal: !proposed, errored: false };
-}
-
-// Persist an intake run's economics from its captured usage. Best-effort — a run-log
-// failure must NOT fail the request (mirrors agent/index.ts). Shared by the propose path
-// (records the spend the moment it happens, before any ticket exists) and the apply path
-// (re-records the same runId enriched with the created/updated ticket + real review
-// latency). The rollup dedupes duplicate runIds last-wins (economicsSummary), so an
-// applied run's two records collapse to the apply record — counted once, attributed.
-async function meterRun(
-  runId: string, pending: PendingRun, outcome: RunOutcome,
-  ticketIds: RunRecord['ticketIds'], reviewMs: number,
-): Promise<void> {
-  try {
-    await appendRun({
-      runId,
-      at: new Date().toISOString(),
-      model: pending.model,
-      usage: pending.usage,
-      outcome,
-      reviewMs,
-      cost: buildSummary({
-        usage: pending.usage, outcome, reviewMs, cfg: resolveCostConfig(), model: pending.model,
-        prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
-      }),
-      ticketIds,
-    });
-  } catch (err) {
-    console.warn(`[runlog] failed to persist intake run ${runId}: ${err instanceof Error ? err.message : String(err)}`);
-  }
 }
 
 export async function search(_req: Request, res: Response, input: IntakeSearchRequest): Promise<void> {
@@ -140,7 +117,7 @@ export async function propose(_req: Request, res: Response, input: IntakePropose
     // restart boundary provenance already has. Durable reconciliation from the log is a
     // follow-up (tkt-2073125cac5c — recover usage + provenance from this record on a pending miss).
     const pending = rememberRun(proposed.runId, chat.getUsage(), input.report);
-    await meterRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
+    await meterIntakeRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
     return proposed;
   });
   res.json(result);
@@ -203,7 +180,7 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
       // This shares the runId with the propose-time record; the rollup keeps this (last) one.
       const outcome: RunOutcome = { created: created ? 1 : 0, updated: created ? 0 : 1, declined: 0, noProposal: false, errored: false };
       const ticketIds = { created: created ? [ticket.id] : [], updated: created ? [] : [ticket.id] };
-      await meterRun(input.runId, pending, outcome, ticketIds, Math.max(0, Date.now() - pending.at));
+      await meterIntakeRun(input.runId, pending, outcome, ticketIds, Math.max(0, Date.now() - pending.at));
     }
     res.status(created ? 201 : 200).json(ticket);
   } finally {
