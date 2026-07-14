@@ -15,9 +15,13 @@ function usage(over: Partial<RunUsage> = {}): RunUsage {
 function outcome(over: Partial<RunOutcome> = {}): RunOutcome {
   return { created: 0, updated: 0, declined: 0, noProposal: false, errored: false, ...over };
 }
+// Distinct runIds by default so multi-run fixtures aren't collapsed by the last-wins
+// dedupe — a run is uniquely identified in reality; tests exercising dedupe pass an
+// explicit shared runId.
+let seq = 0;
 function record(over: Partial<RunRecord> & { at: string }): RunRecord {
   return {
-    runId: 'run',
+    runId: `run-${seq++}`,
     model: 'test-model',
     usage: usage(),
     outcome: outcome(),
@@ -46,6 +50,48 @@ describe('summarizeEconomics — totals', () => {
     expect(s.totals.totalTokens).toBe(0);
     expect(s.measured).toEqual([]);
     expect(s.partial).toBe(false);
+  });
+
+  // A run metered at propose (0 accepted) then re-metered at apply (enriched) appears
+  // twice in the append-only log with ONE runId. The rollup must count it ONCE
+  // (last-wins), matching readRun's detail view — else tokens/cost double-count.
+  it('collapses duplicate runIds to the last record (last-wins), counting the run once', () => {
+    const s = summarizeEconomics([
+      // propose-time record: real usage, not yet applied
+      record({ runId: 'run-dup', at: '2026-07-01T10:00:00.000Z', usage: usage({ totalTokens: 120, activeMs: 500 }), outcome: outcome({ noProposal: false }) }),
+      // apply-time record: SAME runId, same usage, now enriched with the created ticket
+      record({ runId: 'run-dup', at: '2026-07-01T10:05:00.000Z', usage: usage({ totalTokens: 120, activeMs: 500 }), outcome: outcome({ created: 1 }), ticketIds: { created: ['tkt-x'], updated: [] } }),
+    ]);
+    expect(s.runs).toBe(1); // one run, not two
+    expect(s.totals.totalTokens).toBe(120); // counted once, not 240
+    expect(s.totals.acceptedTickets).toBe(1); // the LAST record's outcome wins
+    expect(s.totals.created).toBe(1);
+  });
+
+  it('does not collapse distinct runIds', () => {
+    const s = summarizeEconomics([
+      record({ runId: 'run-a', at: '2026-07-01T10:00:00.000Z', usage: usage({ totalTokens: 100 }) }),
+      record({ runId: 'run-b', at: '2026-07-01T10:00:00.000Z', usage: usage({ totalTokens: 100 }) }),
+    ]);
+    expect(s.runs).toBe(2);
+    expect(s.totals.totalTokens).toBe(200);
+  });
+
+  // Dedupe happens AFTER the range filter: a run proposed in-window but applied out of it
+  // keeps its in-window (propose) record, so the spend isn't dropped just because the
+  // surviving last record fell outside the range.
+  it('keeps an in-range propose record when its apply record is out of range', () => {
+    const runs = [
+      record({ runId: 'run-span', at: '2026-07-01T10:00:00.000Z', usage: usage({ totalTokens: 120 }) }),
+      record({ runId: 'run-span', at: '2026-07-03T10:00:00.000Z', usage: usage({ totalTokens: 120 }), outcome: outcome({ created: 1 }) }),
+    ];
+    const windowed = summarizeEconomics(runs, { from: '2026-07-01', to: '2026-07-02' });
+    expect(windowed.runs).toBe(1);
+    expect(windowed.totals.totalTokens).toBe(120); // the 07-01 spend is preserved, not dropped
+    // The full range still collapses the pair to the applied (last) record.
+    const full = summarizeEconomics(runs);
+    expect(full.runs).toBe(1);
+    expect(full.totals.acceptedTickets).toBe(1);
   });
 });
 

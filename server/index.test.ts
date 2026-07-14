@@ -9,7 +9,7 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 // reads the same module object vitest spies on).
 import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
-import { appendRun, readRun, type RunRecord } from '../agent/cost/runLog.js';
+import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
@@ -597,7 +597,20 @@ describe('POST /api/intake/search', () => {
 });
 
 describe('POST /api/intake/propose', () => {
-  // Stubs both /embeddings (for the index) and /chat/completions (scripted turns).
+  // propose now meters the run (every propose spends tokens) — isolate the run log so
+  // these tests never touch the real runs/ dir. Mirrors the apply describe below.
+  let runsDir: string | null = null;
+  beforeAll(async () => {
+    runsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kanban-propose-runs-'));
+    process.env.RUNS_DIR_OVERRIDE = runsDir;
+  });
+  afterAll(async () => {
+    delete process.env.RUNS_DIR_OVERRIDE;
+    if (runsDir) { await fs.rm(runsDir, { recursive: true, force: true }); runsDir = null; }
+  });
+
+  // Stubs both /embeddings (for the index) and /chat/completions (scripted turns). The
+  // chat response carries usage so the metered propose run records non-zero tokens.
   function stubProposeFlow(turns: { content: string | null; tool_calls?: unknown[] }[]): void {
     let chatTurn = 0;
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -610,7 +623,7 @@ describe('POST /api/intake/propose', () => {
       }
       const message = turns[chatTurn] ?? { content: '(end)' };
       chatTurn++;
-      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 } }), { status: 200, headers: { 'content-type': 'application/json' } }));
     }));
   }
 
@@ -633,6 +646,37 @@ describe('POST /api/intake/propose', () => {
     expect(res.status).toBe(200);
     expect(res.body.proposal).toMatchObject({ action: 'create_ticket', args: { title: 'New bug' } });
     expect((await tickets.listTickets()).some((t) => t.title === 'New bug')).toBe(false);
+  });
+
+  // tkt-098da79e168d: every propose spends tokens, so it must reach the run log even
+  // when never applied — the "measure agent cost" thesis undercounts otherwise.
+  it('meters a run at propose time (captured proposal → noProposal:false, 0 accepted)', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Metered draft"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'a bug to add' });
+    expect(res.status).toBe(200);
+    const run = await readRun(res.body.runId);
+    expect(run).not.toBeNull();
+    expect(run?.usage.totalTokens).toBeGreaterThan(0); // the spend is recorded
+    expect(run?.outcome).toMatchObject({ created: 0, updated: 0, noProposal: false }); // proposed, not yet applied
+    expect(run?.ticketIds).toEqual({ created: [], updated: [] });
+  });
+
+  it('meters a no-proposal run (agent only searched → noProposal:true)', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
+      { content: 'Nothing relevant; no action taken.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(200);
+    expect(res.body.proposal).toBeNull();
+    const run = await readRun(res.body.runId);
+    expect(run?.outcome.noProposal).toBe(true);
+    expect(run?.usage.totalTokens).toBeGreaterThan(0);
   });
 
   it('503 when the runtime is unreachable', async () => {
@@ -714,6 +758,47 @@ describe('POST /api/intake/apply', () => {
     expect(run?.ticketIds.created).toContain(res.body.id);
     expect(run?.outcome.created).toBe(1);
     expect(run?.usage.totalTokens).toBeGreaterThan(0);
+  });
+
+  // tkt-098da79e168d seam invariant: propose meters the spend, apply re-meters enriched
+  // → TWO append-only records share one runId. The rollup must dedupe last-wins so the
+  // run is counted ONCE (not double-counted), matching readRun's detail view.
+  it('propose→apply meters one run in the rollup despite two log records (seam)', async () => {
+    const runId = await proposeRunId('a seam bug', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Seam"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    const applyRes = await request(app).post('/api/intake/apply')
+      .send({ action: 'create_ticket', runId, args: { title: 'Seam' } });
+    expect(applyRes.status).toBe(201);
+
+    const dupes = (await readRuns()).filter((r) => r.runId === runId);
+    expect(dupes).toHaveLength(2); // propose record + apply record, same runId
+    const [first, second] = dupes;
+    expect(first?.usage.totalTokens).toBe(second?.usage.totalTokens); // apply reuses the captured usage
+    expect(second?.usage.totalTokens).toBeGreaterThan(0);
+
+    const s = econ.summarizeEconomics(dupes);
+    expect(s.runs).toBe(1); // counted once, not twice
+    expect(s.totals.totalTokens).toBe(second?.usage.totalTokens); // tokens not doubled
+    expect(s.totals.acceptedTickets).toBe(1); // the apply record's outcome wins
+    // readRun (the ?runId detail view) agrees — last-wins keeps the enriched apply record.
+    expect((await readRun(runId))?.ticketIds.created).toContain(applyRes.body.id);
+  });
+
+  // An abandoned propose (never applied) still contributes its spend to the rollup, with
+  // zero accepted — the undercount fix.
+  it('an abandoned propose is metered with its spend and 0 accepted', async () => {
+    const runId = await proposeRunId('an abandoned draft', [
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Abandoned"}' } }] },
+      { content: 'Proposed.' },
+    ]);
+    // No apply — the user closed the modal.
+    const solo = (await readRuns()).filter((r) => r.runId === runId);
+    expect(solo).toHaveLength(1);
+    const s = econ.summarizeEconomics(solo);
+    expect(s.totals.totalTokens).toBeGreaterThan(0); // spend recorded
+    expect(s.totals.acceptedTickets).toBe(0); // but nothing accepted
   });
 
   // Seam fidelity (CLAUDE.md integration-seam rule): drive the FULL content field set
