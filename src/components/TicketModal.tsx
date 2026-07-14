@@ -73,6 +73,11 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
   const [drafted, setDrafted] = useState(false);
   const [noProposal, setNoProposal] = useState(false);
   const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill } | null>(null);
+  // The agent proposed updating a ticket that isn't on the loaded board (deleted,
+  // filtered out, or a wrong/blank id) — hold the id (may be null) + the drafted
+  // prefill so we can surface it (never silently duplicate) yet still let the user
+  // draft it as a new ticket without losing the agent's content.
+  const [updateNotFound, setUpdateNotFound] = useState<{ targetId: string | null; prefill: Prefill } | null>(null);
   const [modelStatus, setModelStatus] = useState<'checking' | 'up' | 'down'>(ticket === null ? 'checking' : 'up');
 
   useEffect(() => {
@@ -89,6 +94,7 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
     setDraftPhase('loading');
     setNoProposal(false);
     setUpdateSuggestion(null);
+    setUpdateNotFound(null);
     try {
       const result = await api.intake.propose(note.trim());
       const proposal = result.proposal;
@@ -96,6 +102,10 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
       const plan = resolveProposalPlan(proposal, allTickets);
       if (plan.mode === 'update') {
         setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill });
+      } else if (plan.mode === 'not-found') {
+        // The agent targeted a ticket we don't have — surface it; do NOT silently
+        // draft a duplicate of the ticket it meant to update (tkt-1dfa61b8830e).
+        setUpdateNotFound({ targetId: plan.targetId, prefill: plan.prefill });
       } else {
         setForm((f) => ({ ...f, ...plan.prefill }));
         setDrafted(true);
@@ -230,6 +240,22 @@ export default function TicketModal({ ticket, initial, allTickets, projects, ass
                   >
                     Open &amp; apply →
                   </button>
+                </div>
+              )}
+              {updateNotFound && (
+                <div className="draft-notice">
+                  <span>
+                    The agent tried to update a ticket that isn't on your board
+                    {updateNotFound.targetId ? <> (<code>{updateNotFound.targetId}</code>)</> : null} — it may have been
+                    deleted, or the id was wrong. Refine the note, or{' '}
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => { setForm((f) => ({ ...f, ...updateNotFound.prefill })); setDrafted(true); }}
+                    >
+                      draft it as a new ticket →
+                    </button>
+                  </span>
                 </div>
               )}
               <div className="draft-actions">

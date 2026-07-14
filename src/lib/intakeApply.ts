@@ -15,23 +15,25 @@ export interface CapturedProposal {
 // update the EXISTING one the proposal targets.
 export type IntakePlan =
   | { mode: 'create'; prefill: Prefill }
-  | { mode: 'update'; target: Ticket; prefill: Prefill };
+  | { mode: 'update'; target: Ticket; prefill: Prefill }
+  | { mode: 'not-found'; targetId: string | null; prefill: Prefill };
 
 // Decide create-vs-update for a captured intake proposal and project its args to
 // the safe form prefill. Extracted from TicketModal.draft() so the decision is
 // unit-testable against the SAME code the modal runs — not a reimplementation.
 //
-// KNOWN BUG (E, tkt-1dfa61b8830e): an update_ticket proposal whose id is NOT in
-// `allTickets` currently falls through to `mode: 'create'`, silently drafting a
-// duplicate instead of updating. This preserves today's behavior; the fix (a
-// distinct not-found outcome) lands in that ticket. The regression assertion is
-// the `it.fails` case in src/lib/intakeRoundTrip.test.ts.
+// Routed on the ACTION, not just the id: an `update_ticket` proposal MUST resolve
+// to a real, loaded ticket. A missing / blank / unloaded id is 'not-found' — never
+// a create, which would silently draft a DUPLICATE of the ticket the agent meant to
+// update (tkt-1dfa61b8830e). The prefill rides along so the caller can offer to
+// draft it as a new ticket without losing the agent's content.
 export function resolveProposalPlan(proposal: CapturedProposal, allTickets: Ticket[]): IntakePlan {
   const prefill = proposalToPrefill(proposal.args);
-  const targetId = proposalTargetId(proposal);
-  const target = targetId ? allTickets.find((t) => t.id === targetId) : undefined;
+  if (proposal.action !== 'update_ticket') return { mode: 'create', prefill };
+  const targetId = proposalTargetId(proposal) || null; // '' (blank id) collapses to null
+  const target = targetId !== null ? allTickets.find((t) => t.id === targetId) : undefined;
   if (target) return { mode: 'update', target, prefill };
-  return { mode: 'create', prefill };
+  return { mode: 'not-found', targetId, prefill };
 }
 
 // The parent link to seed the form with: the ticket's parent, but only if it's
