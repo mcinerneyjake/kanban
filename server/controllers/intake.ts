@@ -4,7 +4,7 @@ import { RuntimeChatClient, resolveLlmConfig } from '../../agent/runtime/llm.js'
 import { proposeIntake } from '../../agent/runtime/propose.js';
 import { SYSTEM_PROMPT } from '../../agent/runtime/loop.js';
 import { AGENT_TOOLS } from '../../agent/runtime/tools.js';
-import { appendRun } from '../../agent/cost/runLog.js';
+import { appendRun, type RunRecord } from '../../agent/cost/runLog.js';
 import { buildSummary } from '../../agent/cost/summary.js';
 import { resolveCostConfig } from '../../agent/cost/costConfig.js';
 import type { RunUsage } from '../../agent/cost/usage.js';
@@ -55,21 +55,40 @@ const appliedRuns = new BoundedMap<string>(MAX_RUNS);
 // second apply past it: the loser 409s instead of writing a duplicate.
 const inFlightRuns = new Set<string>();
 
-function rememberRun(runId: string, usage: RunUsage, report: string): void {
+function rememberRun(runId: string, usage: RunUsage, report: string): PendingRun {
   // Captures the CHAT usage — the LLM generation, which dominates the (energy) cost.
   // The board index is process-cached (indexCache), so a propose's embedder cost is
   // only a query embed and isn't cleanly per-run attributable here (the CLI, which
   // rebuilds+embeds per run, uses a different accounting model). Chat-only is the
   // meaningful, directly-attributable figure; the embed delta is minor + amortized.
-  pendingRuns.set(runId, { usage, model: resolveLlmConfig().model, report, at: Date.now() });
+  const pending: PendingRun = { usage, model: resolveLlmConfig().model, report, at: Date.now() };
+  pendingRuns.set(runId, pending);
+  return pending;
 }
 
-// Persist the applied intake run's economics from its captured usage. Best-effort —
-// the ticket is already written, so a run-log failure must NOT fail the request
-// (mirrors agent/index.ts).
-async function meterIntakeRun(runId: string, pending: PendingRun, created: boolean, ticketId: string): Promise<void> {
-  const outcome: RunOutcome = { created: created ? 1 : 0, updated: created ? 0 : 1, declined: 0, noProposal: false, errored: false };
-  const reviewMs = Math.max(0, Date.now() - pending.at);
+const NO_TICKETS: RunRecord['ticketIds'] = { created: [], updated: [] };
+
+// The cost model's fixed prefix (system prompt + tool schema) — the cacheable prompt
+// prefix shared by every run. Serialize AGENT_TOOLS once at module load, not per request.
+const RUN_PREFIX_TEXT = SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS);
+
+// Outcome for a run that spent tokens but hasn't produced an applied ticket: a propose
+// (which either captured a proposal — pending review — or the agent proposed nothing).
+// Zero accepted; if the proposal is later applied, apply re-meters with the real outcome.
+function proposeOutcome(proposed: boolean): RunOutcome {
+  return { created: 0, updated: 0, declined: 0, noProposal: !proposed, errored: false };
+}
+
+// Persist an intake run's economics from its captured usage. Best-effort — a run-log
+// failure must NOT fail the request (mirrors agent/index.ts). Shared by the propose path
+// (records the spend the moment it happens, before any ticket exists) and the apply path
+// (re-records the same runId enriched with the created/updated ticket + real review
+// latency). The rollup dedupes duplicate runIds last-wins (economicsSummary), so an
+// applied run's two records collapse to the apply record — counted once, attributed.
+async function meterRun(
+  runId: string, pending: PendingRun, outcome: RunOutcome,
+  ticketIds: RunRecord['ticketIds'], reviewMs: number,
+): Promise<void> {
   try {
     await appendRun({
       runId,
@@ -80,9 +99,9 @@ async function meterIntakeRun(runId: string, pending: PendingRun, created: boole
       reviewMs,
       cost: buildSummary({
         usage: pending.usage, outcome, reviewMs, cfg: resolveCostConfig(), model: pending.model,
-        prefixText: SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS), dynamicText: pending.report,
+        prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
       }),
-      ticketIds: { created: created ? [ticketId] : [], updated: created ? [] : [ticketId] },
+      ticketIds,
     });
   } catch (err) {
     console.warn(`[runlog] failed to persist intake run ${runId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -108,11 +127,21 @@ export async function propose(_req: Request, res: Response, input: IntakePropose
   const result = await requireRuntime(async () => {
     const index = await getTicketIndex();
     const chat = RuntimeChatClient.fromEnv();
-    const proposal = await proposeIntake(input.report, { chat, index });
-    // The propose call spent the tokens; stash its usage keyed by the run's id so
-    // a later apply can meter it. (The proposal is read-only — nothing written yet.)
-    rememberRun(proposal.runId, chat.getUsage(), input.report);
-    return proposal;
+    const proposed = await proposeIntake(input.report, { chat, index });
+    // The propose spent the tokens. Stash the usage so a later apply can re-meter it
+    // (enriched with the ticket), AND meter the spend NOW so re-drafted / no-proposal /
+    // abandoned proposes — which are never applied — still reach the run log. An applied
+    // proposal produces a second record at apply; the rollup dedupes last-wins.
+    //
+    // Reconciliation is best-effort: apply's enriched record collapses this one when the
+    // in-memory `pending` survives. If `pending` is lost before apply (a server restart,
+    // or MAX_RUNS eviction), this record REMAINS as honest spend with 0 accepted — the
+    // ticket then applies via the plain path and loses its economics link, the same
+    // restart boundary provenance already has. Durable reconciliation from the log is a
+    // follow-up (tkt-2073125cac5c — recover usage + provenance from this record on a pending miss).
+    const pending = rememberRun(proposed.runId, chat.getUsage(), input.report);
+    await meterRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
+    return proposed;
   });
   res.json(result);
 }
@@ -170,7 +199,11 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
     appliedRuns.set(input.runId, ticket.id);
     if (pending) {
       pendingRuns.delete(input.runId);
-      await meterIntakeRun(input.runId, pending, created, ticket.id);
+      // Re-meter the run enriched with the created/updated ticket + real review latency.
+      // This shares the runId with the propose-time record; the rollup keeps this (last) one.
+      const outcome: RunOutcome = { created: created ? 1 : 0, updated: created ? 0 : 1, declined: 0, noProposal: false, errored: false };
+      const ticketIds = { created: created ? [ticket.id] : [], updated: created ? [] : [ticket.id] };
+      await meterRun(input.runId, pending, outcome, ticketIds, Math.max(0, Date.now() - pending.at));
     }
     res.status(created ? 201 : 200).json(ticket);
   } finally {

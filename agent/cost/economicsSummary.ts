@@ -129,8 +129,21 @@ function buildTimeSeries(runs: RunRecord[]): EconomicsPoint[] {
   return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+// A propose-metered run is re-metered (enriched with ticketIds/outcome) at apply, so the
+// append-only log holds two records for one runId. Collapse to the LAST (last-wins, the
+// same rule readRun uses for the ?runId detail view) so the rollup counts each run ONCE
+// instead of double-counting its tokens/cost. A no-op on logs with ≤1 record per runId.
+function lastPerRunId(runs: RunRecord[]): RunRecord[] {
+  const byId = new Map<string, RunRecord>();
+  for (const r of runs) byId.set(r.runId, r); // a later record overwrites an earlier one
+  return [...byId.values()];
+}
+
 export function summarizeEconomics(runs: RunRecord[], opts: EconomicsRange = {}): EconomicsSummary {
-  const scope = runs.filter((r) => inRange(r.at, opts.from, opts.to));
+  // Filter to the range FIRST, then dedupe — so a propose/apply pair straddling a range
+  // boundary keeps whichever record is in-window (the spend is never dropped just because
+  // the surviving last record fell outside it). Deduping first could discard the run.
+  const scope = lastPerRunId(runs.filter((r) => inRange(r.at, opts.from, opts.to)));
 
   const totals: EconomicsTotals = {
     promptTokens: 0, completionTokens: 0, totalTokens: 0, activeMs: 0,
