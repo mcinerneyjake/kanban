@@ -55,7 +55,9 @@ describe('proposeIntake', () => {
     ]);
     const result = await proposeIntake('add a thing', { chat, index: await buildIndex() });
     expect(result.proposal).toEqual({ action: 'create_ticket', args: { title: 'New from agent' } });
-    expect(result.summary).toBe('Proposed creating a ticket.');
+    // Summary is synthesized from the proposal (the loop halts at capture, so the
+    // model's own summary turn is never reached) — see the narration-bug fix below.
+    expect(result.summary).toBe('Proposed a new ticket "New from agent" for your review.');
     expect((await listTickets()).some((t) => t.title === 'New from agent')).toBe(false);
   });
 
@@ -98,6 +100,37 @@ describe('proposeIntake', () => {
     ]);
     const result = await proposeIntake('x', { chat, index: await buildIndex() });
     expect(result.proposal).toEqual({ action: 'create_ticket', args: {} });
+  });
+
+  // tkt-2107252ff0fb: the loop must HALT at the first captured mutation so the model
+  // never observes a decline (which it narrated as a failure) and can't be tempted
+  // into a corrective duplicate-create. The summary is synthesized, not the model's.
+  it('halts at the first captured mutation — non-failure summary, no post-capture turn', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'update_ticket', '{"id":"t1","status":"done"}')]),
+      // The old code fed the decline back and let the model keep going — it would
+      // reach these turns and either narrate a failure or attempt a corrective
+      // duplicate-create. The halt must make both unreachable.
+      assistant(null, [toolCall('c2', 'create_ticket', '{"title":"Corrective dup"}')]),
+      assistant('No changes were made because the update was declined.'),
+    ]);
+    const result = await proposeIntake('login broken again', { chat, index: await buildIndex() });
+    expect(result.proposal).toMatchObject({ action: 'update_ticket', args: { id: 't1', status: 'done' } });
+    // The captured proposal drives the summary — NOT the model's failure narration.
+    expect(result.summary).toContain('Proposed an update to t1');
+    expect(result.summary).not.toMatch(/declined|no changes were made/i);
+    // The loop stopped at the first mutation: the corrective-create + failure-summary
+    // turns were never consumed, and nothing was written.
+    expect(chat.calls).toBe(1);
+    expect((await listTickets()).length).toBe(0);
+  });
+
+  it('names the changed fields in an update proposal summary', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'update_ticket', '{"id":"t1","priority":"high"}')]),
+    ]);
+    const result = await proposeIntake('bump it', { chat, index: await buildIndex() });
+    expect(result.summary).toBe('Proposed an update to t1 (priority) for your review.');
   });
 
   it('ignores a non-create/update gated call and captures the real create/update (tkt-fa3b427fb0b6)', async () => {
