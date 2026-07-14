@@ -79,6 +79,14 @@ export interface IntakeDeps {
   // Gate for non-read-only tools. Omit to auto-approve (programmatic use); the
   // CLI always supplies a prompting gate.
   approve?: ApproveFn;
+  // Propose mode: capture the first proposed create/update and HALT the loop. The
+  // action is neither executed nor declined-back-to-the-model, so the model never
+  // observes its own capture as a rejection (which it would narrate as a failure)
+  // and can't be tempted into a corrective duplicate action. The callback records
+  // the proposal and returns the run's final summary (synthesized from it). Read-only
+  // tools still run first (the agent searches before proposing); any other gated tool
+  // falls through to `approve`.
+  onCapture?: (name: string, args: Record<string, unknown> | undefined) => string;
   // Inject a fixed runId (tests); otherwise a fresh one is minted per run.
   runId?: string;
 }
@@ -89,6 +97,16 @@ export function mutationKind(name: string): 'create' | 'update' | null {
   if (name === 'create_ticket') return 'create';
   if (name === 'update_ticket') return 'update';
   return null;
+}
+
+// The RunOutcome shape lives here once so a new field is added in a single place.
+// `noProposal` is derived (nothing created/updated/declined) unless the caller forces
+// it — the propose-mode halt captures a proposal without tallying it, so it passes
+// noProposal: false explicitly.
+function buildOutcome(
+  created: number, updated: number, declined: number, errored: boolean, noProposal?: boolean,
+): RunOutcome {
+  return { created, updated, declined, errored, noProposal: noProposal ?? created + updated + declined === 0 };
 }
 
 // Run one tool call, gating anything that isn't read-only behind the callback.
@@ -135,17 +153,28 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     const calls = assistant.tool_calls ?? [];
     if (calls.length === 0) {
       const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
-      const outcome: RunOutcome = {
-        created, updated, declined: declinedCount,
-        noProposal: created + updated + declinedCount === 0,
-        errored: false,
-      };
+      const outcome = buildOutcome(created, updated, declinedCount, false);
       return { final, messages, steps: step, outcome, runId, createdIds, updatedIds };
     }
 
     for (const call of calls) {
-      const { result, declined: wasDeclined } = await runCall(call.function.name, parseArgs(call.function.arguments), deps, runId);
-      const kind = mutationKind(call.function.name);
+      const name = call.function.name;
+      const args = parseArgs(call.function.arguments);
+      const kind = mutationKind(name);
+      // Propose mode: capture the first proposed create/update and halt the loop —
+      // don't dispatch it, don't feed a decline back (which the model would narrate
+      // as a failure). The synthesized summary comes from the captured proposal.
+      // noProposal is false (a proposal WAS captured) even though nothing is tallied.
+      // NOTE: `messages` deliberately ends on this assistant turn with the captured
+      // tool_call unanswered — the call was neither run nor declined. propose-mode
+      // traces are not replayed (proposeIntake discards messages); a future consumer
+      // that replays them would need to backfill a synthetic tool response first.
+      if (deps.onCapture && kind) {
+        const final = deps.onCapture(name, args);
+        const outcome = buildOutcome(created, updated, declinedCount, false, false);
+        return { final, messages, steps: step, outcome, runId, createdIds, updatedIds };
+      }
+      const { result, declined: wasDeclined } = await runCall(name, args, deps, runId);
       // Count a mutation as accepted ONLY when it was neither declined nor
       // errored — a failed create/update (e.g. missing title → 400 → isError)
       // produced no ticket, so it must not be credited as created/updated (which
@@ -167,11 +196,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   // Step budget exhausted. Return an errored outcome rather than throwing, so
   // the usage/tally of mutations that DID execute before the budget ran out is
   // preserved (a throw would discard it and never set RunOutcome.errored).
-  const outcome: RunOutcome = {
-    created, updated, declined: declinedCount,
-    noProposal: created + updated + declinedCount === 0,
-    errored: true,
-  };
+  const outcome = buildOutcome(created, updated, declinedCount, true);
   const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
     `${created + updated} mutation(s) were applied before the step budget ran out.`;
   return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds };
