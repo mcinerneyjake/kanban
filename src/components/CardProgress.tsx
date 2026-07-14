@@ -2,10 +2,6 @@ import type { StatusId } from '../../shared/constants.js';
 import { useTicketEvents } from '../useTicketEvents.js';
 import { pipelineView } from '../lib/pipelineView.js';
 
-// Compact glance indicator on an in-progress board card: a thin progress bar +
-// the current phase ("Implementing…", "Lint", "test failed"). Answers "is it
-// moving or stuck?" without opening the ticket. Polls its own events — only
-// mounted for in-progress cards (typically one at a time), so the cost is trivial.
 export default function CardProgress({ ticketId, status }: { ticketId: string; status: StatusId }) {
   const { data } = useTicketEvents(ticketId, true);
   if (!data) return null;

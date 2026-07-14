@@ -6,12 +6,8 @@ import { readEvents } from './events.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 import type { Ticket } from '../shared/constants.js';
 
-// updateTicket emits status-milestone telemetry; the helper redirects both the
-// tickets and events I/O to isolated temp dirs (fixtures below write to
-// dirs.tickets directly).
 const dirs = setupTempTicketDirs('kanban-test');
 
-// Awaits a promise expected to reject with HttpError and returns the error.
 async function httpError<T>(p: Promise<T>): Promise<HttpError> {
   const err = await p.catch((e) => e);
   expect(err).toBeInstanceOf(HttpError);
@@ -19,7 +15,6 @@ async function httpError<T>(p: Promise<T>): Promise<HttpError> {
   return err;
 }
 
-// Writes a raw .md file directly into the temp tickets dir.
 function makeRaw(title: string, order: number, overrides: Record<string, string> = {}): string {
   const fields: Record<string, string> = {
     title,
@@ -60,8 +55,7 @@ describe('dueDate format validation', () => {
   });
 
   it('rejects an impossible date that matches the YYYY-MM-DD shape', async () => {
-    // These pass the regex but are not real calendar dates — they would NaN the
-    // overdue comparison the guard protects.
+    // Pass the regex but aren't real calendar dates — would NaN the overdue comparison.
     for (const bad of ['2026-99-99', '2026-13-01', '2026-02-30', '2026-00-10']) {
       const err = await httpError(createTicket({ title: 'A', dueDate: bad }));
       expect(err.status).toBe(400);
@@ -102,8 +96,7 @@ describe('fs error mapping (getTicket)', () => {
   });
 
   it('rethrows a non-ENOENT fs error instead of masking it as a 404', async () => {
-    // A directory where the .md file is expected makes readFile throw EISDIR, not
-    // ENOENT — a real fault that must surface (→ 500), not be reported as missing.
+    // A dir where the .md is expected makes readFile throw EISDIR, not ENOENT — must surface (→ 500).
     const dir = path.join(dirs.tickets, 'tkt-isdir.md');
     await fs.mkdir(dir);
     try {
@@ -210,8 +203,7 @@ describe('normalize coercion', () => {
   });
 
   it('coerces a numeric title (unquoted number in YAML) to empty string', async () => {
-    // js-yaml parses `title: 42` as the number 42; asString() must not let it
-    // flow through as a non-string value — returns '' as a safe fallback.
+    // js-yaml parses `title: 42` as a number; asString() returns '' as a safe fallback.
     const raw = [
       '---',
       'title: 42',
@@ -469,7 +461,6 @@ describe('normalize raw-file coercion (invalid enums + blockers)', () => {
   });
 });
 
-// Helpers for archiveStaleTickets tests.
 // "stale" = updated >3 days ago; "fresh" = updated just now.
 const STALE_DATE = "'2026-01-01T00:00:00.000Z'";
 const freshDate = () => `'${new Date().toISOString()}'`;
@@ -513,9 +504,7 @@ describe('archiveStaleTickets', () => {
   });
 
   it('does not archive a done ticket with a missing updated field (NaN guard)', async () => {
-    // Write a ticket without an `updated` key — normalize() produces '' via asString(),
-    // which makes new Date('').getTime() return NaN. The guard must treat NaN as "unknown
-    // age" and skip archiving rather than archiving immediately.
+    // No `updated` key → new Date('').getTime() is NaN; the guard skips rather than archiving.
     const raw = [
       '---',
       'title: No updated field',
@@ -782,17 +771,14 @@ describe('updateTicket — status-milestone telemetry', () => {
 describe('concurrent same-id writes (temp-file uniqueness)', () => {
   it('resolves two overlapping updates on one id without a 500 and leaves a consistent file', async () => {
     const t = await createTicket({ title: 'Race', body: 'start' });
-    // Fire both writes without awaiting in between so their writeFile/rename
-    // interleave. A pid-only temp name would let them share one temp path and
-    // ENOENT one rename; the per-call random suffix keeps them independent.
+    // Interleaved writes: the per-call random temp suffix keeps their renames independent.
     const [a, b] = await Promise.all([
       updateTicket(t.id, { body: 'first' }),
       updateTicket(t.id, { body: 'second' }),
     ]);
     expect(a.id).toBe(t.id);
     expect(b.id).toBe(t.id);
-    // Both resolved; the persisted file is whichever rename landed last — either
-    // way it's one of the two bodies, never a half-written or missing file.
+    // Whichever rename landed last — one of the two bodies, never half-written or missing.
     const persisted = await getTicket(t.id);
     expect(['first', 'second']).toContain(persisted.body);
     // No stray .tmp left beside the ticket file.
@@ -802,9 +788,7 @@ describe('concurrent same-id writes (temp-file uniqueness)', () => {
 });
 
 describe('write-path type + create-status validation', () => {
-  // A raw HTTP body bypasses TicketPatch typing at runtime. Object.assign lets
-  // us stage a wrong-typed field onto a typed input without an `as` cast (banned
-  // by consistent-type-assertions), matching what express.json() would deliver.
+  // Stages a wrong-typed field via Object.assign (no `as` cast), as express.json() would deliver.
   function withRuntime(base: Partial<Ticket>, extra: Record<string, unknown>): Partial<Ticket> {
     Object.assign(base, extra);
     return base;
@@ -876,10 +860,8 @@ describe('corrupt ticket file resilience', () => {
   });
 
   it('stays consistent across repeated reads (gray-matter content cache is bypassed)', async () => {
-    // Regression guard for the NO_CACHE fix: gray-matter caches the un-parsed
-    // file before parsing (only when no options are passed), so a corrupt file
-    // would throw once then return a cached empty success — a 500 that decays
-    // into a silent empty ghost on the next read. Both reads must behave the same.
+    // NO_CACHE guard: gray-matter's un-parsed cache would let a corrupt file throw once
+    // then return a cached empty success (500 decaying to a silent ghost). Both reads must match.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
     await writeRaw('tkt-bad', CORRUPT);
     expect((await listTickets()).map((t) => t.id)).not.toContain('tkt-bad');

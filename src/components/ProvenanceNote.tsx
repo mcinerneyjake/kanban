@@ -1,7 +1,3 @@
-// Shown in TicketModal for a ticket authored via the intake agent: the provenance
-// badge and a deep-link into the single-run economics view. Reads only the ticket's
-// `source`/`runId` (a reference) — the economics live in the run log, one click away
-// in the detail view, so this component fetches nothing (provenance is a pointer).
 import ProvenanceBadge from './ProvenanceBadge.js';
 import { type TicketSource } from '../../shared/constants.js';
 

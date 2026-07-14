@@ -1,8 +1,4 @@
-// Pure geometry for the economics time-series chart — maps a value series to SVG
-// coordinates in a viewBox, so the component stays declarative and the math is
-// unit-testable (mirrors src/lib/donutSegments.ts). Index → x (evenly spaced),
-// value → y (min at the bottom, max at the top; a flat series sits on the
-// midline rather than dividing by a zero range).
+// Maps a value series to SVG coords: index → x (evenly spaced), value → y (max at top; a flat series sits on the midline, not a divide-by-zero).
 
 export interface LinePoint { x: number; y: number }
 
@@ -30,13 +26,11 @@ export function linePoints({ values, width, height, pad = 0 }: LineChartInput): 
   }));
 }
 
-// An SVG polyline path ("M x y L x y …") through the points.
 export function toLinePath(points: LinePoint[]): string {
   return points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ');
 }
 
-// A closed area path: the line, dropped to `baselineY` at both ends. Empty when
-// there are no points.
+// Closed area path: the line dropped to baselineY at both ends.
 export function toAreaPath(points: LinePoint[], baselineY: number): string {
   if (points.length === 0) return '';
   const first = points[0];

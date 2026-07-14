@@ -1,8 +1,4 @@
-// Records a REAL agent run into a replay Trace (agent/replayTrace.ts) by wrapping
-// the three dependency seams runIntake already accepts — chat, index, approve —
-// so nothing in loop.ts / tools.ts / llm.ts changes. Each wrapper appends a typed
-// step to one shared, ordered sink (call order = true run order); buildTrace then
-// brackets that sink with the opening `note` and the closing `final`.
+// Records a REAL agent run into a replay Trace by wrapping the three seams runIntake accepts (chat, index, approve) — no changes to loop/tools/llm. Wrappers append typed steps to one shared ordered sink (call order = true run order).
 
 import type { ChatClient, ChatMessage } from '../runtime/llm.js';
 import type { ChatTool } from '../runtime/tools.js';
@@ -15,9 +11,7 @@ import type {
   NoteStep, FinalStep, LlmCallStep, RetrievalStep, ApprovalStep,
 } from './replayTrace.js';
 
-// The chat wrapper needs per-call tokens, which the ChatClient interface doesn't
-// expose — only the RuntimeChatClient's accumulating meter does. We read it by
-// diffing getUsage() across the call, so any metered client works (real or fake).
+// Per-call tokens aren't on the ChatClient interface — read them by diffing getUsage() across the call, so any metered client works (real or fake).
 export interface MeteredChatClient extends ChatClient {
   getUsage(): RunUsage;
 }
@@ -55,9 +49,7 @@ function toTraceOutcome(o: RunOutcome): TraceOutcome {
   return { created: o.created, updated: o.updated, declined: o.declined };
 }
 
-// Wraps a metered chat client, emitting one `llm_call` step per turn with the
-// per-call active-compute time and tokens (via a getUsage() diff — undefined when
-// the runtime reported no usage block, matching the meter's reportedCalls rule).
+// One `llm_call` step per turn; tokens come from a getUsage() diff — undefined when the runtime reported no usage block (matching the meter's reportedCalls rule).
 export class RecordingChatClient implements ChatClient {
   constructor(private readonly inner: MeteredChatClient, private readonly onStep: StepSink) {}
 
@@ -85,10 +77,7 @@ export class RecordingChatClient implements ChatClient {
   }
 }
 
-// Instruments a DocumentIndex in place so every search emits a `retrieval` step
-// with the full ScoredDocument hits (scores/meta/chunk) BEFORE the tool layer
-// projects them down to id/title/status/score. Mutates the index the recorder
-// owns — never a shared one.
+// Instruments a DocumentIndex in place, emitting a `retrieval` step with the full ScoredDocument hits BEFORE the tool layer projects them down. Mutates the index the recorder owns — never a shared one.
 export function instrumentIndexSearch(index: DocumentIndex, onStep: StepSink, now: () => number): void {
   const original = index.search.bind(index);
   index.search = async (query: string, k = 5, opts: { rollup?: boolean } = {}): Promise<ScoredDocument[]> => {
@@ -100,8 +89,7 @@ export function instrumentIndexSearch(index: DocumentIndex, onStep: StepSink, no
   };
 }
 
-// Wraps an approval decision, emitting one `approval` step per gated (mutating)
-// tool with the proposed action/args, the decision, and the gate-open time.
+// One `approval` step per gated tool: proposed action/args, decision, gate-open time.
 export function recordingApprove(decide: ApproveFn, onStep: StepSink, now: () => number): ApproveFn {
   return async (name, args) => {
     const t0 = now();
@@ -130,8 +118,7 @@ export interface FinalizeInput {
   usage: RunUsage;
 }
 
-// Brackets the collected mid-run steps with the opening note + closing final and
-// assembles the meta. Pure — unit-tested independently of a live run.
+// Brackets the mid-run steps with the opening note + closing final and assembles the meta. Pure.
 export function buildTrace(steps: TraceStep[], input: FinalizeInput): Trace {
   const note: NoteStep = { type: 'note', text: input.input };
   const final: FinalStep = {
@@ -151,8 +138,7 @@ export function buildTrace(steps: TraceStep[], input: FinalizeInput): Trace {
   };
 }
 
-// Owns the ordered step sink and hands out the three wrapped deps. The recorder
-// builds its deps, wraps them here, runs the intake, then calls build().
+// Owns the ordered step sink and hands out the three wrapped deps.
 export class ReplayRecorder {
   readonly steps: TraceStep[] = [];
   constructor(private readonly now: () => number = () => Date.now()) {}

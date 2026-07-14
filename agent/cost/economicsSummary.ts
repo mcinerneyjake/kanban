@@ -13,24 +13,14 @@ import {
   LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
-// ---------------------------------------------------------------------------
-// Economics aggregation. Rolls the per-run records in the run log up into a
-// FinOps summary for GET /api/economics: totals, cost lines summed across the
-// range (grouped measured/assumed/externalities), re-derived headline metrics,
-// and a per-day time series. Pure `summarizeEconomics` (testable without IO) +
-// a thin `summarizeEconomicsFromLog` wrapper over readRuns(), mirroring the
-// summarize / summarizeBoard split in server/tickets.ts.
-// ---------------------------------------------------------------------------
+// Economics aggregation for GET /api/economics: rolls per-run records into a FinOps summary. Pure summarizeEconomics + thin summarizeEconomicsFromLog wrapper over readRuns().
 
 export interface EconomicsRange {
   from?: string; // inclusive lower bound (ISO; the controller normalizes bare dates)
   to?: string;   // inclusive upper bound
 }
 
-// Compare by parsed INSTANT, not lexically: the run log's `at` is canonical
-// `...Z`, but a client-supplied bound may carry a zone offset or omit
-// milliseconds, which a string compare would order wrongly and silently drop
-// in-window runs. An unparseable bound is treated as unbounded.
+// Compare by parsed INSTANT, not lexically — a zone-offset or ms-less bound would order wrongly under a string compare and silently drop in-window runs. Unparseable bound = unbounded.
 function inRange(at: string, from?: string, to?: string): boolean {
   const t = Date.parse(at);
   if (from) { const f = Date.parse(from); if (!Number.isNaN(f) && t < f) return false; }
@@ -38,8 +28,7 @@ function inRange(at: string, from?: string, to?: string): boolean {
   return true;
 }
 
-// Notes describe the AGGREGATE's provenance (matching economics.ts's hyphen
-// style), never a stale per-run note carried over.
+// Notes describe the AGGREGATE's provenance, never a stale per-run note carried over.
 const PARTIAL_NOTE = 'partial - some runs were notional';
 const NOTIONAL_NOTE = 'notional - not reported in any run';
 
@@ -47,13 +36,7 @@ const groupKey = (l: { label: string; unit: string }): string => JSON.stringify(
 
 interface Agg { label: string; unit: string; kind: CostLine['kind']; sum: number; count: number; sawNum: boolean; sawNull: boolean }
 
-// Sum a cost-line group across runs, keyed by (label, unit) — `'marginal energy'`
-// ships in both kWh and USD, so label alone would collide. Notes reflect the
-// aggregate: a line that was only ever null stays null + notional; a mix of null
-// and real sums the reals and is flagged partial (so a real total is never
-// mislabelled "notional", and an incomplete sum isn't shown as if complete).
-// `partial` = any USD line saw a null; `nullish` = the (label,unit) keys that
-// saw a null, so the headline derivation can flag a partially-summed total.
+// Sum a cost-line group across runs, keyed by (label, unit) — 'marginal energy' ships in both kWh and USD, so label alone would collide. `partial` = any USD line saw a null; `nullish` = the (label,unit) keys that saw a null, for the headline derivation.
 function sumGroup(perRun: CostLine[][]): { lines: EconomicsLine[]; partial: boolean; nullish: Set<string> } {
   const acc = new Map<string, Agg>();
   let partial = false;
@@ -76,8 +59,7 @@ function sumGroup(perRun: CostLine[][]): { lines: EconomicsLine[]; partial: bool
   }
   const lines = [...acc.values()].map((a): EconomicsLine => {
     if (!a.sawNum) return { label: a.label, amount: null, unit: a.unit, kind: a.kind, note: NOTIONAL_NOTE };
-    // Percentages are ratios — average across runs, not sum (a summed % > 100 is
-    // meaningless). Every other unit (tokens, ms, USD, kWh, count, …) is additive.
+    // Percentages average across runs, not sum (a summed % > 100 is meaningless); every other unit is additive.
     const amount = a.unit === '%' ? a.sum / a.count : a.sum;
     return { label: a.label, amount, unit: a.unit, kind: a.kind, ...(a.sawNull ? { note: PARTIAL_NOTE } : {}) };
   });
@@ -88,11 +70,7 @@ function usdAmount(lines: EconomicsLine[], label: string): number | null {
   return lines.find((l) => l.label === label && l.unit === 'USD')?.amount ?? null;
 }
 
-// Headline: net savings + local-vs-cloud are differences of sums (summing is
-// valid), but cost-per-accepted is a ratio, re-derived from the summed total
-// cost and the accepted count — and flagged notional when its inputs are absent,
-// or partial when the summed total cost was itself incomplete (so it isn't shown
-// as a complete-looking, understated figure).
+// cost-per-accepted is a ratio, so re-derive it from the summed total cost / accepted count (not summed directly) — flagged notional/partial when its inputs are absent or the summed total was itself incomplete.
 function deriveHeadline(
   assumed: EconomicsLine[],
   summedHeadline: EconomicsLine[],
@@ -118,7 +96,7 @@ function deriveHeadline(
 function buildTimeSeries(runs: RunRecord[]): EconomicsPoint[] {
   const byDate = new Map<string, EconomicsPoint>();
   for (const r of runs) {
-    const date = r.at.slice(0, 10); // YYYY-MM-DD
+    const date = r.at.slice(0, 10);
     const point = byDate.get(date) ?? { date, runCostUsd: null, totalTokens: 0, acceptedTickets: 0 };
     const cost = r.cost.assumed.find((l) => l.label === LABEL_TOTAL_RUN_COST && l.unit === 'USD')?.amount ?? null;
     if (cost !== null) point.runCostUsd = (point.runCostUsd ?? 0) + cost;
@@ -129,20 +107,15 @@ function buildTimeSeries(runs: RunRecord[]): EconomicsPoint[] {
   return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
-// A propose-metered run is re-metered (enriched with ticketIds/outcome) at apply, so the
-// append-only log holds two records for one runId. Collapse to the LAST (last-wins, the
-// same rule readRun uses for the ?runId detail view) so the rollup counts each run ONCE
-// instead of double-counting its tokens/cost. A no-op on logs with ≤1 record per runId.
+// A propose/apply pair writes two records for one runId; collapse to the LAST (last-wins) so the rollup counts each run ONCE, not double-counting its tokens/cost.
 function lastPerRunId(runs: RunRecord[]): RunRecord[] {
   const byId = new Map<string, RunRecord>();
-  for (const r of runs) byId.set(r.runId, r); // a later record overwrites an earlier one
+  for (const r of runs) byId.set(r.runId, r);
   return [...byId.values()];
 }
 
 export function summarizeEconomics(runs: RunRecord[], opts: EconomicsRange = {}): EconomicsSummary {
-  // Filter to the range FIRST, then dedupe — so a propose/apply pair straddling a range
-  // boundary keeps whichever record is in-window (the spend is never dropped just because
-  // the surviving last record fell outside it). Deduping first could discard the run.
+  // Filter to range FIRST, then dedupe — a propose/apply pair straddling a boundary keeps whichever record is in-window (deduping first could discard the run's spend).
   const scope = lastPerRunId(runs.filter((r) => inRange(r.at, opts.from, opts.to)));
 
   const totals: EconomicsTotals = {
@@ -183,9 +156,7 @@ export function summarizeEconomicsFromLog(opts: EconomicsRange = {}): Promise<Ec
   return readRuns().then((runs) => summarizeEconomics(runs, opts));
 }
 
-// Single-run detail for the `?runId=` deep-link: the same summary over a one-run
-// scope, enriched with the run's identity + authored ticket ids (which the
-// aggregate rollup drops) so the detail view can link back to each ticket.
+// Single-run detail for the `?runId=` deep-link: the one-run summary, enriched with identity + authored ticket ids (which the aggregate rollup drops) so the view can link back.
 export function summarizeRun(run: RunRecord): EconomicsRunDetail {
   return {
     ...summarizeEconomics([run]),

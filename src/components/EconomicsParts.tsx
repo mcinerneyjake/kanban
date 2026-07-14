@@ -1,11 +1,6 @@
 import { type EconomicsLine } from '../../shared/constants.js';
 import { formatAmount, sentence } from '../lib/econFormat.js';
 
-// Presentational pieces shared by the aggregate dashboard (EconomicsDashboard)
-// and the single-run detail (EconomicsRunDetail) — a headline stat tile and a
-// grouped cost table. Kept here so the two views render identically without
-// duplicating markup or the notional-amount handling.
-
 export function StatTile({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="econ-tile" title={note}>

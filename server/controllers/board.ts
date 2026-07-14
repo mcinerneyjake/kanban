@@ -6,8 +6,7 @@ export async function projects(_req: Request, res: Response): Promise<void> {
   res.json(await listProjects());
 }
 
-// Read-side dashboard aggregation. `?project=` scopes every count to one
-// project; omitted = all. Archived tickets are excluded by the service.
+// Dashboard aggregation. ?project= scopes counts; omitted = all. Archived excluded by the service.
 export async function dashboard(req: Request, res: Response): Promise<void> {
   res.json(await summarizeBoard(parseProjectScope(req.query.project)));
 }

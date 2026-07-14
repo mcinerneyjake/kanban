@@ -1,12 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 
-// Shared fetch-poll-refresh machinery for the read-only summary views (the board
-// Dashboard + the Economics view). Fetches on mount and whenever `refreshKey`
-// bumps (App signals a mutation), polls on `intervalMs` (pass 0 to disable), and
-// keeps a dismissable error. `data` is null until the first fetch resolves, so
-// callers can render a loading state from `data === null && error === null`.
-// `fetcher` MUST be stable (wrap it in useCallback) or the effects re-subscribe
-// every render.
+// Fetch on mount + refreshKey bump, poll on intervalMs (0 disables). data is null until the first fetch resolves (loading = data === null && error === null). fetcher MUST be stable (useCallback) or the effects re-subscribe each render.
 export function usePolledSummary<T>(
   fetcher: () => Promise<T>,
   refreshKey: number,

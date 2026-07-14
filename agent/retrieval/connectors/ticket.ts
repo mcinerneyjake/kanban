@@ -3,9 +3,7 @@ import { type Ticket } from '../../../shared/constants.js';
 import { type Document } from '../retrieval.js';
 import { type Connector } from './connector.js';
 
-// The kanban board as a connector — the first source. Ticket-specific knowledge
-// (title+body is the embeddable text; `status` rides through in `meta`) lives
-// here and nowhere else. `updated` feeds the index cache's change signature.
+// The kanban board as a connector. Ticket-specific knowledge lives here and nowhere else: title+body is the embeddable text, `status` rides through in `meta`, `updated` feeds the index cache's change signature.
 export class TicketConnector implements Connector<Ticket> {
   readonly source = 'kanban';
 

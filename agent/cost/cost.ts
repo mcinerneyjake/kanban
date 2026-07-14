@@ -1,9 +1,7 @@
 import { type RunUsage } from './usage.js';
 import { type CostConfig, type ApiPrice, type Sourced, isSet } from './costConfig.js';
 
-// A single economic figure, tagged so the summary can group measured truth,
-// labeled assumptions, and report-only externalities separately. `amount: null`
-// means notional — a required input was unset (never a silent zero).
+// `amount: null` means notional — a required input was unset (never a silent zero).
 export type CostKind = 'measured' | 'assumed' | 'externality';
 
 export interface CostLine {
@@ -18,8 +16,7 @@ export function isCostKind(v: unknown): v is CostKind {
   return v === 'measured' || v === 'assumed' || v === 'externality';
 }
 
-// Cast-free validator for a persisted CostLine (run log reads). `amount` is a
-// number or null; `note` is optional.
+// Cast-free validator for a persisted CostLine (run log reads).
 export function isCostLine(v: unknown): v is CostLine {
   return typeof v === 'object' && v !== null
     && 'label' in v && typeof v.label === 'string'
@@ -29,8 +26,6 @@ export function isCostLine(v: unknown): v is CostLine {
     && (!('note' in v) || typeof v.note === 'string');
 }
 
-// A run's measured inputs (tokens, active-compute time) drive the lines; assumed
-// factors come from config.
 export interface CostModel {
   lines(usage: RunUsage): CostLine[];
 }
@@ -42,9 +37,7 @@ function missingNote(pairs: [string, Sourced][]): string {
   return `notional — set ${missing.join(', ')}`;
 }
 
-// Local energy cost. Phase A: power + rate come from config, so the $ lines are
-// ASSUMED (only as good as the calibration). Marginal $ is the per-run headline;
-// keep-warm is a separate amortized line; water + carbon are externalities.
+// Local energy cost. $ lines are ASSUMED — only as good as the configured power/rate calibration.
 export class EnergyCostModel implements CostModel {
   constructor(private readonly cfg: CostConfig) {}
 
@@ -53,8 +46,7 @@ export class EnergyCostModel implements CostModel {
     return [...lines, this.keepWarm(), ...this.externalities(kwh)];
   }
 
-  // Marginal = (active − model-loaded-idle) watts × active-compute time. NOT
-  // wall-clock. Clamped at 0 so active ≤ idle never yields a negative cost.
+  // (active − idle) watts × active-compute time, NOT wall-clock. Clamped at 0: active ≤ idle never yields a negative cost.
   private marginal(usage: RunUsage): { kwh: number | null; lines: CostLine[] } {
     const { activeWatts: a, idleWatts: i, electricityRate: r } = this.cfg;
     if (!isSet(a) || !isSet(i) || !isSet(r)) {
@@ -72,8 +64,7 @@ export class EnergyCostModel implements CostModel {
     ] };
   }
 
-  // The amortized cost of keeping the model warm between runs: idle draw × the
-  // warm time attributed to one run (from the utilization assumption).
+  // Amortized keep-warm cost: idle draw × warm time attributed to one run (from the utilization assumption).
   private keepWarm(): CostLine {
     const label = 'keep-warm energy cost';
     const { idleWatts: i, electricityRate: r, utilizationRunsPerHour: u } = this.cfg;
@@ -103,10 +94,7 @@ export class EnergyCostModel implements CostModel {
 
 const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
 
-// Capital cost attributed to a run: the machine's purchase price spread over its
-// useful life, charged for the run's active-compute time. Often the DOMINANT
-// real cost of local inference — without it the energy-only $ is misleadingly
-// tiny. Assumed (depends on configured cost + life).
+// Purchase price spread over useful life, charged by active-compute time. Often the DOMINANT real cost of local inference — energy-only $ is misleadingly tiny without it.
 export class HardwareCostModel implements CostModel {
   constructor(private readonly cfg: CostConfig) {}
 
@@ -125,8 +113,7 @@ export class HardwareCostModel implements CostModel {
   }
 }
 
-// Cloud-equivalent cost for the local-vs-cloud comparison. Dormant until #5
-// populates the price table from CURRENT vendor pricing (never hardcode rates).
+// Cloud-equivalent cost for the local-vs-cloud comparison. Dormant until #5 populates the price table from current vendor pricing (never hardcode rates).
 export class ApiPriceCostModel implements CostModel {
   constructor(
     private readonly prices: Record<string, ApiPrice>,

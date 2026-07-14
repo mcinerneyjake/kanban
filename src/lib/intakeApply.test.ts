@@ -28,8 +28,7 @@ describe('buildTicketForm', () => {
     expect(form.title).toBe('Login broken');
   });
 
-  // tkt-727c5cacdfad (Bug H): the prefill carries every editable field, and the
-  // overlay reaches the form — not just title/type/priority/status/body.
+  // tkt-727c5cacdfad (Bug H): the prefill carries every editable field, not just title/type/priority/status/body.
   it('overlays the content prefill fields (assignee/dueDate) onto the form', () => {
     const t = ticket();
     const form = buildTicketForm(t, [t], { assignee: 'Alice', dueDate: '2026-07-20' });
@@ -37,9 +36,7 @@ describe('buildTicketForm', () => {
     expect(form.dueDate).toBe('2026-07-20');
   });
 
-  // tkt-727c5cacdfad: the STRUCTURAL fields (project/blockers/parent) can't be carried
-  // in the prefill (type-level), so buildTicketForm always keeps the guarded ticket-
-  // derived values — no agent proposal can wipe hidden edges or relink an archived parent.
+  // tkt-727c5cacdfad: structural fields (project/blockers/parent) aren't carried in the prefill — buildTicketForm keeps the guarded ticket-derived values.
   it('keeps ticket-derived project/blockers/parent regardless of the prefill', () => {
     const t = ticket({ blockers: ['tkt-x'], parent: null, project: 'kanban' });
     const form = buildTicketForm(t, [t], { assignee: 'Alice' });
@@ -48,8 +45,7 @@ describe('buildTicketForm', () => {
     expect(form.project).toBe('kanban');
   });
 
-  // The regression assertion for tkt-128ee05af9ba: form (with prefill) vs baseline
-  // (without) must diff to the proposed change, not {}.
+  // tkt-128ee05af9ba: form (with prefill) vs baseline (without) must diff to the proposed change, not {}.
   it('makes an agent-proposed change a real diff vs the prefill-free baseline', () => {
     const t = ticket();
     const patch = changedFormFields(buildTicketForm(t, [t], { body: 'new repro' }), buildTicketForm(t, [t]));
@@ -74,10 +70,7 @@ describe('buildTicketForm', () => {
     expect(buildTicketForm(t, []).blockers).toEqual(['tkt-active', 'tkt-archived', 'tkt-missing']);
   });
 
-  // tkt-c8b4b6aa948d: buildTicketForm keeps the archived id in the baseline, so removing
-  // the visible active blocker leaves the archived edge in the diff. Passes a FULL
-  // allTickets so the OLD (filtering) buildTicketForm would drop 'tkt-archived' from the
-  // baseline and fail this — i.e. the test genuinely guards the fix (not vacuous).
+  // tkt-c8b4b6aa948d: buildTicketForm keeps the archived id in the baseline, so removing the visible active blocker leaves the archived edge in the diff.
   it('preserves an archived blocker edge when the user removes an active one', () => {
     const active = ticket({ id: 'tkt-active', status: 'todo' });
     const archived = ticket({ id: 'tkt-archived', status: 'archived' });
@@ -135,33 +128,28 @@ describe('resolveProposalPlan', () => {
     if (plan.mode === 'update') expect(plan.target.id).toBe('tkt-real');
   });
 
-  // tkt-1dfa61b8830e: an update targeting a ticket that isn't loaded must NOT become a
-  // create (which drafts a duplicate) — it resolves to not-found, carrying the id.
+  // tkt-1dfa61b8830e: an unloaded update target resolves to not-found (carrying the id), not a duplicate-drafting create.
   it('routes an update proposal for an unloaded ticket to not-found', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-ghost', body: 'x' } }, []);
     expect(plan.mode).toBe('not-found');
     if (plan.mode === 'not-found') expect(plan.targetId).toBe('tkt-ghost');
   });
 
-  // Review finding C: an update proposal with a MISSING/non-string id must also be
-  // not-found (targetId null) — routing on the action, not just the id, so it can't
-  // slip back into a duplicate-drafting create.
+  // Review finding C: a missing/non-string update id is also not-found (targetId null) — routing on the action, not the id.
   it('routes an update proposal with a missing id to not-found (null targetId)', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { body: 'x' } }, []);
     expect(plan.mode).toBe('not-found');
     if (plan.mode === 'not-found') expect(plan.targetId).toBeNull();
   });
 
-  // Review finding A: a blank id collapses to null (so the caller's notice, guarded
-  // on the object, still renders rather than a falsy-'' silent no-op).
+  // Review finding A: a blank id collapses to null so the caller's notice renders, not a falsy-'' silent no-op.
   it('collapses a blank update id to not-found with a null targetId', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: '' } }, []);
     expect(plan.mode).toBe('not-found');
     if (plan.mode === 'not-found') expect(plan.targetId).toBeNull();
   });
 
-  // tkt-727c5cacdfad (Bug G): a create-bound prefill drops a non-create status so
-  // createTicket can't 400; an update target keeps the full status.
+  // tkt-727c5cacdfad (Bug G): a create-bound prefill drops a non-create status; an update target keeps the full status.
   it('clamps a non-create status out of a create-bound prefill', () => {
     const plan = resolveProposalPlan({ action: 'create_ticket', args: { title: 'X', status: 'qa' } }, []);
     expect(plan.mode).toBe('create');

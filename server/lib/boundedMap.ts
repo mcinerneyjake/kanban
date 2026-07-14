@@ -1,24 +1,16 @@
-// A Map with a hard size cap that evicts the OLDEST entry (FIFO, by first insertion)
-// when a NEW key would exceed the cap — a backstop against unbounded growth, and
-// nothing more.
-//
-// The intake controller keys per-run state (captured usage, applied ticket ids) by
-// runId between a `propose` and a later `apply`. In normal single-user use the map
-// holds a handful of entries and the cap never fires, so a draft survives however
-// long the user reviews it (keeping its provenance + economics on save) and an
-// applied runId stays idempotent for the life of the process. Those are exactly the
-// properties a wall-clock TTL would have broken — a walked-away draft losing its
-// provenance, a late retry minting a duplicate — which is why eviction here is purely
-// count-based. When the cap does fire it drops the oldest (longest-idle) entry, the
-// one most likely already abandoned.
+// A Map with a hard size cap that evicts the OLDEST entry (FIFO by first insertion)
+// when a new key exceeds the cap — a backstop against unbounded growth.
+// Eviction is purely count-based (not a wall-clock TTL) on purpose: a walked-away
+// draft must keep its provenance and an applied runId must stay idempotent for the
+// process life — a TTL would break both. The cap drops the oldest (longest-idle) entry.
 export class BoundedMap<V> {
   private readonly entries = new Map<string, V>();
 
   constructor(private readonly maxEntries: number) {}
 
   set(key: string, value: V): void {
-    // Re-setting an existing key writes in place — no growth, no eviction — and keeps
-    // the key's FIRST-insertion FIFO position, so an update never jumps the queue.
+    // Re-setting an existing key writes in place (no eviction) and keeps its
+    // FIRST-insertion FIFO position — an update never jumps the queue.
     const isNew = !this.entries.has(key);
     this.entries.set(key, value);
     if (isNew && this.entries.size > this.maxEntries) {

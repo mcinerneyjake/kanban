@@ -13,11 +13,8 @@ import { BoundedMap } from '../lib/boundedMap.js';
 import type { Ticket, Provenance } from '../../shared/constants.js';
 import type { IntakeSearchRequest, IntakeProposeRequest, IntakeApplyRequest } from '../schemas/intake.js';
 
-// Both intake endpoints depend on the local LLM runtime (embedder + chat model).
-// When it is down the agent layer throws a plain Error — it is deliberately
-// HTTP-agnostic (local-first). Translating "runtime unavailable" -> 503 is an
-// HTTP concern, so it lives HERE, in one place, rather than being copy-pasted
-// per endpoint. A real bug inside the agent still surfaces as its own message.
+// Translate a local-runtime failure → 503 in one place (the agent layer is
+// HTTP-agnostic). A real bug inside the agent still surfaces its own message.
 async function requireRuntime<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
@@ -26,39 +23,29 @@ async function requireRuntime<T>(op: () => Promise<T>): Promise<T> {
   }
 }
 
-// pendingRuns / appliedRuns evict by count only (FIFO) via BoundedMap — the rationale
-// (why a count cap and not a wall-clock TTL) lives on that class. MAX_RUNS is a pure
-// backstop set comfortably above any realistic single-user in-flight count, so it
-// never fires in normal use; it only bounds a long-lived process against accumulating
-// abandoned drafts (each PendingRun holds a full report string, so this is not huge).
+// pendingRuns/appliedRuns evict by count (FIFO) via BoundedMap. MAX_RUNS is a pure
+// backstop above any realistic in-flight count — bounds a long-lived process
+// against abandoned drafts (each holds a full report string).
 const MAX_RUNS = 200;
 
-// A drafted-but-not-yet-applied intake run: propose() spends the tokens and the
-// agent mints a runId; we stash the usage here so apply() can meter the run
-// WITHOUT trusting a client-sent usage figure. Server-local + ephemeral — a restart
-// just means an in-flight draft's apply logs no economics (best-effort).
+// Drafted-but-not-applied run: stash propose()'s usage so apply() can meter WITHOUT
+// trusting a client-sent figure. Server-local + ephemeral (a restart drops an
+// in-flight draft's economics).
 interface PendingRun { usage: RunUsage; model: string; report: string; at: number }
 const pendingRuns = new BoundedMap<PendingRun>(MAX_RUNS);
 
-// runId → the ticket id it applied, so a replayed apply (a retry after a lost
-// response, or a second tab) returns the SAME ticket instead of minting a duplicate
-// + re-metering the run. Bounded like pendingRuns; ephemeral (a restart resets it,
-// which just re-opens the small duplicate window a client retry could hit).
+// runId → applied ticket id: a replayed apply returns the SAME ticket instead of
+// minting a duplicate. Bounded; ephemeral (a restart re-opens the small duplicate window).
 const appliedRuns = new BoundedMap<string>(MAX_RUNS);
 
-// runIds whose apply is mid-write. appliedRuns is only populated AFTER the awaited
-// write, so it can't guard the CONCURRENT case (two applies for one runId racing
-// before either records). This set is checked-and-set SYNCHRONOUSLY at apply() entry
-// — no await between the check and the add — so the event loop can't interleave a
-// second apply past it: the loser 409s instead of writing a duplicate.
+// runIds mid-write. appliedRuns is set only AFTER the awaited write, so it can't
+// guard the concurrent race. Checked-and-set SYNCHRONOUSLY at apply() entry (no
+// await between) so a second apply 409s instead of writing a duplicate.
 const inFlightRuns = new Set<string>();
 
 function rememberRun(runId: string, usage: RunUsage, report: string): PendingRun {
-  // Captures the CHAT usage — the LLM generation, which dominates the (energy) cost.
-  // The board index is process-cached (indexCache), so a propose's embedder cost is
-  // only a query embed and isn't cleanly per-run attributable here (the CLI, which
-  // rebuilds+embeds per run, uses a different accounting model). Chat-only is the
-  // meaningful, directly-attributable figure; the embed delta is minor + amortized.
+  // Captures CHAT usage only — the generation dominates cost; the embed is a
+  // cached query-embed, not cleanly per-run attributable, and minor.
   const pending: PendingRun = { usage, model: resolveLlmConfig().model, report, at: Date.now() };
   pendingRuns.set(runId, pending);
   return pending;
@@ -66,11 +53,9 @@ function rememberRun(runId: string, usage: RunUsage, report: string): PendingRun
 
 const NO_TICKETS: RunRecord['ticketIds'] = { created: [], updated: [] };
 
-// Meter an intake run through the shared cost path (agent/cost/meterRun). Called on the
-// propose path (records the spend the moment it happens, before any ticket exists) and
-// the apply path (re-records the same runId enriched with the created/updated ticket +
-// real review latency). The rollup dedupes duplicate runIds last-wins (economicsSummary),
-// so an applied run's two records collapse to the apply record — counted once, attributed.
+// Meter a run through the shared cost path. Called at propose (spend now, before
+// any ticket) and apply (re-record same runId enriched). The rollup dedupes runIds
+// last-wins, so the two records collapse to the apply record — counted once.
 async function meterIntakeRun(runId: string, pending: PendingRun, outcome: RunOutcome, ticketIds: RunRecord['ticketIds'], reviewMs: number): Promise<void> {
   await meterRun({
     runId, model: pending.model, usage: pending.usage, outcome, reviewMs,
@@ -78,9 +63,8 @@ async function meterIntakeRun(runId: string, pending: PendingRun, outcome: RunOu
   });
 }
 
-// Outcome for a run that spent tokens but hasn't produced an applied ticket: a propose
-// (which either captured a proposal — pending review — or the agent proposed nothing).
-// Zero accepted; if the proposal is later applied, apply re-meters with the real outcome.
+// Outcome for a propose (spent tokens, no applied ticket yet): zero accepted;
+// apply re-meters with the real outcome if applied later.
 function proposeOutcome(proposed: boolean): RunOutcome {
   return { created: 0, updated: 0, declined: 0, noProposal: !proposed, errored: false };
 }
@@ -90,11 +74,8 @@ export async function search(_req: Request, res: Response, input: IntakeSearchRe
     const index = await getTicketIndex();
     return index.search(input.query, input.limit);
   });
-  // The retrieval layer is source-agnostic (ScoredDocument), but the intake UI's
-  // IntakeMatch contract is flat { id, title, status, score } — project to
-  // exactly those fields (explicitly, not a `...meta` spread) so generic fields
-  // like `source`/`url` don't leak onto the wire and a stray meta key can't
-  // clobber a core field.
+  // Project to exactly { id, title, status, score } explicitly (not a ...meta
+  // spread) so generic fields like source/url can't leak onto the wire or clobber a core field.
   res.json({
     results: results.map((r) => ({ id: r.id, title: r.title, status: r.meta?.status, score: r.score })),
   });
@@ -105,17 +86,10 @@ export async function propose(_req: Request, res: Response, input: IntakePropose
     const index = await getTicketIndex();
     const chat = RuntimeChatClient.fromEnv();
     const proposed = await proposeIntake(input.report, { chat, index });
-    // The propose spent the tokens. Stash the usage so a later apply can re-meter it
-    // (enriched with the ticket), AND meter the spend NOW so re-drafted / no-proposal /
-    // abandoned proposes — which are never applied — still reach the run log. An applied
-    // proposal produces a second record at apply; the rollup dedupes last-wins.
-    //
-    // Reconciliation is best-effort: apply's enriched record collapses this one when the
-    // in-memory `pending` survives. If `pending` is lost before apply (a server restart,
-    // or MAX_RUNS eviction), this record REMAINS as honest spend with 0 accepted — the
-    // ticket then applies via the plain path and loses its economics link, the same
-    // restart boundary provenance already has. Durable reconciliation from the log is a
-    // follow-up (tkt-2073125cac5c — recover usage + provenance from this record on a pending miss).
+    // Meter the spend NOW so never-applied proposes still reach the run log; an
+    // applied proposal re-records at apply and the rollup dedupes last-wins. Best-effort:
+    // if `pending` is lost before apply (restart / MAX_RUNS eviction), this record remains
+    // as honest spend with 0 accepted. Durable reconciliation is a follow-up (tkt-2073125cac5c).
     const pending = rememberRun(proposed.runId, chat.getUsage(), input.report);
     await meterIntakeRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
     return proposed;
@@ -123,20 +97,15 @@ export async function propose(_req: Request, res: Response, input: IntakePropose
   res.json(result);
 }
 
-// POST /api/intake/apply — persist a reviewed intake proposal through the AGENT
-// provenance path: stamp {source:'assisted', runId} (the trusted boundary the
-// human MCP/HTTP routes never cross) so a CREATED ticket earns the 🤖 Assisted
-// badge + run deep-link, and meter the run's economics. An update keeps the
-// existing ticket's source (authorship-once), so it surfaces the badge only when
-// that source was already set. The write validates via the same ticket service
-// the human routes use (extractTicketFields).
+// POST /api/intake/apply — persist a reviewed proposal via the AGENT provenance
+// path: stamp {source:'assisted', runId} (the trusted boundary human routes never
+// cross). An update keeps the existing source (authorship-once). Validated via the
+// same ticket service as human routes.
 export async function apply(_req: Request, res: Response, input: IntakeApplyRequest): Promise<void> {
-  // Idempotent on runId: a replayed apply (a retry after a lost response, or a second
-  // tab) returns the already-applied ticket instead of minting a duplicate + re-metering.
+  // Idempotent on runId: a replayed apply returns the already-applied ticket instead of minting a duplicate.
   const applied = appliedRuns.get(input.runId);
   if (applied !== undefined) {
-    // The run already applied; return its ticket. If that ticket was since deleted the
-    // retry is still benign (the effect happened), so acknowledge instead of 404ing.
+    // Already applied; return its ticket. If since deleted, the retry is still benign — acknowledge, don't 404.
     try {
       res.json(await getTicket(applied));
     } catch (err) {
@@ -146,20 +115,14 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
     return;
   }
 
-  // Guard the CONCURRENT duplicate (appliedRuns is set only after the awaited write, so
-  // it can't). Checked-and-set with NO await in between, so a second same-runId apply
-  // racing this one sees the reservation and 409s rather than writing a second ticket.
+  // Guard the CONCURRENT duplicate: checked-and-set with NO await between, so a racing same-runId apply sees the reservation and 409s.
   if (inFlightRuns.has(input.runId)) throw new HttpError(409, 'apply already in progress for this run');
   inFlightRuns.add(input.runId);
   try {
-    // Stamp provenance only when a captured run exists to attribute it to — a missing
-    // pending run (a fresh process, or dropped by the MAX_RUNS backstop) falls back to a
-    // plain human write, so the COMMON no-run case can't dangle the badge's "View
-    // economics" link. NOTE: an assisted UPDATE of a human-authored ticket keeps
-    // source:null (authorship-once), so it earns the run link only if the ticket already
-    // had a source — a create, or an update of an agent/assisted ticket. (Metering below
-    // is best-effort; a rare append IO failure after the write could leave the link
-    // unresolved — acceptable for a local dev tool.)
+    // Stamp provenance only when a captured run exists — a missing pending run falls
+    // back to a plain human write, so the no-run case can't dangle the badge's economics
+    // link. An assisted UPDATE of a human ticket keeps source:null (authorship-once).
+    // Metering below is best-effort.
     const pending = pendingRuns.get(input.runId);
     const provenance: Provenance | undefined = pending ? { source: 'assisted', runId: input.runId } : undefined;
     let ticket: Ticket;
@@ -176,8 +139,7 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
     appliedRuns.set(input.runId, ticket.id);
     if (pending) {
       pendingRuns.delete(input.runId);
-      // Re-meter the run enriched with the created/updated ticket + real review latency.
-      // This shares the runId with the propose-time record; the rollup keeps this (last) one.
+      // Re-meter enriched with the ticket + review latency; shares the runId with the propose record, rollup keeps this (last) one.
       const outcome: RunOutcome = { created: created ? 1 : 0, updated: created ? 0 : 1, declined: 0, noProposal: false, errored: false };
       const ticketIds = { created: created ? [ticket.id] : [], updated: created ? [] : [ticket.id] };
       await meterIntakeRun(input.runId, pending, outcome, ticketIds, Math.max(0, Date.now() - pending.at));
@@ -188,8 +150,7 @@ export async function apply(_req: Request, res: Response, input: IntakeApplyRequ
   }
 }
 
-// Liveness probe for the drafting model. Never 503s — it reports availability so
-// the create UI can fall back to manual entry.
+// Liveness probe for the drafting model. Never 503s — reports availability so the UI can fall back to manual entry.
 export async function health(_req: Request, res: Response): Promise<void> {
   res.json({ available: await RuntimeChatClient.fromEnv().available() });
 }

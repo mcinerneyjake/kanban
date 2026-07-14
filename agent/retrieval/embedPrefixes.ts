@@ -1,8 +1,4 @@
-// Task-instruction prefixes for embedding models. There is NO universal
-// standard — most models need nothing, some prefix the query (Qwen3-Embedding)
-// or both sides (nomic, E5), and appending an unexpected prefix can HURT
-// retrieval. So resolution is: explicit env override → our small supported set
-// → no prefix.
+// Task-instruction prefixes for embedding models. No universal standard — some models want none, some prefix the query or both sides, and an UNEXPECTED prefix can HURT retrieval. Resolution: env override → supported set → none.
 
 export interface PrefixProfile {
   query: string;
@@ -11,12 +7,7 @@ export interface PrefixProfile {
 
 const NONE: PrefixProfile = { query: '', doc: '' };
 
-// Embedders WE ship + test that need prefixes. Keep this SMALL — it's our
-// supported set, not a catalog of every model in existence. Any other model is
-// handled by the EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX override, so this list
-// only grows when we adopt a new default embedder. Matched by substring because
-// runtimes advertise model ids differently (e.g. `qwen3-embedding:0.6b` vs
-// `text-embedding-qwen3-embedding-0.6b`).
+// Our supported set — keep SMALL; any other model uses the EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX override. Matched by SUBSTRING because runtimes advertise ids differently (`qwen3-embedding:0.6b` vs `text-embedding-qwen3-embedding-0.6b`).
 const PREFIXED_EMBEDDERS: readonly { idIncludes: string; query: string; doc: string }[] = [
   {
     idIncludes: 'qwen3-embedding',

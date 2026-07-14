@@ -28,10 +28,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n !== 1 ? 's' : ''}`;
 
 type DropMode = 'before' | 'child' | null
 
-// Module-level: tracks the source column of the card currently being dragged.
-// Drag operations are single-touch so module scope is safe; this lets dragover
-// handlers know whether a re-parent zone is applicable without reading
-// dataTransfer (whose values are security-locked to drop handlers only).
+// Source column of the dragged card. Drag is single-touch so module scope is safe; lets dragover read it without dataTransfer (values security-locked to drop handlers).
 let _dragSrcStatus = '';
 
 type Props = {
@@ -50,9 +47,7 @@ type Props = {
 function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlockerCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop);
   const [dropMode, setDropMode] = useState<DropMode>(null);
-  // A passive marker on agent-authored tickets (like the type/priority badges).
-  // The run's economics deep-link lives in the ticket modal (ProvenanceNote), so
-  // the card stays a single click target — the badge just bubbles to onOpen.
+  // Passive marker; the run's economics deep-link lives in the modal (ProvenanceNote).
   const provenance = ticketProvenance(ticket);
 
   const onDragStart = (e: React.DragEvent<HTMLDivElement>) => {
@@ -72,10 +67,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
     setDropMode(mode);
   };
 
-  // Defined only when draggable — TypeScript narrows onDrop and columnId as
-  // non-undefined inside the ternary branch, eliminating the need for guards
-  // or non-null assertions at the call site.
-  // stopPropagation so the parent Column's "append" drop doesn't also fire.
+  // Ternary narrows onDrop/columnId to non-undefined (no guards needed). stopPropagation so the Column's append drop doesn't also fire.
   const onCardDrop = onDrop && columnId
     ? (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
@@ -83,8 +75,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
         const id = e.dataTransfer.getData('text/ticket-id');
         const srcStatus = e.dataTransfer.getData('text/ticket-status');
         if (!id || id === ticket.id) { setDropMode(null); return; }
-        // Only re-parent when both cards are in the same column; cross-column drops
-        // always move the ticket to the target column (insert before the hovered card).
+        // Re-parent only within the same column; cross-column always moves + inserts before.
         if (dropMode === 'child' && srcStatus === columnId) {
           onReparent?.(id, ticket.id);
         } else {
@@ -98,9 +89,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
     : dropMode === 'child' ? ' card--drop-child'
     : '';
 
-  // Keyboard access: the card is the primary "open ticket" target, so it acts as
-  // a button. Enter/Space open it; the guard ignores keys bubbling up from nested
-  // controls (the collapse toggle) so they don't also open the ticket.
+  // Card acts as a button (Enter/Space open); guard ignores keys bubbling from nested controls.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -114,9 +103,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
       className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}${dropClass}`}
       role="button"
       tabIndex={0}
-      // No aria-label: let the accessible name derive from the card's contents so
-      // the type/priority/due/blocker badges stay announced to assistive tech. A
-      // cleaner title-as-button refactor is tracked as a follow-up (tkt below).
+      // No aria-label: accessible name derives from card contents so badges stay announced.
       draggable={draggable}
       onDragStart={draggable ? onDragStart : undefined}
       onDragOver={draggable ? onCardDragOver : undefined}
@@ -159,9 +146,7 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
           </span>
         )}
         {ticket.dueDate && ticket.status !== 'done' && ticket.status !== 'archived' && (() => {
-          // Local "today", not UTC: toISOString() would flip to tomorrow in the
-          // evening at negative UTC offsets (e.g. 8pm EDT), lighting the overdue
-          // badge hours early. dueDate is a bare YYYY-MM-DD, so compare in local time.
+          // Local "today", not UTC: toISOString() flips to tomorrow at negative offsets, lighting overdue early.
           const now = new Date();
           const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
           const cls = ticket.dueDate < today ? ' overdue' : ticket.dueDate === today ? ' due-today' : '';

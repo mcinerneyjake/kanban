@@ -11,14 +11,6 @@ import {
   LABEL_COST_PER_ACCEPTED, LABEL_NET_SAVINGS, LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
-// Single-run economics: a MODAL peeked from the ticket editor's "View economics"
-// link, stacked over it so the run never loses the ticket's context ("← Back to
-// ticket" returns there). Renders one run's full breakdown — identity, headline
-// metrics, usage/outcome, the three cost groups, and links to the tickets it
-// authored — from GET /api/economics?runId=. Reuses EconomicsDashboard's
-// tiles/tables via EconomicsParts. A run record is immutable once written, so no
-// polling.
-
 type Props = {
   runId: string;
   onClose: () => void;
@@ -43,14 +35,11 @@ function TicketLinks({ title, ids, onOpen }: { title: string; ids: string[]; onO
 
 export default function EconomicsRunDetail({ runId, onClose, onOpen }: Props) {
   const fetcher = useCallback(() => api.economicsRun(runId), [runId]);
-  // Poll disabled (0): a persisted run record never changes; refetch is driven
-  // solely by runId changing (fetcher identity), not a refreshKey or interval.
+  // Poll disabled: a persisted run record never changes; refetch only on runId change.
   const { data, error, setError } = usePolledSummary<RunDetail | 'not-found'>(fetcher, 0, 0);
 
   const isLoading = data === null && error === null;
-  // 'not-found' is a resolved 404 (stale/mistyped link) — shown as its own empty
-  // state, kept separate from a real fault (500/network), which surfaces the
-  // error banner below. `run` narrows the union to the renderable detail.
+  // 'not-found' is a resolved 404 (own empty state); real faults surface the banner.
   const notFound = data === 'not-found';
   const run = data && data !== 'not-found' ? data : null;
 
@@ -58,13 +47,10 @@ export default function EconomicsRunDetail({ runId, onClose, onOpen }: Props) {
 
   return (
     <Modal onClose={onClose} className="modal--run" label="Run details">
-      {/* Explicit return path: this modal is always a peek stacked over the ticket
-          editor, so a labelled "back" reads clearer than a bare × (and the sidebar
-          sits above the backdrop, so an outside-click can miss). */}
+      {/* Labelled back — outside-click can miss (sidebar sits above the backdrop). */}
       <button type="button" className="modal-back" onClick={onClose}>← Back to ticket</button>
       <div className="econ-run-header">
-        {/* Neutral title when the run is missing, so the header doesn't read
-            "Run <id>" directly above a "not found" message. */}
+        {/* Neutral title when missing, so it doesn't read "Run <id>" above "not found". */}
         <h2 className="econ-run-id">{notFound ? 'Run detail' : `Run ${runId}`}</h2>
         {run && <p className="econ-run-meta">{run.model} · {formatIso(run.at, (d) => d.toLocaleString())}</p>}
       </div>

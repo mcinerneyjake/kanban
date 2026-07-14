@@ -1,16 +1,4 @@
-// ---------------------------------------------------------------------------
-// Chunking. Tickets embed as one vector (title+body), but real source content
-// (a 40-page SOP, a long mail thread) exceeds an embedder's context and blurs
-// into one averaged vector. Splitting text into overlapping windows lets long
-// documents embed as several vectors, so retrieval can match the one passage
-// that's relevant instead of the whole document's blurred average.
-//
-// Windows are CHARACTER-based, not token-based: deterministic, tokenizer-free,
-// and good enough locally — treat `size`/`overlap` as chars (~4 chars ≈ 1 token
-// for English, so a 1200-char window ≈ 300 tokens). The overlap carries context
-// across a cut so a sentence split mid-window is still wholly present in one
-// neighbour.
-// ---------------------------------------------------------------------------
+// Splits long text into overlapping windows so a document embeds as several vectors and retrieval matches the one relevant passage, not a blurred average. Windows are CHARACTER-based, not token-based (deterministic, tokenizer-free; ~4 chars ≈ 1 token). Overlap carries context across a cut.
 
 export interface ChunkOptions {
   /** Max characters per chunk. */
@@ -22,9 +10,7 @@ export interface ChunkOptions {
 export const DEFAULT_CHUNK_SIZE = 1200;
 export const DEFAULT_CHUNK_OVERLAP = 200;
 
-// Split `text` into overlapping chunks. Whitespace-only text → []. Text that
-// fits in one window → a single trimmed chunk. Otherwise a sliding window of
-// `size` chars advancing by `size - overlap` until the text is covered.
+// Split into overlapping chunks. Whitespace-only → []; fits-in-one-window → a single trimmed chunk; else a sliding window advancing by `size - overlap`.
 export function chunkText(text: string, opts: ChunkOptions): string[] {
   const { size, overlap } = opts;
   if (!Number.isInteger(size) || size <= 0) {
@@ -42,15 +28,12 @@ export function chunkText(text: string, opts: ChunkOptions): string[] {
   const chunks: string[] = [];
   for (let start = 0; start < trimmed.length; start += step) {
     chunks.push(trimmed.slice(start, start + size));
-    if (start + size >= trimmed.length) break; // last window reached the end
+    if (start + size >= trimmed.length) break;
   }
   return chunks;
 }
 
-// Resolve chunk options from env (CHUNK_SIZE / CHUNK_OVERLAP), falling back to
-// the defaults — mirrors the resolve*Config seams elsewhere in agent/. Invalid
-// or non-integer values fall back rather than throwing here; chunkText is the
-// single place that validates the resulting (size, overlap) relationship.
+// Resolve chunk options from env (CHUNK_SIZE / CHUNK_OVERLAP). Invalid/non-integer values fall back rather than throw; chunkText is the single place that validates the (size, overlap) relationship.
 export function resolveChunkConfig(env: NodeJS.ProcessEnv = process.env): ChunkOptions {
   return {
     size: intFromEnv(env.CHUNK_SIZE, DEFAULT_CHUNK_SIZE),

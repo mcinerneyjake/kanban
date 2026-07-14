@@ -1,13 +1,4 @@
-// Serialization contract for a recorded agent run — a generic envelope with
-// typed steps, produced by the recorder (agent/recordRun.ts) and consumed by the
-// replay viewer. Deliberately self-contained (no agent/ imports) so it stays a
-// leaf module shared by both sides; the recorder maps its internal types
-// (ScoredDocument, RunUsage, CallTokens) INTO these wire shapes.
-//
-// The envelope is generic on purpose: a second consumer (the ask-your-data SQL
-// demo) reuses this viewer with different step types. Known step types are
-// validated strictly; an unknown `type` is accepted as a GenericStep and the
-// viewer renders it as key/value — the schema is not welded shut.
+// Serialization contract for a recorded agent run — a generic envelope with typed steps. Self-contained (no agent/ imports) so it stays a leaf module shared by recorder + viewer. Generic on purpose: a second consumer (ask-your-data SQL demo) reuses the viewer with different step types, so an unknown `type` is accepted as a GenericStep rather than rejected.
 
 export interface RetrievalHit {
   id: string;
@@ -25,8 +16,7 @@ export interface CallTokens {
   cached?: number;
 }
 
-// A subset of the agent's RunUsage, flattened for the trace. Token fields are
-// meaningful only when reportedCalls > 0 (a local runtime may omit usage).
+// Flattened subset of RunUsage. Token fields are meaningful only when reportedCalls > 0 (a local runtime may omit usage).
 export interface TraceUsage {
   promptTokens: number;
   completionTokens: number;
@@ -45,9 +35,9 @@ export interface TraceOutcome {
 export interface RunMeta {
   runId: string;
   at: string;              // ISO timestamp, recorder-stamped
-  model: string;           // the LLM_MODEL the run ran against
+  model: string;
   kind: string;            // 'intake' today; e.g. 'ask-your-data' later — kept open
-  input: string;           // the user note / question that started the run
+  input: string;
   outcome?: TraceOutcome;
   totals?: TraceUsage;
 }
@@ -158,9 +148,7 @@ function isRunMeta(v: unknown): v is RunMeta {
   return true;
 }
 
-// Per-type predicates. The GenericStep member makes the union's discriminant
-// narrowing lossy (a `switch (step.type)` also matches GenericStep), so the
-// viewer narrows with THESE instead — each returns a precise `s is KnownStep`.
+// Per-type predicates. GenericStep makes the union's discriminant narrowing lossy (a `switch (step.type)` also matches it), so the viewer narrows with THESE instead.
 export function isNoteStep(v: unknown): v is NoteStep {
   return isObject(v) && v.type === 'note' && typeof v.text === 'string';
 }
@@ -187,10 +175,7 @@ export function isFinalStep(v: unknown): v is FinalStep {
     && typeof v.text === 'string' && isStringArray(v.createdIds) && isStringArray(v.updatedIds);
 }
 
-// A single step. KNOWN types are validated field-by-field; an UNKNOWN `type`
-// string is accepted as a GenericStep (the viewer renders it as key/value) — the
-// generic-envelope contract. A non-object or a missing/non-string `type` is
-// always rejected.
+// KNOWN types are validated field-by-field; an UNKNOWN `type` is accepted as a GenericStep (the generic-envelope contract). A non-object or missing/non-string `type` is always rejected.
 export function isTraceStep(v: unknown): v is TraceStep {
   if (!isObject(v) || typeof v.type !== 'string') return false;
   switch (v.type) {

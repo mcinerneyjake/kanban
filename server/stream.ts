@@ -1,41 +1,25 @@
 import type { Request, Response } from 'express';
 
-// ---------------------------------------------------------------------------
-// SSE hub: the live "something changed, refetch" channel for the board.
-//
-// Deliberately NOT a stateless controller — it owns a module-level Set of open
-// responses, so it lives here rather than in controllers/ (which are pure
-// request->service->response). The Express adapter (`stream`) is a thin wrapper
-// over `registerClient`, which is the testable seam: it takes any SseClient
-// (the real Express Response satisfies it structurally) so the hub can be unit-
-// tested with a fake client, no socket required.
-//
-// Payload is a bare `refresh` signal — it carries NO ticket data. Clients react
-// by refetching through the normal API. That keeps the stream trivially safe
-// (nothing to leak) and dodges every diff/rename/delete edge case a data-
-// carrying stream would have. Targeted diffs belong in the pub/sub follow-on.
-// ---------------------------------------------------------------------------
+// SSE hub: the live "something changed, refetch" channel. Owns a module-level Set
+// of open responses (stateful, so not in controllers/). registerClient is the
+// testable seam (takes any SseClient; a fake works, no socket). Payload is a bare
+// 'refresh' signal — no ticket data, so nothing to leak and no diff/rename/delete edge cases.
 
-// The subset of an http Response the hub actually uses. Express's Response
-// satisfies this structurally, so the route passes `res` directly; tests pass a
-// minimal fake. Narrow on purpose — no casting needed at either call site.
+// The subset of Response the hub uses. Express's Response satisfies it
+// structurally (route passes res directly; tests pass a fake) — no cast needed.
 export interface SseClient {
   writeHead(status: number, headers: Record<string, string>): void
   write(chunk: string): boolean
   end(): void
-  // http.ServerResponse extends Writable, so a real Response exposes `destroyed`
-  // — true once the socket is gone. Optional so tests can omit it.
+  // destroyed: true once the socket is gone (Response extends Writable). Optional so tests can omit it.
   readonly destroyed?: boolean
 }
 
 const clients = new Set<SseClient>();
 
-// Heartbeat keeps idle connections alive through proxies AND sweeps dead
-// clients: each tick, writeToAll drops any response whose socket is `destroyed`.
-// Immediate reap still comes from the `close`/`error` listeners (see `stream`);
-// the heartbeat is the periodic backstop for a client that slipped past them.
-// (Reaping on `write() === false` would be wrong — that's just backpressure on a
-// live-but-slow client, not death — so we key on `destroyed`, not the return.)
+// Heartbeat keeps idle connections alive through proxies AND sweeps destroyed
+// clients (backstop behind the close/error listeners). Key on destroyed, not
+// write()===false — the latter is just backpressure on a live-but-slow client, not death.
 const HEARTBEAT_MS = 25_000;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
@@ -50,10 +34,9 @@ function stopHeartbeat(): void {
   if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
 }
 
-// Write to every client, dropping any whose socket has gone away: `destroyed`
-// is the reliable signal (a broken-but-open socket returns false from write()
-// rather than throwing); the try/catch stays as a backstop for a synchronous
-// throw (e.g. write-after-end). Never throws to the caller.
+// Write to every client, dropping destroyed sockets (the reliable signal; a
+// broken-but-open socket returns false, doesn't throw). try/catch backstops a
+// sync throw (write-after-end). Never throws to the caller.
 function writeToAll(payload: string): void {
   for (const client of clients) {
     if (client.destroyed) { clients.delete(client); continue; }
@@ -63,9 +46,8 @@ function writeToAll(payload: string): void {
   if (clients.size === 0) stopHeartbeat();
 }
 
-// Register an SSE client: send the stream headers + an opening comment, add it
-// to the broadcast set, and return an unregister function (call it on close).
-// Exported as the unit-test seam — drives the whole hub without a real socket.
+// Register an SSE client: send headers + opening comment, add to the set, return
+// an unregister fn. The unit-test seam — drives the hub without a real socket.
 export function registerClient(client: SseClient): () => void {
   client.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -83,8 +65,7 @@ export function registerClient(client: SseClient): () => void {
   };
 }
 
-// Broadcast a named SSE event to all clients. `data` is a placeholder `{}` — the
-// event name is the whole signal; clients refetch on it.
+// Broadcast a named SSE event. data is a placeholder {} — the event name is the whole signal.
 export function broadcast(event = 'refresh'): void {
   writeToAll(`event: ${event}\ndata: {}\n\n`);
 }
@@ -103,16 +84,12 @@ export function closeAllStreamClients(): void {
   clients.clear();
 }
 
-// Express adapter: register the response and tear it down when the connection
-// closes. Not routed through wrap() — this handler never resolves the response
-// (the stream stays open), so the error funnel's completion assumptions don't
-// apply.
+// Express adapter: register the response, tear down on close. Not via wrap() —
+// the stream never resolves, so the funnel's completion assumptions don't apply.
 export function stream(req: Request, res: Response): void {
   const unregister = registerClient(res);
-  // Reap on both clean disconnect (close) and socket failure (error). Node's
-  // res.write() won't throw on a broken-but-open socket, so `error` is the path
-  // that catches a proxy dropping the connection without a clean close.
-  // unregister is idempotent — a double fire (close after error) is harmless.
+  // Reap on clean disconnect (close) and socket failure (error) — res.write() won't
+  // throw on a broken socket, so error catches a proxy drop. unregister is idempotent.
   res.on('close', unregister);
   res.on('error', unregister);
 }

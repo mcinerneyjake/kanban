@@ -5,23 +5,18 @@ import matter from 'gray-matter';
 import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, CREATE_STATUS_IDS, STATUS_STEP, isSource, type Ticket, type StatusId, type DashboardSummary, type Provenance } from '../shared/constants.js';
 import { appendEvent } from './events.js';
 
-// ---------------------------------------------------------------------------
-// Service layer: the ONLY module that touches the filesystem. Routes call
-// these functions and stay free of IO/parsing concerns (Route -> Service).
-// Source of truth = one Markdown file per ticket in /tickets, e.g. tkt-x9.md
-// ---------------------------------------------------------------------------
+// Service layer: the only module that touches the filesystem (Route -> Service).
+// Source of truth: one markdown file per ticket in /tickets.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Tests can redirect file I/O to a temp directory via this env var. Exported so
-// the ticket watcher watches the same directory the service writes to (honouring
-// the override).
+// TICKETS_DIR_OVERRIDE redirects file I/O to a temp dir (tests); exported so the
+// watcher watches the same dir the service writes to.
 export function getTicketsDir() {
   return process.env.TICKETS_DIR_OVERRIDE ?? path.join(__dirname, '..', 'tickets');
 }
 
-// Generated ids only ever match this; we re-check on every path build so a
-// crafted :id param can never escape TICKETS_DIR (path-traversal guard).
+// Path-traversal guard: re-checked on every path build so a crafted :id can't escape TICKETS_DIR.
 const ID_RE = /^[a-zA-Z0-9-]+$/;
 
 export class HttpError extends Error {
@@ -32,18 +27,14 @@ export class HttpError extends Error {
   }
 }
 
-// A missing file is the only fs error that means "ticket not found"; everything
-// else (EACCES, EMFILE, EISDIR, …) is a real fault that must surface as a 500,
-// not be masked as a 404. Narrows `unknown` without a cast so lint stays happy.
+// ENOENT = "not found" (404); every other fs error is a real fault → 500, not a masked 404.
 function isENOENT(err: unknown): boolean {
   return err instanceof Error && 'code' in err && err.code === 'ENOENT';
 }
 
 type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
 
-// Shape returned by gray-matter after parsing a ticket file. js-yaml will
-// auto-parse unquoted ISO dates as Date objects; every other value is string,
-// number, or a mixed array depending on the YAML content.
+// gray-matter parse output. js-yaml auto-parses unquoted ISO dates → Date objects.
 interface RawFrontmatter {
   title?: string | Date
   type?: string
@@ -61,8 +52,6 @@ interface RawFrontmatter {
   runId?: string | null
 }
 
-// Explicit-field object passed to matter.stringify — typed so serialize()
-// never writes unexpected keys to frontmatter.
 interface SerializedFrontmatter {
   title: string
   type: string
@@ -99,20 +88,16 @@ function assertEnum<T extends string>(arr: readonly T[], val: T | undefined | nu
     throw new HttpError(400, `Invalid ${field}: ${val}`);
 }
 
-// gray-matter/js-yaml will happily turn an unquoted ISO date back into a JS
-// Date on read. We always want strings, so coerce defensively.
-// Explicit typeof guard: gray-matter's data is typed as `any`, so unexpected
-// runtime types (e.g. a numeric title: 42 in hand-edited YAML) must not flow
-// through `??` as a non-string value.
+// Coerce to string: js-yaml may yield a Date, and hand-edited YAML a number
+// (title: 42) — neither must flow through as a non-string value.
 function asString(v: string | Date | null | undefined): string {
   if (v instanceof Date) return v.toISOString();
   if (typeof v === 'string') return v;
   return '';
 }
 
-// Coerce a parsed file into a stable, fully-populated ticket. Unknown/invalid
-// enum values fall back to sane defaults so a hand-edited file can't crash the
-// board.
+// Normalize a parsed file to a stable ticket; invalid enums fall back to defaults
+// so a hand-edited file can't crash the board.
 function normalize(id: string, data: RawFrontmatter, body: string): Ticket {
   return {
     id,
@@ -158,12 +143,9 @@ function serialize(ticket: Ticket): string {
   return matter.stringify(`\n${ticket.body}\n`, data);
 }
 
-// Write via temp file + atomic rename: a crash mid-write leaves the original
-// ticket intact instead of a half-written file. The temp name carries a
-// per-call random suffix (not just the pid) so two overlapping writes to the
-// SAME ticket id can't share one temp path and interleave their write/rename
-// (which would ENOENT one rename or persist the wrong body). Clean up the temp
-// on rename failure so a failed write never leaks a stray .tmp beside the file.
+// Atomic temp-file + rename: a crash mid-write leaves the original intact.
+// Per-call random suffix (not just pid) so two overlapping writes to the same id
+// can't share a temp path and interleave. Temp cleaned up on rename failure.
 async function writeTicket(ticket: Ticket) {
   await ensureDir();
   const file = ticketPath(ticket.id);
@@ -183,22 +165,16 @@ function validateEnums(patch: TicketPatch) {
   assertEnum(STATUS_IDS, patch.status, 'status');
 }
 
-// The service is the single write choke point for BOTH the typed MCP path (args
-// pre-sanitized by extractTicketFields) and the raw Express path (req.body is
-// `any`). These runtime typeof guards give parity with the MCP extractor: a bad
-// HTTP body fails as a 400 instead of a 500 (`title.trim()` on a number) or a
-// silent data-loss write (a non-string project/parent/assignee or a non-array
-// blockers persisted to YAML, then read back as null/[]). The MCP path only ever
-// passes correct types, so it sails through untouched.
+// Single write choke point for both the typed MCP path and the raw Express path
+// (req.body is any). Runtime typeof guards → a bad HTTP body 400s instead of a
+// 500 or a silent data-loss write.
 function validateWritableTypes(patch: TicketPatch) {
   if (patch.title != null && typeof patch.title !== 'string')
     throw new HttpError(400, 'title must be a string');
   if (patch.body != null && typeof patch.body !== 'string')
     throw new HttpError(400, 'body must be a string');
   if (patch.order != null && (typeof patch.order !== 'number' || !Number.isFinite(patch.order)))
-    // Infinity/NaN pass a bare `typeof === 'number'` check but poison ordering:
-    // JSON.parse('{"order":1e999}') → Infinity, which then makes every future
-    // createTicket compute maxOrder + 1 = Infinity. Reject non-finite outright.
+    // Infinity/NaN pass typeof 'number' but poison ordering (maxOrder+1 = Infinity) — reject non-finite.
     throw new HttpError(400, 'order must be a finite number');
   for (const field of ['project', 'parent', 'dueDate', 'assignee'] as const) {
     const value = patch[field];
@@ -212,17 +188,12 @@ function validateWritableTypes(patch: TicketPatch) {
 
 const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// dueDate is hand-editable and accepted from untyped callers; enforce a strict
-// YYYY-MM-DD shape on write so a bad value can't reach the UI (where
-// formatDueDate would render "undefined NaN") or break the overdue comparison.
+// Enforce YYYY-MM-DD on write so a bad hand-edited value can't reach the UI or break the overdue comparison.
 function assertDueDate(dueDate: string | null | undefined) {
   if (typeof dueDate !== 'string') return;
   if (!DUE_DATE_RE.test(dueDate))
     throw new HttpError(400, 'dueDate must be YYYY-MM-DD');
-  // The regex admits impossible dates (2026-99-99, 2026-02-30) that still NaN the
-  // overdue comparison this guard exists to protect. Confirm it's a real calendar
-  // date by round-tripping through Date: an out-of-range ISO date parses to
-  // Invalid Date, and a rolled-over one won't serialise back to the same string.
+  // Regex admits impossible dates (2026-02-30); round-trip through Date to reject non-real calendar dates.
   const parsed = new Date(`${dueDate}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== dueDate)
     throw new HttpError(400, `dueDate is not a real calendar date: ${dueDate}`);
@@ -232,14 +203,9 @@ function newId(): string {
   return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
-// gray-matter caches parsed files by content — but ONLY when no options are
-// passed, and it writes the (un-parsed) file into the cache BEFORE parsing. So a
-// file with bad YAML throws on the first parse, then the next identical parse
-// returns the cached *empty* success: a corrupt ticket would 500 once, then
-// silently reappear as an empty ghost on the next board load. Passing any
-// options object bypasses the cache entirely (see gray-matter index.js), so
-// parsing is consistent — corrupt content throws every time and is handled the
-// same way on every read. Empty object = defaults, just no caching.
+// Passing any options object bypasses gray-matter's content cache. Without it,
+// bad YAML throws once then the cache returns an empty *success* — a corrupt
+// ticket silently reappears as an empty ghost. Empty object = defaults, no cache.
 const NO_CACHE: Parameters<typeof matter>[1] = {};
 
 
@@ -256,10 +222,7 @@ export async function listTickets(): Promise<Ticket[]> {
       const { data, content } = matter(raw, NO_CACHE); // NO_CACHE → consistent throw on bad YAML
       tickets.push(normalize(file.slice(0, -3), data, content));
     } catch (err) {
-      // A hand-edited file with unparseable frontmatter (e.g. an unclosed quote →
-      // gray-matter throws YAMLException) must not take the whole board down.
-      // normalize() already tolerates type-level junk; skip + warn covers
-      // parse-level junk so the rest of the board stays up.
+      // Unparseable frontmatter must not take the whole board down — skip + warn so the rest stays up.
       console.warn(`[tickets] skipping unparseable ticket file ${file}:`, err instanceof Error ? err.message : err);
     }
   }
@@ -272,8 +235,8 @@ export async function listProjects(): Promise<string[]> {
 }
 
 export async function getTicket(id: string): Promise<Ticket> {
-  const file = ticketPath(id); // validates id BEFORE the try, so a bad id is a
-  let raw: string;             // 400 (Invalid id) rather than being masked as a 404.
+  const file = ticketPath(id); // validate id before the try → bad id is 400, not a masked 404
+  let raw: string;
   try {
     raw = await fs.readFile(file, 'utf8');
   } catch (err) {
@@ -284,21 +247,18 @@ export async function getTicket(id: string): Promise<Ticket> {
     const { data, content } = matter(raw, NO_CACHE); // see NO_CACHE: consistent throw on bad YAML
     return normalize(id, data, content);
   } catch (err) {
-    // The file exists but its frontmatter won't parse — surface a clear error
-    // naming the ticket instead of leaking a raw YAMLException/500 stack.
+    // File exists but frontmatter won't parse — surface a clear error naming the ticket, not a raw YAMLException.
     throw new HttpError(500, `Ticket ${id} has unparseable frontmatter: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
-// `provenance` is a TRUSTED stamp — supplied only by the agent write path, never
-// derived from `input` (which may be a raw HTTP body or model tool args), so
-// authorship can't be forged by an untrusted caller.
+// provenance is a TRUSTED stamp — supplied only by the agent write path, never
+// derived from `input`, so authorship can't be forged by an untrusted caller.
 export async function createTicket(input: Partial<Ticket>, provenance?: Provenance): Promise<Ticket> {
   validateWritableTypes(input);
   assertEnum(TYPES, input.type, 'type');
   assertEnum(PRIORITIES, input.priority, 'priority');
-  // Create is restricted to the pre-work board columns — reject `qa`/`archived`
-  // at create (parity with the MCP create schema; see CREATE_STATUS_IDS).
+  // Create restricted to pre-work columns — reject qa/archived (parity with the MCP create schema).
   if (input.status != null && !CREATE_STATUS_IDS.includes(input.status))
     throw new HttpError(400, `Invalid status: ${input.status} (allowed for create: ${CREATE_STATUS_IDS.join(', ')})`);
   assertDueDate(input.dueDate);
@@ -333,10 +293,8 @@ export async function createTicket(input: Partial<Ticket>, provenance?: Provenan
   return ticket;
 }
 
-// Reject parent assignments that would create a cycle. Walk the parent→child
-// graph from `id`; the new parent may not be `id` itself nor any descendant of
-// it. Computed from the current board (the source of truth) so HTTP and MCP
-// callers can't persist a cycle that the React client already prevents in the UI.
+// Cycle guard: the new parent may not be `id` nor any descendant of it. Computed
+// server-side so HTTP/MCP callers can't persist a cycle the UI already prevents.
 function collectDescendants(id: string, all: Ticket[]): Set<string> {
   const descendants = new Set<string>();
   const queue: string[] = [id];
@@ -353,11 +311,9 @@ function collectDescendants(id: string, all: Ticket[]): Set<string> {
   return descendants;
 }
 
-// Best-effort workflow telemetry: a status transition INTO a tracked milestone
-// (in-progress/qa/done) records a `reached` event for the tracking UI. This is
-// the single choke point both the MCP process and the HTTP PATCH path flow
-// through, so the event fires no matter who drives. A telemetry failure must
-// never break the ticket write, hence the swallow.
+// Best-effort telemetry: a transition into a tracked milestone records a 'reached'
+// event. Single choke point for MCP + HTTP; a telemetry failure must never break
+// the write (swallowed).
 async function emitStatusStep(id: string, status: StatusId): Promise<void> {
   const step = STATUS_STEP[status];
   if (!step) return;
@@ -378,9 +334,8 @@ export async function updateTicket(id: string, patch: TicketPatch, provenance?: 
     if (collectDescendants(id, await listTickets()).has(patch.parent))
       throw new HttpError(400, 'parent would create a cycle');
   }
-  // Explicit field-by-field merge: MCP callers pass Record<string, unknown> and
-  // bypass TicketPatch typing at compile time. By reading only known fields from
-  // patch here, unknown keys from MCP are silently ignored at runtime.
+  // Explicit field-by-field merge: MCP callers bypass TicketPatch typing, so
+  // reading only known fields drops unknown keys at runtime.
   const merged: Ticket = {
     id,
     title: patch.title ?? existing.title,
@@ -395,9 +350,8 @@ export async function updateTicket(id: string, patch: TicketPatch, provenance?: 
     parent: patch.parent !== undefined ? patch.parent : existing.parent,
     dueDate: patch.dueDate !== undefined ? patch.dueDate : existing.dueDate,
     assignee: patch.assignee !== undefined ? patch.assignee : existing.assignee,
-    // Authorship is set once at CREATE and never reassigned — an agent EDIT of a
-    // human-authored ticket must not claim authorship. Only `runId` is refreshed
-    // by an agent write, linking the ticket to the run that last modified it (the
+    // Authorship set once at CREATE, never reassigned — an agent edit of a human
+    // ticket can't claim it. Only runId is refreshed by an agent write (the
     // cost-attribution join); a human/HTTP write preserves the existing runId.
     source: existing.source,
     runId: provenance ? provenance.runId : existing.runId,
@@ -406,8 +360,7 @@ export async function updateTicket(id: string, patch: TicketPatch, provenance?: 
   };
   if (!merged.title.trim()) throw new HttpError(400, 'Title is required');
   await writeTicket(merged);
-  // Emit only on a real status change — updateTicket is also called for body /
-  // priority / reorder patches, which must not record a milestone.
+  // Emit only on a real status change — body/priority/reorder patches must not record a milestone.
   if (merged.status !== existing.status) await emitStatusStep(id, merged.status);
   return merged;
 }
@@ -436,13 +389,9 @@ export async function searchTickets(q: string): Promise<Ticket[]> {
   );
 }
 
-// Number of rows shown in the dashboard's "recently updated" widget.
 const RECENT_LIMIT = 8;
 
-// Pure aggregation over a ticket list — the read-side rollup behind the
-// dashboard. Archived tickets are excluded (they're off the active board);
-// passing a `project` scopes every count to that project. Kept pure (no IO) so
-// it's trivially testable; summarizeBoard() supplies the live ticket list.
+// Pure aggregation (no IO) behind the dashboard. Archived excluded; a project arg scopes every count.
 export function summarize(tickets: Ticket[], project: string | null = null): DashboardSummary {
   const scoped = tickets.filter(
     (t) => t.status !== 'archived' && (project === null || t.project === project),
@@ -481,16 +430,10 @@ export async function deleteTicket(id: string): Promise<void> {
     if (isENOENT(err)) throw new HttpError(404, `Ticket not found: ${id}`);
     throw err; // EACCES/EMFILE/… are real faults → 500, not a masked 404
   }
-  // Best-effort referential cleanup: strip the deleted id from every other
-  // ticket's *blocker* edges, and orphan its children to top-level (parent →
-  // null) so no dangling reference is left behind — a child pointing at a
-  // now-missing parent would render indented under a phantom and leave a stale
-  // computeChildCounts entry. Orphan-to-top-level matches how TicketModal
-  // already falls back when a parent is missing/archived.
-  // This is housekeeping, not part of delete's contract — the ticket is already
-  // gone — so a sweep failure is logged, never propagated (a caller must not see
-  // "delete failed" for a ticket that was in fact deleted). Rewrites go via
-  // writeTicket with `updated` untouched so cleanup isn't surfaced as an edit.
+  // Best-effort referential cleanup: strip the deleted id from blocker edges and
+  // orphan its children to top-level. Housekeeping, not part of delete's contract
+  // — a sweep failure is logged, never propagated. Rewrites keep `updated`
+  // untouched so cleanup isn't surfaced as an edit.
   try {
     const affected = (await listTickets()).filter((t) => t.blockers.includes(id) || t.parent === id);
     await Promise.all(

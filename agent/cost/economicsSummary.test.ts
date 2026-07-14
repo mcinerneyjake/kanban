@@ -15,9 +15,7 @@ function usage(over: Partial<RunUsage> = {}): RunUsage {
 function outcome(over: Partial<RunOutcome> = {}): RunOutcome {
   return { created: 0, updated: 0, declined: 0, noProposal: false, errored: false, ...over };
 }
-// Distinct runIds by default so multi-run fixtures aren't collapsed by the last-wins
-// dedupe — a run is uniquely identified in reality; tests exercising dedupe pass an
-// explicit shared runId.
+// Distinct runIds by default so multi-run fixtures aren't collapsed by last-wins dedupe.
 let seq = 0;
 function record(over: Partial<RunRecord> & { at: string }): RunRecord {
   return {
@@ -52,9 +50,7 @@ describe('summarizeEconomics — totals', () => {
     expect(s.partial).toBe(false);
   });
 
-  // A run metered at propose (0 accepted) then re-metered at apply (enriched) appears
-  // twice in the append-only log with ONE runId. The rollup must count it ONCE
-  // (last-wins), matching readRun's detail view — else tokens/cost double-count.
+  // Two append-only records share one runId (propose + enriched apply); rollup counts it once (last-wins).
   it('collapses duplicate runIds to the last record (last-wins), counting the run once', () => {
     const s = summarizeEconomics([
       // propose-time record: real usage, not yet applied
@@ -77,9 +73,7 @@ describe('summarizeEconomics — totals', () => {
     expect(s.totals.totalTokens).toBe(200);
   });
 
-  // Dedupe happens AFTER the range filter: a run proposed in-window but applied out of it
-  // keeps its in-window (propose) record, so the spend isn't dropped just because the
-  // surviving last record fell outside the range.
+  // Dedupe happens AFTER the range filter: an in-window propose record survives even if its apply record is out of range.
   it('keeps an in-range propose record when its apply record is out of range', () => {
     const runs = [
       record({ runId: 'run-span', at: '2026-07-01T10:00:00.000Z', usage: usage({ totalTokens: 120 }) }),
@@ -136,8 +130,7 @@ describe('summarizeEconomics — cost-line aggregation', () => {
 
 describe('summarizeEconomics — headline re-derivation', () => {
   it('re-derives cost-per-accepted as sum(total cost)/sum(accepted), NOT the sum of per-run ratios', () => {
-    // Run A: $0.06 over 3 accepted ($0.02/ea). Run B: $0.04 over 1 accepted ($0.04/ea).
-    // Aggregate must be 0.10 / 4 = 0.025 — not (0.02 + 0.04) = 0.06.
+    // $0.10 total / 4 accepted = 0.025 — not the sum of per-run ratios (0.06).
     const s = summarizeEconomics([
       record({ at: '2026-07-01T00:00:00.000Z', outcome: outcome({ created: 3 }), cost: { measured: [], assumed: [line('total run cost', 0.06, 'USD', 'assumed')], externalities: [], headline: [line('cost per accepted ticket', 0.02, 'USD', 'assumed')] } }),
       record({ at: '2026-07-02T00:00:00.000Z', outcome: outcome({ created: 1 }), cost: { measured: [], assumed: [line('total run cost', 0.04, 'USD', 'assumed')], externalities: [], headline: [line('cost per accepted ticket', 0.04, 'USD', 'assumed')] } }),
@@ -187,8 +180,7 @@ describe('summarizeEconomics — filtering + time series', () => {
 
 describe('summarizeEconomics — note provenance + bound parsing', () => {
   it('does not carry a stale notional note onto a summed real value', () => {
-    // First run notional, later run real → the aggregate is a real summed value
-    // flagged `partial`, NOT mislabelled "unavailable/notional" from the first run.
+    // Notional then real → the aggregate is a real summed value flagged `partial`, not "unavailable/notional".
     const s = summarizeEconomics([
       record({ at: '2026-07-01T00:00:00.000Z', cost: { measured: [line('total tokens', null, 'tokens', 'measured', 'usage unavailable')], assumed: [], externalities: [], headline: [] } }),
       record({ at: '2026-07-02T00:00:00.000Z', cost: { measured: [line('total tokens', 5000, 'tokens', 'measured')], assumed: [], externalities: [], headline: [] } }),
@@ -211,8 +203,7 @@ describe('summarizeEconomics — note provenance + bound parsing', () => {
   });
 
   it('filters by instant, not lexically, when a bound carries a zone offset', () => {
-    // Run at 08:00Z; from = 09:00+02:00 = 07:00Z, so the run IS in range. A naive
-    // string compare ('...T09:00:00+02:00' > '...T08:00:00.000Z') would drop it.
+    // Run at 08:00Z; from = 09:00+02:00 = 07:00Z, so in range — a naive string compare would drop it.
     const runs = [record({ at: '2026-07-01T08:00:00.000Z', usage: usage({ totalTokens: 1 }) })];
     expect(summarizeEconomics(runs, { from: '2026-07-01T09:00:00+02:00' }).runs).toBe(1);
   });
@@ -220,9 +211,7 @@ describe('summarizeEconomics — note provenance + bound parsing', () => {
 
 describe('summarizeEconomics — real cost lines (buildSummary)', () => {
   it('aggregates realistically-shaped records without dropping groups', () => {
-    // buildSummary with an unconfigured cost model → real labels, mostly notional
-    // (null) amounts. Proves the aggregator matches the actual label strings and
-    // flags partial rather than silently zeroing.
+    // Unconfigured cost model → real labels, mostly notional (null) amounts — matches actual label strings.
     const cost = buildSummary({
       usage: usage({ promptTokens: 200, completionTokens: 50, totalTokens: 250, activeMs: 900, calls: 2, reportedCalls: 2 }),
       outcome: outcome({ created: 1 }),

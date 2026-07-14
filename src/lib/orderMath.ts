@@ -7,8 +7,7 @@ const appendOrder = (col: OrderEntry[]): number => {
   return last ? last.order + 1 : 1;
 };
 
-// Cards carry a fractional `order`; inserting between two cards takes the
-// midpoint of their orders, so a move rewrites exactly ONE ticket file.
+// Fractional order: inserting between cards takes the midpoint, so a move rewrites exactly ONE ticket file.
 export function computeDropOrder(column: OrderEntry[], beforeId: string | null): number {
   if (!beforeId) return appendOrder(column);
   const idx = column.findIndex((t) => t.id === beforeId);

@@ -3,9 +3,6 @@ import { handleToolCall, TOOLS, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '.
 import { createTicket, updateTicket, listTickets } from '../server/tickets.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
-// The handlers call the service layer, which writes real files — redirect that
-// I/O (tickets + telemetry) to isolated temp dirs so the real tickets/ folder is
-// never touched. Tests reach files through the service, so no path is needed here.
 setupTempTicketDirs('kanban-mcp-test');
 
 // ---------------------------------------------------------------------------
@@ -16,14 +13,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-// Parse a successful tool result whose text payload is a JSON object.
 function asRecord(result: { content: { text: string }[] }): Record<string, unknown> {
   const parsed: unknown = JSON.parse(result.content[0].text);
   if (!isRecord(parsed)) throw new Error(`Expected JSON object, got: ${result.content[0].text}`);
   return parsed;
 }
 
-// Parse a successful tool result whose text payload is a JSON array of objects.
 function asRecordArray(result: { content: { text: string }[] }): Record<string, unknown>[] {
   const parsed: unknown = JSON.parse(result.content[0].text);
   if (!Array.isArray(parsed) || !parsed.every(isRecord)) {
@@ -32,7 +27,6 @@ function asRecordArray(result: { content: { text: string }[] }): Record<string, 
   return parsed;
 }
 
-// Read the advertised status enum off a tool's inputSchema without casts.
 function statusEnumOf(toolName: string): string[] {
   const tool = TOOLS.find((t) => t.name === toolName);
   if (!tool || !isRecord(tool.inputSchema.properties)) return [];
@@ -41,8 +35,6 @@ function statusEnumOf(toolName: string): string[] {
   return status.enum.filter((v): v is string => typeof v === 'string');
 }
 
-// Seed a ticket through the service layer (decoupled from the tool under test)
-// and return its generated id.
 async function seed(fields: Parameters<typeof createTicket>[0] = {}): Promise<string> {
   const t = await createTicket({ title: 'Seed', ...fields });
   return t.id;
@@ -57,8 +49,7 @@ describe('TOOLS schema', () => {
     );
   });
 
-  // qa is a transition-only state: you update a ticket into it, you never create
-  // one in it. The advertised create/update schemas must reflect that asymmetry.
+  // qa is transition-only: update into it, never create in it — the schemas reflect that asymmetry.
   it('advertises qa on update_ticket but not on create_ticket', () => {
     expect(statusEnumOf('create_ticket')).not.toContain('qa');
     expect(statusEnumOf('update_ticket')).toContain('qa');
@@ -141,8 +132,7 @@ describe('list_tickets', () => {
 
   it('accepts archived as a status filter and returns archived tickets', async () => {
     await seed({ title: 'live', status: 'todo' });
-    // `archived` isn't a creatable status (nor an MCP-settable one), so reach it
-    // via the service updateTicket — the real archive lifecycle path.
+    // `archived` isn't creatable/MCP-settable — reach it via the service updateTicket.
     const goneId = await seed({ title: 'gone', status: 'todo' });
     await updateTicket(goneId, { status: 'archived' });
     const tickets = asRecordArray(await handleToolCall('list_tickets', { status: 'archived' }));
@@ -180,8 +170,7 @@ describe('list_tickets', () => {
     expect(tickets).toHaveLength(0);
   });
 
-  // Guard the agent-RAG safeguard: the TOOL projection drops the body, but the
-  // SERVICE must still return full bodies — agent/retrieval embeds t.body.
+  // The TOOL projection drops the body, but the SERVICE must still return full bodies — agent/retrieval embeds t.body.
   it('leaves the service returning full bodies (agent retrieval path intact)', async () => {
     await seed({ title: 'Has body', body: 'real body content' });
     const viaTool = asRecordArray(await handleToolCall('list_tickets', undefined));
@@ -318,8 +307,7 @@ describe('update_ticket', () => {
     expect(updated.blockers).toEqual(['tkt-aaa', 'tkt-bbb']);
     expect(updated.parent).toBe(parentId);
     expect(updated.body).toBe('New body text');
-    // rejects a non-string-array blockers value (400) rather than silently
-    // dropping it — and the existing blockers are left untouched.
+    // rejects a non-string-array blockers value (400), leaving existing blockers untouched
     const rejected = await handleToolCall('update_ticket', { id, blockers: [1, 2] });
     expect(rejected.isError).toBe(true);
     expect(rejected.content[0].text).toContain('blockers must be an array of strings');

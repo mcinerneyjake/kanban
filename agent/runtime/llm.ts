@@ -1,12 +1,7 @@
 import { type ChatTool } from './tools.js';
 import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
 
-// ---------------------------------------------------------------------------
-// Chat client for the agent loop (Phase 3). Talks to an OpenAI-compatible
-// /v1/chat/completions endpoint via fetch — the same no-SDK approach as the
-// embedder. The provider seam (local vs Anthropic/cloud) is config-driven; the
-// Anthropic driver itself lands with tkt-29788d084c21 as a separate ChatClient.
-// ---------------------------------------------------------------------------
+// Chat client for the agent loop — OpenAI-compatible /v1/chat/completions via fetch, no SDK. The provider seam (local vs cloud) is config-driven; a cloud driver would be a separate ChatClient (tkt-29788d084c21).
 
 const DEFAULT_BASE_URL = 'http://localhost:1234/v1';
 // Local models can be slow to first token; give them generous headroom.
@@ -44,7 +39,6 @@ export interface ChatMessage {
 }
 
 export interface ChatClient {
-  // Send the running conversation + advertised tools; return the assistant reply.
   complete(messages: ChatMessage[], tools: ChatTool[]): Promise<ChatMessage>;
 }
 
@@ -80,8 +74,7 @@ function isChatCompletion(v: unknown): v is ChatCompletion {
   return isAssistantMessage(first.message);
 }
 
-// Token usage is optional + best-effort: read it from the raw payload only when
-// well-formed, so a runtime that omits or malforms it never breaks the response.
+// Token usage is optional + best-effort: read only when well-formed, so a runtime that omits/malforms it never breaks the response.
 function chatUsageOf(v: unknown): CallTokens | undefined {
   if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
   const u = v.usage;
@@ -113,8 +106,7 @@ export class RuntimeChatClient implements ChatClient {
     return new RuntimeChatClient(resolveLlmConfig(env));
   }
 
-  // Accumulated token usage + active-compute time over this client's lifetime
-  // (one client per run). Tokens are "available" only if reportedCalls > 0.
+  // Accumulated usage over this client's lifetime (one client per run). Tokens are "available" only if reportedCalls > 0.
   getUsage(): RunUsage {
     return this.meter.get();
   }
@@ -128,15 +120,12 @@ export class RuntimeChatClient implements ChatClient {
     }
     const json: unknown = await res.json();
     if (!isChatCompletion(json)) throw new Error('Unexpected /chat/completions response shape');
-    // Record the call's duration + token usage (when the runtime reported it).
     this.meter.record(this.now() - start, chatUsageOf(json));
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
   }
 
-  // Liveness probe for the runtime — a cheap GET to the OpenAI-compatible
-  // /models endpoint. Returns false on any failure (down, timeout, non-200) so
-  // callers can branch without a try/catch.
+  // Liveness probe — a cheap GET to /models. Returns false on any failure (down, timeout, non-200) so callers branch without a try/catch.
   async available(): Promise<boolean> {
     try {
       const headers: Record<string, string> = {};

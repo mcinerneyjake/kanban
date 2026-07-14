@@ -1,17 +1,9 @@
 import { type RunUsage } from './usage.js';
 import { type CostLine } from './cost.js';
 
-// How much of each request is a STABLE, cacheable prefix (the system prompt +
-// tool definitions, identical across a run's calls) vs the dynamic tail (user
-// input, tool results). This is a from-scratch PROXY that proves the concept
-// regardless of whether the runtime supports prompt caching. When the runtime
-// *does* report real cached-token hits, we surface those too (see cacheableLines).
-//
-// Note: Anthropic's cache billing (1.25x write / 0.1x read) is explanatory only;
-// it is not reproduced here.
+// From-scratch PROXY for cacheable-prefix share, independent of runtime prompt caching (real cached-token hits are surfaced too when reported).
 
-// Rough token estimate — no tokenizer dependency. ~4 chars/token is the common
-// heuristic; this is an ESTIMATE, labeled as such wherever it surfaces.
+// Rough estimate — ~4 chars/token, no tokenizer; labeled an estimate wherever it surfaces.
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -32,13 +24,11 @@ export function cacheablePrefix(prefixText: string, dynamicText: string): Prefix
   return { prefixTokens, dynamicTokens, totalTokens, fraction };
 }
 
-// Summary lines: the from-scratch % cacheable (estimate, always shown) and — only
-// when the runtime actually reported it — the real cached-token hit count.
 export function cacheableLines(split: PrefixSplit, usage: RunUsage): CostLine[] {
   const lines: CostLine[] = [
     {
       label: 'cacheable prefix',
-      amount: Math.round(split.fraction * 1000) / 10, // one-decimal percentage
+      amount: Math.round(split.fraction * 1000) / 10,
       unit: '%',
       kind: 'measured',
       note: 'estimate (~4 chars/token)',

@@ -5,11 +5,8 @@ import { resolveEmbedConfig } from './retrieval/models.js';
 // Load local config if a .env is present; tolerate its absence.
 try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
 
-// Standalone "semantic board search" demo — the Phase 1 deliverable made
-// runnable. Builds the in-memory index from the live board via the configured
-// embedder and prints the top matches for a query.
+// Standalone semantic board-search demo: builds the index from the live board and prints the top matches for a query. Requires a running embeddings runtime (e.g. LM Studio).
 //   npm run agent:search -- "compressor overheating"
-// Requires a running embeddings runtime (e.g. LM Studio) and real ids in .env.
 
 async function main(): Promise<void> {
   const query = process.argv.slice(2).join(' ').trim();

@@ -3,8 +3,7 @@ import { wrap, validated } from '../middleware/asyncWrap.js';
 import { reviewSchema } from '../schemas/review.js';
 import * as ctrl from '../controllers/events.js';
 
-// Also mounted at /api/tickets — these share the /:id prefix but are a distinct
-// (telemetry) concern from the ticket CRUD router.
+// Mounted at /api/tickets — shares the /:id prefix but is a distinct telemetry concern from the CRUD router.
 export const eventsRouter = Router();
 
 eventsRouter.get('/:id/events', wrap(ctrl.events));

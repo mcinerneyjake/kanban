@@ -12,14 +12,10 @@ import { appendRun } from './cost/runLog.js';
 import { ReplayRecorder } from './replay/replayRecorder.js';
 import { isTrace } from './replay/replayTrace.js';
 
-// Records ONE real agent run into a replay-viewer trace JSON (agent/replay/replayTrace).
-// Mirrors agent/index.ts's deps-building, but wraps chat/index/approve with the
-// ReplayRecorder so the full step trace is captured — no changes to the loop.
+// Records ONE real agent run into a replay-viewer trace JSON by wrapping chat/index/approve with the ReplayRecorder — no changes to the loop. Requires running embedding + chat models.
 //   npm run agent:record -- --out traces/create.json "the export button 500s"
 //   npm run agent:record -- --decline --out traces/decline.json "<vague note>"
-// --decline declines at the gate (records a declined approval, writes nothing);
-// otherwise every mutating tool is auto-approved so writes execute in-run.
-// Requires running embedding + chat models (e.g. LM Studio).
+// --decline declines at the gate (records a declined approval, writes nothing).
 
 const USAGE = 'Usage: npm run agent:record -- --out <path> [--decline] "<report>"';
 
@@ -36,8 +32,7 @@ async function main(): Promise<void> {
     else if (first === '--out') {
       argv.shift();
       const value = argv.shift();
-      // A missing value (or the next flag) must error, not silently swallow the
-      // following flag and write to a file literally named e.g. "--decline".
+      // A missing --out value must error, not swallow the next flag as a filename (e.g. "--decline").
       if (value === undefined || value.startsWith('--')) { console.error(USAGE); process.exit(1); }
       out = value;
     } else break;
@@ -52,9 +47,7 @@ async function main(): Promise<void> {
 
   console.log('Building the board index…');
   const index = await buildBoardIndex(embedder);
-  // Snapshot the embedder AFTER the index build so the one-time full-board
-  // embedding pass is not charged to this run — the trace totals then reflect the
-  // run's marginal cost (chat + per-query embeds), which is what the viewer shows.
+  // Snapshot AFTER the index build so the one-time full-board embed isn't charged to this run — trace totals then reflect marginal cost (chat + per-query embeds).
   const embedBaseline = embedder.getUsage();
   recorder.instrument(index);
   console.log(`Indexed ${index.size} tickets. Recording intake (${decline ? 'decline' : 'auto-approve'})…`);
@@ -68,10 +61,7 @@ async function main(): Promise<void> {
   const usage = mergeUsage(chat.getUsage(), subtractUsage(embedder.getUsage(), embedBaseline));
   const at = new Date().toISOString();
 
-  // A real create/update stamps this runId onto the ticket frontmatter. Persist
-  // the run log (as agent/index.ts does) so the ticket's provenance badge resolves
-  // to a real run rather than a dead "?runId=" link. Best-effort — the writes
-  // already landed, so a log failure must not fail the recording.
+  // Persist the run log so a stamped ticket's provenance badge resolves to a real run, not a dead "?runId=" link. Best-effort — writes already landed, so a log failure must not fail the recording.
   const summary = buildSummary({
     usage,
     outcome: result.outcome,
@@ -97,7 +87,7 @@ async function main(): Promise<void> {
     outcome: result.outcome, usage,
   });
 
-  // Fail loudly if what we recorded doesn't satisfy the schema the viewer reads.
+  // Fail loudly if the recorded trace doesn't satisfy the schema the viewer reads.
   if (!isTrace(trace)) {
     console.error('Recorded trace failed isTrace() validation — not written.');
     process.exit(1);

@@ -1,7 +1,3 @@
-// The dashboard's widget model + the pure parse of its persisted form. Split out
-// of useDashboardConfig so the parse (localStorage boundary, JSON, per-widget
-// defaulting, corrupt-value fallback) is unit-testable without React.
-
 export const WIDGETS = [
   { key: 'status', label: 'Status' },
   { key: 'priority', label: 'Priority' },
@@ -13,25 +9,19 @@ export type WidgetVisibility = Record<WidgetKey, boolean>
 
 export const ALL_VISIBLE: WidgetVisibility = { status: true, priority: true, recent: true };
 
-// The persisted shape is a partial of the visibility map: older data may omit
-// widgets added later, and any field may be absent. A concrete interface (not
-// `Record<string, unknown>`) so the boundary value is narrowed, not widened.
+// Partial of the visibility map — older data may omit widgets; concrete interface keeps the boundary narrowed.
 interface PersistedVisibility {
   status?: boolean
   priority?: boolean
   recent?: boolean
 }
 
-// Arrays are objects too, but they simply carry none of the keys (→ all default
-// visible), so the loose object check is sufficient here.
+// Arrays pass this check but carry no keys (→ all default visible), so the loose check is fine.
 function isPersistedVisibility(v: unknown): v is PersistedVisibility {
   return typeof v === 'object' && v !== null;
 }
 
-// Pure parse of the persisted widgets string → a full visibility map. A missing
-// key / partial object defaults that widget to visible (`!== false`); an empty,
-// non-object, or corrupt value falls back to all-visible. No localStorage access
-// here, so it's directly unit-testable.
+// Missing/partial key defaults that widget visible (!== false); empty/corrupt falls back to all-visible.
 export function parseVisibility(raw: string | null): WidgetVisibility {
   if (!raw) return ALL_VISIBLE;
   try {

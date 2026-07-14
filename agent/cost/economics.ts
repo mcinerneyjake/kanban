@@ -5,10 +5,7 @@ import {
   LABEL_TOTAL_RUN_COST, LABEL_COST_PER_ACCEPTED, LABEL_NET_SAVINGS, LABEL_LOCAL_VS_CLOUD,
 } from '../../shared/constants.js';
 
-// Turns the per-run cost components + the run's outcome into UNIT ECONOMICS:
-// cost per accepted ticket, net savings vs. doing it by hand, and the
-// local-vs-cloud comparison. Measured run data x assumed rates; every derived
-// line stays notional until all its inputs are available.
+// Per-run cost + outcome → unit economics (cost/accepted, net savings, local-vs-cloud). Every derived line stays notional until all its inputs are available.
 
 export interface RunOutcome {
   created: number;
@@ -67,10 +64,8 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
   const labor = cfg.laborRate;
   const lines: CostLine[] = [];
 
-  // Yield (measured).
   lines.push({ label: 'accepted tickets', amount: accepted, unit: 'count', kind: 'measured' });
 
-  // HITL review time: measured gate-open time x assumed labor rate.
   let reviewUsd: number | null = null;
   if (isSet(labor)) {
     reviewUsd = (reviewMs / MS_PER_HOUR) * labor.value;
@@ -79,7 +74,6 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
     lines.push(usd('review time cost', null, 'notional - set labor rate'));
   }
 
-  // Total local run cost = energy + hardware + review.
   const local = sumUsd(localCostLines);
   const totalPartial = local.partial || reviewUsd === null;
   const totalUsd = local.total + (reviewUsd ?? 0);
@@ -91,9 +85,7 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
   else if (accepted === 0) lines.push(usd(LABEL_COST_PER_ACCEPTED, null, 'notional - no accepted tickets'));
   else lines.push(usd(LABEL_COST_PER_ACCEPTED, totalUsd / accepted));
 
-  // Manual counterfactual value. Per REPORT (one report per run): a human would
-  // spend manual_minutes triaging it regardless of how many tickets result, so
-  // it's realized once when anything is accepted (not multiplied by ticket count).
+  // Manual value is per REPORT: realized once when anything is accepted, NOT multiplied by ticket count.
   const manualMin = cfg.manualMinutesPerReport;
   let valueUsd: number | null = null;
   if (isSet(manualMin) && isSet(labor)) {
@@ -104,7 +96,6 @@ export function economicsLines(input: EconomicsInput): CostLine[] {
     lines.push(usd('manual value (avoided)', null, 'notional - set manual minutes + labor rate'));
   }
 
-  // Net savings = value - total cost.
   if (valueUsd !== null && !totalPartial) lines.push(usd(LABEL_NET_SAVINGS, valueUsd - totalUsd));
   else lines.push(usd(LABEL_NET_SAVINGS, null, 'notional - value or cost incomplete'));
 

@@ -1,10 +1,8 @@
 import { archiveStaleTickets } from './tickets.js';
 
-// Weekly archive sweep. Extracted from index.ts so the scheduling concern is
-// isolated from HTTP assembly and testable without the app.
+// Weekly archive sweep — isolated from HTTP assembly, testable without the app.
 
-// Schedule archiving every Sunday at 6 PM local time.
-// Exported for testing — pass a specific `now` to avoid real-clock dependency.
+// Next Sunday 6 PM local. Exported for testing — pass `now` to avoid a real-clock dependency.
 export function msUntilNextSundayEvening(now = new Date()): number {
   const target = new Date(now);
   const day = now.getDay();

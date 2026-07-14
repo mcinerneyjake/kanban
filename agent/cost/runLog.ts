@@ -6,23 +6,11 @@ import { type RunUsage, isRunUsage } from './usage.js';
 import { type RunOutcome, isRunOutcome } from './economics.js';
 import { type RunSummary, isRunSummary } from './summary.js';
 
-// ---------------------------------------------------------------------------
-// Run log. Each agent run produces one RunRecord — its usage, computed cost
-// lines, outcome, and the ids of the tickets it authored — appended to a local
-// JSONL file. Mirrors server/events.ts (append-only, dir override, cast-free
-// per-line parse), the established local-telemetry pattern. Read/write is behind
-// this seam so the JSONL backend can move to SQLite later (tkt-f93c3c10c26c)
-// without touching callers. Keyed by runId; a ticket's frontmatter carries the
-// runId, giving the ticket → run → usage lookup (getRunForTicket).
-// ---------------------------------------------------------------------------
+// Append-only JSONL run log, one RunRecord per run. Behind a seam so the backend can move to SQLite later (tkt-f93c3c10c26c). Keyed by runId; a ticket's frontmatter carries the runId for the ticket → run → usage lookup.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Tests redirect the run log to a temp dir via this env var (mirrors
-// TICKETS_DIR_OVERRIDE / EVENTS_DIR_OVERRIDE). Default is the project-root
-// `runs/` dir: this file lives at agent/cost/, so it's TWO levels up (a single
-// `..` would resolve to agent/runs — the reorg regression this guards against).
-// Exported so a test can assert the default location.
+// RUNS_DIR_OVERRIDE redirects to a temp dir (tests). Default is project-root `runs/`: this file is at agent/cost/, so TWO levels up — a single `..` would wrongly resolve to agent/runs (reorg regression guard).
 export function runsDir(): string {
   return process.env.RUNS_DIR_OVERRIDE ?? path.join(__dirname, '..', '..', 'runs');
 }
@@ -50,8 +38,7 @@ function isTicketIds(v: unknown): v is RunRecord['ticketIds'] {
     && 'updated' in v && isStringArray(v.updated);
 }
 
-// Cast-free validator for a persisted RunRecord line. Composes the per-type
-// predicates so a truncated or hand-edited line is skipped, not trusted.
+// Cast-free validator for a persisted RunRecord line — a truncated/hand-edited line is skipped, not trusted.
 export function isRunRecord(v: unknown): v is RunRecord {
   return typeof v === 'object' && v !== null
     && 'runId' in v && typeof v.runId === 'string'
@@ -64,15 +51,13 @@ export function isRunRecord(v: unknown): v is RunRecord {
     && 'ticketIds' in v && isTicketIds(v.ticketIds);
 }
 
-// Append one run record. flag 'a' = O_APPEND so concurrent writers stay
-// line-atomic (same guarantee events.ts relies on).
+// flag 'a' = O_APPEND: concurrent writers stay line-atomic.
 export async function appendRun(record: RunRecord): Promise<void> {
   await fs.mkdir(runsDir(), { recursive: true });
   await fs.appendFile(runsPath(), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
 }
 
-// All run records, oldest first. Missing file → [] (not an error); corrupt lines
-// are skipped.
+// All records, oldest first. Missing file → [] (not an error); corrupt lines skipped.
 export async function readRuns(): Promise<RunRecord[]> {
   let raw: string;
   try {
@@ -91,19 +76,15 @@ export async function readRuns(): Promise<RunRecord[]> {
   return records;
 }
 
-// The record for a runId, or null if none. Last write wins (a runId should be
-// unique, but a re-run appending twice resolves to the latest).
+// The record for a runId, or null. Last write wins (a re-run appending twice resolves to the latest).
 export async function readRun(runId: string): Promise<RunRecord | null> {
   const matches = (await readRuns()).filter((r) => r.runId === runId);
   return matches.length > 0 ? matches[matches.length - 1] : null;
 }
 
-// The ticket → run → usage join: resolve a ticket's stamped runId to its run
-// record. Returns null when the ticket has no provenance (a human/CLI write) or
-// the run isn't logged.
+// The ticket → run → usage join. Null when the ticket has no provenance (human/CLI write) or the run isn't logged.
 export async function getRunForTicket(ticketId: string): Promise<RunRecord | null> {
-  // A lookup never throws: an unknown/deleted or malformed id (getTicket raises
-  // 404/400) simply has no run to join, so it resolves to null.
+  // Never throws: an unknown/malformed id (getTicket raises 404/400) simply has no run to join → null.
   let ticket;
   try {
     ticket = await getTicket(ticketId);

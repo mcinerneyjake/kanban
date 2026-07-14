@@ -1,20 +1,13 @@
 import { useEffect, useState } from 'react';
 import { WIDGETS, parseVisibility, type WidgetKey, type WidgetVisibility } from './lib/dashboardVisibility.js';
 
-// Dashboard view configuration, lifted out of the Dashboard component so the
-// sidebar can own the controls while the dashboard consumes the values. Widget
-// visibility persists across sessions; project filter and auto-refresh reset on
-// reload (they're session-scoped exploration, not durable preferences).
-//
-// The widget model + the pure persistence parse live in ./lib/dashboardVisibility
-// (unit-tested); re-exported here so existing consumers keep their import path.
+// Widget visibility persists across sessions; project filter + auto-refresh reset on reload (session-scoped exploration).
 export { WIDGETS };
 export type { WidgetKey, WidgetVisibility };
 
 const WIDGETS_KEY = 'dashboard-widgets';
 
-// Thin localStorage wrapper around the pure parse; tolerates storage being
-// unavailable (e.g. disabled/blocked) by falling back to defaults.
+// Tolerates localStorage being unavailable (disabled/blocked) by falling back to defaults.
 function loadVisibility(): WidgetVisibility {
   try {
     return parseVisibility(localStorage.getItem(WIDGETS_KEY));

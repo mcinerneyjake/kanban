@@ -1,33 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-// Generic modal shell: a full-screen backdrop wrapping a centered dialog panel,
-// with Escape-to-close, backdrop-click-to-close, a focus trap, and focus restore.
-// Body content and any header/footer are the caller's — pass a variant via
-// `className` (e.g. 'modal--run', 'modal--draft') and an accessible name via
-// `label` (becomes the dialog's aria-label).
-//
-// Accessibility contract (tkt-3d41293158f8):
-//   - role="dialog" + aria-modal so assistive tech announces it as a modal and
-//     scopes the user inside it.
-//   - Focus trap: Tab / Shift+Tab cycle within the panel instead of walking out
-//     onto the board behind it.
-//   - Focus restore: on close, focus returns to whatever triggered the modal.
-//
-// The Escape handler ignores events whose target is an open native <select>: a
-// dropdown's own Escape shouldn't also tear down the modal (and lose unsaved form
-// edits). This is a safe no-op for modals without a <select>, so the one guarded
-// handler serves every modal.
+// A11y contract: role=dialog + aria-modal, Tab focus-trap, focus-restore on close (tkt-3d41293158f8).
+// Escape ignores an open native <select> so its own Escape doesn't tear down the modal (losing unsaved edits).
 
-// Module-level stack of the currently-open modals so only the TOPMOST responds to
-// Escape (and drives the Tab trap). Two modals can be open at once — a run-detail
-// modal peeked from the ticket editor stacks over it — and each registers a
-// document keydown listener; without this, a single Escape would fire every
-// listener and close them all. Push on mount / splice on unmount, so stack order
-// tracks mount order (the later-opened modal is on top).
+// Stack of open modals so only the TOPMOST handles Escape / the Tab trap (two can be open — a run-detail peek over the editor); push on mount, splice on unmount.
 const modalStack: symbol[] = [];
 
-// Tab-order query for the focus trap. Excludes tabindex="-1" (programmatic-only)
-// and disabled controls; visibility is filtered at call time via offsetParent.
+// Tab-trap query; excludes tabindex=-1/disabled (visibility filtered via offsetParent at call time).
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -45,24 +24,16 @@ type Props = {
 };
 
 export default function Modal({ onClose, className, children, label }: Props) {
-  // Read onClose through a ref so the mount-only keydown effect never re-binds
-  // (which would reorder the stack) when an inline onClose closure changes
-  // identity between renders — same pattern as useDismiss.
+  // Read onClose via a ref so the mount-only keydown effect never re-binds (which would reorder the stack).
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const panelRef = useRef<HTMLDivElement>(null);
-  // Capture the trigger element during the FIRST render — before any child
-  // autoFocus (applied at commit) steals focus — so we can restore it on close.
-  // A useState initializer runs once, during that first render, and (unlike a
-  // ref written in render) is lint-clean.
+  // Capture the trigger during first render (before a child autoFocus steals focus) so we can restore it on close; useState initializer runs once and is lint-clean.
   const [restoreEl] = useState<Element | null>(() =>
     typeof document !== 'undefined' ? document.activeElement : null,
   );
-  // Guards the backdrop close: browsers dispatch `click` on the common ancestor
-  // of mousedown/mouseup, so selecting text in a textarea and releasing outside
-  // the panel would otherwise close the modal and destroy unsaved edits. Only
-  // close when the press actually STARTED on the backdrop.
+  // Only close when the press STARTED on the backdrop: click fires on the mousedown/up common ancestor, so a text-drag released outside would else close the modal and lose edits.
   const pressedBackdrop = useRef(false);
 
   useEffect(() => {
@@ -94,10 +65,7 @@ export default function Modal({ onClose, className, children, label }: Props) {
     };
     document.addEventListener('keydown', onKey);
 
-    // Move focus into the dialog on open so screen-reader/keyboard users land
-    // inside it. A newly-mounted modal is always the new top. This runs after
-    // commit, so any autoFocus child has already taken focus — act only when
-    // focus is still outside (e.g. EconomicsRunDetail, which has no autoFocus).
+    // Move focus into the dialog on open, but only if a child autoFocus hasn't already (runs post-commit).
     const panel = panelRef.current;
     if (panel && !panel.contains(document.activeElement)) {
       const focusables = focusableWithin(panel);
@@ -108,8 +76,7 @@ export default function Modal({ onClose, className, children, label }: Props) {
       document.removeEventListener('keydown', onKey);
       const i = modalStack.indexOf(id);
       if (i !== -1) modalStack.splice(i, 1);
-      // Restore focus to the trigger so keyboard users aren't dumped at the top
-      // of the document when the modal closes. A detached node's focus() no-ops.
+      // Restore focus to the trigger; a detached node's focus() no-ops.
       if (restoreEl instanceof HTMLElement) restoreEl.focus();
     };
   }, [restoreEl]);
@@ -119,10 +86,7 @@ export default function Modal({ onClose, className, children, label }: Props) {
       className="modal-backdrop"
       onMouseDown={(e) => { pressedBackdrop.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => {
-        // Close only when BOTH ends of the press landed on the backdrop itself.
-        // Guarding one end alone still loses unsaved edits on the mirror gesture
-        // (press on the backdrop, release inside the panel — or vice-versa),
-        // because the browser dispatches `click` on the common ancestor.
+        // Close only when BOTH press ends landed on the backdrop; guarding one end still loses edits on the mirror gesture (click fires on the common ancestor).
         if (pressedBackdrop.current && e.target === e.currentTarget) onClose();
         pressedBackdrop.current = false;
       }}

@@ -1,9 +1,6 @@
 import { resolvePrefixes } from './embedPrefixes.js';
 
-// Runtime config for the agent's models, resolved from env. See
-// kanban-planning-docs/AGENT-FLOW.md. Phase 1 (retrieval) needs only the
-// embedding config; the LLM chat config + RAM-tier ladder land with the
-// tool-use loop in Phase 3.
+// Embedding config for the agent's models, resolved from env.
 
 export interface EmbedConfig {
   /** OpenAI-compatible base URL, e.g. http://localhost:1234/v1 */

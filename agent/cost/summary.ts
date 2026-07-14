@@ -4,9 +4,7 @@ import { type CostLine, isCostLine, EnergyCostModel, HardwareCostModel } from '.
 import { economicsLines, type RunOutcome } from './economics.js';
 import { cacheablePrefix, cacheableLines } from './cacheable.js';
 
-// Assembles every CostLine for a run (energy, hardware, cacheable, economics)
-// plus the measured inputs, and groups them Measured / Assumed / Externalities
-// with a curated headline. Pure + testable; the CLI just prints renderSummary().
+// Assembles every CostLine for a run and groups them Measured / Assumed / Externalities with a curated headline. Pure + testable.
 
 export interface SummaryInput {
   usage: RunUsage;            // combined chat + embedder usage
@@ -25,8 +23,7 @@ export interface RunSummary {
   headline: CostLine[];
 }
 
-// Cast-free validator for a persisted RunSummary (run log reads): four arrays of
-// CostLine.
+// Cast-free validator for a persisted RunSummary (run log reads).
 export function isRunSummary(v: unknown): v is RunSummary {
   const isLines = (x: unknown): x is CostLine[] => Array.isArray(x) && x.every(isCostLine);
   return typeof v === 'object' && v !== null
@@ -36,8 +33,7 @@ export function isRunSummary(v: unknown): v is RunSummary {
     && 'headline' in v && isLines(v.headline);
 }
 
-// The curated highlight lines — shown separately, and excluded from `assumed`
-// so they aren't listed twice.
+// Curated highlight lines — excluded from `assumed` so they aren't listed twice.
 const HEADLINE = ['cost per accepted ticket', 'net savings', 'local vs cloud (saved)'];
 
 function measuredInputs(usage: RunUsage): CostLine[] {
@@ -57,8 +53,7 @@ export function buildSummary(input: SummaryInput): RunSummary {
   const { usage, outcome, reviewMs, cfg, model, prefixText, dynamicText } = input;
   const energy = new EnergyCostModel(cfg).lines(usage);
   const hardware = new HardwareCostModel(cfg).lines(usage);
-  // Economics sums the local $ lines itself (sumUsd ignores non-USD), so passing
-  // the full energy + hardware sets is safe — no double counting in display.
+  // Economics sums the local $ lines itself (sumUsd ignores non-USD), so passing full energy + hardware is safe — no double counting.
   const econ = economicsLines({ usage, outcome, localCostLines: [...energy, ...hardware], reviewMs, cfg, model });
   const cacheable = cacheableLines(cacheablePrefix(prefixText, dynamicText), usage);
 

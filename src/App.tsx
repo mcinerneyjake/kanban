@@ -19,26 +19,19 @@ import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
 import type { Ticket } from '../shared/constants.js';
 
-// Single source of UI state. Tickets are reloaded from the server after every
-// mutation (the files are the source of truth), except drag-moves which apply
-// optimistically for snappy reordering.
 export default function App() {
   const { theme, toggle } = useTheme();
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
-  // Optional agent-triage prefill carried into the create/edit modal.
   const [prefill, setPrefill] = useState<Prefill | null>(null);
-  // The runId of an agent draft carried into the modal — non-null means Save routes
-  // through the intake-apply endpoint (provenance + metering), not the human route.
+  // Non-null → Save routes through intake-apply (provenance + metering), not the human route.
   const [draftRunId, setDraftRunId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>(() => decode(new URLSearchParams(location.search)));
   const [showArchive, setShowArchive] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  // The run-economics modal is a transient peek from the ticket editor, not a
-  // destination — so `runId` is ephemeral UI state with no URL coupling. Closing
-  // it just returns to the ticket behind it; a reload doesn't reopen it.
+  // Ephemeral peek from the ticket editor — no URL coupling; reload won't reopen it.
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<View>('board');
   const dash = useDashboardConfig();
@@ -62,12 +55,7 @@ export default function App() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // Suppress the echo of our OWN writes: a local mutation persists to a file,
-  // chokidar sees it, and the server broadcasts `refresh` back ~100ms later.
-  // Reloading on that echo would clobber the optimistic drag/reparent state
-  // (which skips reloading on success by design), so mute refresh-driven reloads
-  // briefly after each local write. Genuinely external changes (Claude / the MCP
-  // process) land outside this window and still refresh instantly.
+  // Mute refresh-driven reloads briefly after a local write so the chokidar echo can't clobber optimistic drag state; external changes land outside the window.
   const muteRefreshUntil = useRef(0);
   const markLocalWrite = useCallback(() => { muteRefreshUntil.current = Date.now() + 500; }, []);
 
@@ -106,19 +94,13 @@ export default function App() {
     return result;
   }, [tickets, filter, searchTerm]);
 
-  // Keyed by parent id → sub-ticket count shown on the card, computed from all
-  // tickets (not filtered). Done children drop off an open parent's count;
-  // a done parent shows its full original count. See computeChildCounts.
+  // parent id → sub-ticket count, from all tickets not filtered (see computeChildCounts).
   const childCounts = useMemo(() => computeChildCounts(tickets), [tickets]);
 
-  // Keyed by ticket id → count of *active* blockers behind the ⛔ card badge.
-  // Computed from all tickets (not filtered) so a blocker in a hidden column
-  // still counts; done/archived/dangling blockers drop off. See computeActiveBlockerCounts.
+  // ticket id → active blocker count; from all tickets so hidden-column blockers still count (see computeActiveBlockerCounts).
   const activeBlockerCounts = useMemo(() => computeActiveBlockerCounts(tickets), [tickets]);
 
-  // ticketsRef lets stable callbacks read the current ticket list without listing
-  // tickets as a dependency. Synced in an effect (not during render) so the ref is
-  // current before any user interaction fires.
+  // Lets stable callbacks read current tickets without a dep; synced in an effect, not during render.
   const ticketsRef = useRef(tickets);
   useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
 
@@ -126,25 +108,18 @@ export default function App() {
     load();
   }, [load]);
 
-  // Live board sync: the server broadcasts a bare `refresh` over SSE whenever a
-  // ticket file changes (API, direct edit, or the separate MCP process). load()
-  // re-syncs the board and the dashboard aggregates.
+  // Live board sync: server broadcasts a bare `refresh` over SSE on any ticket-file change.
   useEffect(() => {
     const es = new EventSource('/api/stream');
-    // Skip refreshes that are the echo of our own just-persisted write (see
-    // markLocalWrite) so they don't clobber optimistic state.
+    // Skip the echo of our own write (see markLocalWrite).
     const onRefresh = () => { if (Date.now() >= muteRefreshUntil.current) load(); };
-    // The initial connect is already covered by the mount load(); only refetch
-    // on a genuine RE-connect, to catch changes missed while disconnected
-    // (EventSource auto-reconnects but does not replay events).
+    // Only refetch on a genuine RE-connect (mount load covers first connect); EventSource doesn't replay missed events.
     let connectedOnce = false;
     const onOpen = () => {
       if (!connectedOnce) { connectedOnce = true; return; }
       load();
     };
-    // EventSource auto-reconnects on transient drops (readyState → CONNECTING); a
-    // CLOSED state is a permanent failure that kills realtime silently. Log it so
-    // a dead stream is at least diagnosable rather than invisible.
+    // CLOSED = permanent failure (no auto-reconnect); log so a dead stream is diagnosable.
     const onError = () => {
       if (es.readyState === EventSource.CLOSED)
         console.warn('[sse] live updates unavailable — the event stream is closed and will not reconnect');
@@ -160,9 +135,7 @@ export default function App() {
     };
   }, [load]);
 
-  // Open the modal — create ('new') or edit (a ticket) — with an optional prefill
-  // (the agent's triage proposal). Always (re)sets prefill so a normal open never
-  // inherits a stale one.
+  // Always (re)sets prefill so a normal open doesn't inherit a stale one.
   const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null, runId: string | null = null) => {
     setPrefill(initial);
     setDraftRunId(runId);
@@ -175,32 +148,20 @@ export default function App() {
     setDraftRunId(null);
   }, []);
 
-  // Navigating between views (board ↔ dashboard) closes any open modal — an
-  // edit/create modal is scoped to the view it was opened from and should not
-  // linger over a different view. Wrapping setView keeps this tied to the
-  // navigation action itself rather than a reactive effect.
+  // Nav between views closes any open modal (scoped to the view it opened from).
   const handleViewChange = useCallback((next: View) => {
     setView(next);
-    // The sidebar sits above the modal backdrop (z-index), so it stays clickable
-    // with a modal open; a deliberate nav should dismiss any open overlay — both
-    // the ticket editor and the run-detail peek.
+    // Sidebar sits above the backdrop, so a nav must dismiss open overlays itself.
     closeTicket();
     setRunId(null);
   }, [closeTicket]);
 
-  // Open a run's economics detail as a modal. Its only entry is the ProvenanceNote
-  // link inside the ticket editor, so it STACKS over that modal (a peek) rather
-  // than replacing it — closing the run modal ("← Back to ticket") returns to the
-  // editor with unsaved edits intact. `view` is untouched so the user keeps their
-  // context.
+  // Stacks over the ticket editor (a peek); closing returns to it with edits intact.
   const openRun = useCallback((rid: string) => {
     setRunId(rid);
   }, []);
 
-  // Resolve a ticket id to the full ticket and open it. Ids surfaced by the
-  // dashboard or a run's authored-ticket list may not be in App's current list
-  // (polling / filtering / archival), so fall back to a fetch rather than
-  // dead-clicking when the id isn't found locally.
+  // Ids from the dashboard/run lists may not be in the current list — fall back to a fetch (see resolveTicket).
   const openTicketById = useCallback((id: string) => {
     resolveTicket(id, ticketsRef.current, api.get)
       .then(openTicket)
@@ -208,11 +169,10 @@ export default function App() {
   }, [openTicket]);
 
   const handleSave = useCallback(async (data: Partial<Ticket>, runId?: string) => {
-    const target = editing !== 'new' ? editing : null; // the ticket being edited, or null for a create
+    const target = editing !== 'new' ? editing : null;
     try {
       if (runId) {
-        // An agent-drafted ticket: apply through the provenance/metering endpoint so it
-        // earns the 🤖 Assisted badge + a run-log link (not the plain human route).
+        // Agent draft: apply via provenance/metering endpoint (🤖 Assisted badge + run link).
         await api.intake.apply({
           action: target ? 'update_ticket' : 'create_ticket',
           runId,
@@ -235,7 +195,7 @@ export default function App() {
 
   const handleReparent = useCallback(async (id: string, newParentId: string) => {
     if (id === newParentId) return;
-    // Guard against cycles: reject if newParentId is a descendant of id.
+    // Guard cycles: reject if newParentId is a descendant of id.
     const current = ticketsRef.current;
     const descendants = new Set<string>();
     const queue = [id];
@@ -351,15 +311,12 @@ export default function App() {
           />
         )}
 
-        {/* Single-run economics detail — a modal peeked from the ticket editor's
-            "View economics" link, stacked over it; closing ("← Back to ticket")
-            returns to the ticket with its edits intact. */}
+        {/* Single-run economics peek, stacked over the ticket editor. */}
         {runId && (
           <EconomicsRunDetail
             runId={runId}
             onClose={() => setRunId(null)}
-            // Following an authored-ticket link closes this modal as that ticket's
-            // opens, so the two don't stack.
+            // Close this peek as the ticket opens so the two don't stack.
             onOpen={(id) => { setRunId(null); openTicketById(id); }}
           />
         )}

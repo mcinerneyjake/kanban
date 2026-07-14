@@ -15,11 +15,7 @@ export interface ProposeResult {
   runId: string;
 }
 
-// A deterministic, non-failure summary for a captured proposal. In propose mode the
-// model never runs to its own summary (the loop halts at capture), and its
-// post-capture narration WAS the bug — it observed the decline and reported a
-// *failure* — so the UI subtitle is synthesized from the proposal itself. The modal
-// renders the full proposed diff alongside this, so a terse line suffices.
+// Deterministic, non-failure summary for a captured proposal. The model's post-capture narration WAS the bug (it observed the decline and reported a *failure*), so the subtitle is synthesized from the proposal itself.
 function summarizeProposal(name: string, args: Record<string, unknown> | undefined): string {
   const a = args ?? {};
   if (name === 'update_ticket') {
@@ -32,20 +28,14 @@ function summarizeProposal(name: string, args: Record<string, unknown> | undefin
   return `Proposed a new ticket "${title}" for your review.`;
 }
 
-// Run the intake loop in "propose" mode: the agent searches + proposes a
-// create/update, but the loop CAPTURES the first mutating action and halts —
-// nothing is written and the model never observes a decline. The caller approves +
-// applies the captured proposal later via the normal create/update flow.
+// Run the intake loop in "propose" mode: the agent searches + proposes, the loop CAPTURES the first mutating action and halts (nothing written, no decline observed). The caller approves + applies the proposal later.
 export async function proposeIntake(report: string, deps: Omit<IntakeDeps, 'approve' | 'onCapture'>): Promise<ProposeResult> {
   let proposal: IntakeProposal | null = null;
   const result = await runIntake(report, {
     ...deps,
-    // Decline any gated tool that ISN'T the captured proposal — e.g. a
-    // prompt-injected delete_ticket — so nothing is ever written. (create/update
-    // are intercepted by onCapture before they reach this gate.)
+    // Decline any gated tool that ISN'T the captured proposal — e.g. a prompt-injected delete_ticket — so nothing is ever written.
     approve: () => false,
-    // Capture the first create/update and halt the loop; synthesize the summary
-    // from the proposal rather than the model's (post-decline) narration.
+    // Capture the first create/update and halt; synthesize the summary from the proposal, not the model's post-decline narration.
     onCapture: (name, args) => {
       proposal = { action: name, args: args ?? {} };
       return summarizeProposal(name, args);
