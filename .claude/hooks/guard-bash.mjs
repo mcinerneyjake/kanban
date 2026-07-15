@@ -32,13 +32,14 @@
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 // Pull the git subcommand + its args out of a single shell segment. The command
 // WORD must be `git` (after stripping leading subshell/group punctuation and
 // simple VAR=val env prefixes) — so data that merely mentions git, e.g.
-// `echo "git add -A"`, is not treated as a git invocation. Skips global options
-// that take a value (`git -C <path> add`, `git -c k=v commit`). Returns null for
-// non-git segments.
+// `echo "git add -A"`, is not treated as a git invocation. `-C <path>` is
+// captured, not skipped: it names the repo the command acts on.
 export function parseGit(segment) {
   const stripped = segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '');
   const tokens = stripped.split(/\s+/);
@@ -46,11 +47,38 @@ export function parseGit(segment) {
   while (cmd < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[cmd])) cmd++; // env prefix
   if (tokens[cmd] !== 'git') return null;
   let i = cmd + 1;
+  let repoDir = null;
   while (i < tokens.length && tokens[i].startsWith('-')) {
-    i += tokens[i] === '-C' || tokens[i] === '-c' ? 2 : 1; // -C/-c take a value
+    if (tokens[i] === '-C') { repoDir = tokens[i + 1] ?? null; i += 2; }
+    else if (tokens[i] === '-c') { i += 2; } // -c takes a value we don't care about
+    else i += 1;
   }
   if (i >= tokens.length) return null;
-  return { sub: tokens[i], args: tokens.slice(i + 1) };
+  return { sub: tokens[i], args: tokens.slice(i + 1), repoDir };
+}
+
+// null when resolving would mean guessing at shell expansion — a wrong dir is
+// worse than none, since it would judge one repo by another's branch.
+function resolveDir(dir, target) {
+  const t = target.replace(/^["']|["']$/g, '');
+  if (!t || t.includes('$') || t.includes('*')) return null;
+  if (t === '~' || t.startsWith('~/')) return join(homedir(), t.slice(1));
+  if (isAbsolute(t)) return t;
+  return dir ? resolve(dir, t) : null;
+}
+
+// undefined = not a cd; null = cd we can't resolve (`cd -`, bare `cd`), which
+// yields a null branch and so never blocks — `cd - && git commit` is a known
+// bypass, same class as the `git --git-dir` spoofing in SCOPE above.
+export function cdTarget(segment, dir) {
+  const stripped = segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '');
+  const tokens = stripped.split(/\s+/);
+  let cmd = 0;
+  while (cmd < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[cmd])) cmd++;
+  if (tokens[cmd] !== 'cd') return undefined;
+  const target = tokens[cmd + 1];
+  if (!target || target.startsWith('-')) return null; // `cd`, `cd -`, `cd -P …`
+  return resolveDir(dir, target);
 }
 
 // Args that stage the whole working tree rather than named paths.
@@ -183,10 +211,11 @@ export function splitSegments(command) {
   return segments.map((s) => s.trim()).filter(Boolean);
 }
 
-// Decide whether a (possibly compound) command should be blocked. `getBranch`
-// is injected so the logic is pure and testable; it returns the current branch
-// name or null when it can't be determined. Returns { blocked, reason }.
-export function decide(command, getBranch) {
+// Decide whether a (possibly compound) command should be blocked. `getBranch(dir)`
+// is injected so the logic stays pure and testable. Branch state is per-directory,
+// not global: a chain can `cd` between repos, and a switch in one must not change
+// what we believe another is on (tkt-74bc8f9b6ba5).
+export function decide(command, getBranch, startDir) {
   if (typeof command !== 'string' || !command.trim()) return { blocked: false };
 
   // Quote/substitution-aware split so each git invocation is checked
@@ -194,12 +223,23 @@ export function decide(command, getBranch) {
   // `|` is intentionally not a split point.
   const segments = splitSegments(command);
 
-  let branch = getBranch(); // effective branch, updated as we walk switch/checkout in a chain
+  let dir = startDir ?? null;
+  const branches = new Map(); // dir -> effective branch; memoized, so one lookup per repo
+  const branchFor = (d) => {
+    if (!branches.has(d)) branches.set(d, getBranch(d));
+    return branches.get(d);
+  };
 
   for (const segment of segments) {
+    const moved = cdTarget(segment, dir);
+    if (moved !== undefined) { dir = moved; continue; }
+
     const git = parseGit(segment);
     if (!git) continue;
-    const { sub, args } = git;
+    const { sub, args, repoDir } = git;
+    // `git -C <path>` acts on that repo regardless of cwd.
+    const gitDir = repoDir ? resolveDir(dir, repoDir) : dir;
+    const branch = branchFor(gitDir);
 
     const destructive = destructiveGitReason(sub, args);
     if (destructive) return { blocked: true, reason: destructive };
@@ -236,21 +276,22 @@ export function decide(command, getBranch) {
       };
     }
 
-    const moved = switchTarget(sub, args);
-    if (moved) branch = moved;
+    const switched = switchTarget(sub, args);
+    if (switched) branches.set(gitDir, switched);
   }
 
   return { blocked: false };
 }
 
-function currentBranch() {
+function currentBranch(dir) {
   try {
     return execSync('git rev-parse --abbrev-ref HEAD', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      ...(dir ? { cwd: dir } : {}),
     }).trim();
   } catch {
-    return null; // detached / not a repo → can't assert branch, so don't block
+    return null; // detached / not a repo / bad dir → can't assert branch, so don't block
   }
 }
 
@@ -262,7 +303,11 @@ function main() {
     process.exit(0); // not our concern if we can't parse the event
   }
 
-  const { blocked, reason } = decide(payload?.tool_input?.command, currentBranch);
+  // payload.cwd is the project dir, not the Bash tool's cwd (verified 2026-07-15;
+  // the tool resets cwd each call), so an in-chain `cd` is the only way a command
+  // reaches another repo. Passed anyway in case that semantic ever changes.
+  const startDir = payload?.cwd ?? process.cwd();
+  const { blocked, reason } = decide(payload?.tool_input?.command, currentBranch, startDir);
   if (blocked) {
     process.stderr.write(`[guard-bash] Blocked: ${reason}\n`);
     process.exit(2);
