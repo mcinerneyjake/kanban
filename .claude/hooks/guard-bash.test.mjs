@@ -1,4 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
+import { execSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseGit, cdTarget, decide } from './guard-bash.mjs';
 
 // A branch resolver stub — most cases pin the branch explicitly, ignoring dir.
@@ -49,6 +54,15 @@ describe('cdTarget', () => {
     expect(cdTarget('cd -', KANBAN)).toBeNull();
     expect(cdTarget('cd', KANBAN)).toBeNull();
     expect(cdTarget('cd $SOMEWHERE', KANBAN)).toBeNull();
+    expect(cdTarget('cd ~jake/repo', KANBAN)).toBeNull();
+  });
+
+  it('returns null for a quoted path with a space rather than a truncated one', () => {
+    // Tokens are whitespace-split upstream, so '/repos/my repo' arrives as '"/repos/my'.
+    // Returning '/repos/my' would judge that repo by a different one's branch.
+    expect(cdTarget('cd "/repos/my repo"', KANBAN)).toBeNull();
+    expect(cdTarget("cd '/repos/my repo'", KANBAN)).toBeNull();
+    expect(cdTarget('cd "/repos/other"', KANBAN)).toBe(OTHER);
   });
 });
 
@@ -237,14 +251,75 @@ describe('decide — the command target picks the repo (tkt-74bc8f9b6ba5)', () =
     expect(decide(`cd ${OTHER} && git push origin main`, twoRepos, KANBAN).blocked).toBe(true);
   });
 
-  it('does not block after an unresolvable cd (documented bypass)', () => {
-    expect(decide('cd - && git commit -m x', twoRepos, KANBAN).blocked).toBe(false);
+  it('falls back to the start dir when a cd is unresolvable, rather than giving up', () => {
+    // Mirrors the real currentBranch contract: any dir it can't read falls back to
+    // startDir. A stub that returned null here would model a hole the code doesn't have.
+    const realistic = (d) => twoRepos(d) ?? twoRepos(KANBAN);
+    expect(decide('cd - && git commit -m x', realistic, KANBAN).blocked).toBe(true);
+    expect(decide('cd /typo-dir && git commit -m x', realistic, KANBAN).blocked).toBe(true);
+  });
+
+  it('restores the outer dir when a subshell closes', () => {
+    // `(cd other && …)` does not move the caller's cwd, so the later commit is in kanban/main.
+    expect(decide(`(cd ${OTHER} && git status) && git commit -m x`, twoRepos, KANBAN).blocked).toBe(true);
+    expect(decide(`(cd ${OTHER} && git commit -m x)`, twoRepos, KANBAN).blocked).toBe(false);
   });
 
   it('resolves each distinct repo once', () => {
     const spy = vi.fn(twoRepos);
     decide(`git status && git log && cd ${OTHER} && git commit -m x && git push origin feat/x`, spy, KANBAN);
     expect(spy.mock.calls.map((c) => c[0])).toEqual([KANBAN, OTHER]);
+  });
+});
+
+// Every other suite stubs getBranch. A stub can model a contract the real resolver
+// doesn't honor — which is exactly how the cd-to-nowhere fail-open shipped green.
+// This drives the real hook binary against real repos.
+describe('the real hook, end to end', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'guard-'));
+  const repo = (name, branch) => {
+    const p = join(tmp, name);
+    mkdirSync(p);
+    const run = (c) => execSync(c, { cwd: p, stdio: 'ignore' });
+    run('git init -q -b main');
+    run('git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init');
+    if (branch !== 'main') run(`git switch -q -c ${branch}`);
+    return p;
+  };
+  const onMain = repo('on-main', 'main');
+  const onFeat = repo('on-feat', 'feat/x');
+
+  const hook = fileURLToPath(new URL('./guard-bash.mjs', import.meta.url));
+  const runHook = (command, cwd) => {
+    const r = spawnSync('node', [hook], {
+      input: JSON.stringify({ cwd, tool_input: { command } }),
+      encoding: 'utf8',
+    });
+    return r.status; // 2 = blocked, 0 = allowed
+  };
+
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it('blocks a commit on main and allows one on a feature branch', () => {
+    expect(runHook('git commit -m x', onMain)).toBe(2);
+    expect(runHook('git commit -m x', onFeat)).toBe(0);
+  });
+
+  it('judges by the repo the chain cd-ed into — the bug this fixes', () => {
+    expect(runHook(`cd ${onFeat} && git commit -m x`, onMain)).toBe(0);
+    expect(runHook(`cd ${onMain} && git commit -m x`, onFeat)).toBe(2);
+  });
+
+  it('honors git -C', () => {
+    expect(runHook(`git -C ${onFeat} commit -m x`, onMain)).toBe(0);
+    expect(runHook(`git -C ${onMain} commit -m x`, onFeat)).toBe(2);
+  });
+
+  it('fails closed when the cd target is unusable', () => {
+    // The regression the review caught: these were ALLOWED before the fallback.
+    expect(runHook('cd /nonexistent-xyz && git commit -m x', onMain)).toBe(2);
+    expect(runHook('cd - && git commit -m x', onMain)).toBe(2);
+    expect(runHook('cd $NOPE && git commit -m x', onMain)).toBe(2);
   });
 });
 

@@ -57,19 +57,22 @@ export function parseGit(segment) {
   return { sub: tokens[i], args: tokens.slice(i + 1), repoDir };
 }
 
-// null when resolving would mean guessing at shell expansion — a wrong dir is
-// worse than none, since it would judge one repo by another's branch.
+// null rather than a guess — a wrong dir judges one repo by another's branch.
 function resolveDir(dir, target) {
-  const t = target.replace(/^["']|["']$/g, '');
+  const quoted = /^["']/.test(target);
+  const balanced = quoted && target.length > 1 && target.at(-1) === target[0];
+  if (quoted && !balanced) return null; // whitespace-split upstream truncated a quoted path
+  const t = balanced ? target.slice(1, -1) : target;
   if (!t || t.includes('$') || t.includes('*')) return null;
-  if (t === '~' || t.startsWith('~/')) return join(homedir(), t.slice(1));
+  if (t === '~') return homedir();
+  if (t.startsWith('~/')) return join(homedir(), t.slice(2));
+  if (t.startsWith('~')) return null; // ~user
   if (isAbsolute(t)) return t;
   return dir ? resolve(dir, t) : null;
 }
 
-// undefined = not a cd; null = cd we can't resolve (`cd -`, bare `cd`), which
-// yields a null branch and so never blocks — `cd - && git commit` is a known
-// bypass, same class as the `git --git-dir` spoofing in SCOPE above.
+// undefined = not a cd; null = unresolvable (`cd -`, bare `cd`) → currentBranch
+// falls back to the hook's cwd rather than giving up.
 export function cdTarget(segment, dir) {
   const stripped = segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '');
   const tokens = stripped.split(/\s+/);
@@ -211,10 +214,9 @@ export function splitSegments(command) {
   return segments.map((s) => s.trim()).filter(Boolean);
 }
 
-// Decide whether a (possibly compound) command should be blocked. `getBranch(dir)`
-// is injected so the logic stays pure and testable. Branch state is per-directory,
-// not global: a chain can `cd` between repos, and a switch in one must not change
-// what we believe another is on (tkt-74bc8f9b6ba5).
+// `getBranch(dir)` is injected so the logic stays pure and testable. Branch state is
+// keyed by directory: a chain can `cd` between repos, and a switch in one must not
+// change what we believe another is on (tkt-74bc8f9b6ba5).
 export function decide(command, getBranch, startDir) {
   if (typeof command !== 'string' || !command.trim()) return { blocked: false };
 
@@ -224,6 +226,7 @@ export function decide(command, getBranch, startDir) {
   const segments = splitSegments(command);
 
   let dir = startDir ?? null;
+  const outer = []; // dirs saved at `(` — a real shell restores cwd when the subshell exits
   const branches = new Map(); // dir -> effective branch; memoized, so one lookup per repo
   const branchFor = (d) => {
     if (!branches.has(d)) branches.set(d, getBranch(d));
@@ -231,68 +234,65 @@ export function decide(command, getBranch, startDir) {
   };
 
   for (const segment of segments) {
+    for (let i = (segment.match(/^\(+/)?.[0].length) ?? 0; i > 0; i--) outer.push(dir);
+
     const moved = cdTarget(segment, dir);
-    if (moved !== undefined) { dir = moved; continue; }
-
-    const git = parseGit(segment);
-    if (!git) continue;
-    const { sub, args, repoDir } = git;
-    // `git -C <path>` acts on that repo regardless of cwd.
-    const gitDir = repoDir ? resolveDir(dir, repoDir) : dir;
-    const branch = branchFor(gitDir);
-
-    const destructive = destructiveGitReason(sub, args);
-    if (destructive) return { blocked: true, reason: destructive };
-
-    if ((sub === 'add' || sub === 'stage') && stagesEverything(args)) {
-      return {
-        blocked: true,
-        reason:
-          "git add/stage of the whole tree (-A / --all / . / *) stages everything. Stage only this ticket's files explicitly (git add <path> ...). See CLAUDE.md → Branch, commit & PR workflow.",
-      };
+    if (moved !== undefined) {
+      dir = moved;
+    } else {
+      const git = parseGit(segment);
+      if (git) {
+        const { sub, args, repoDir } = git;
+        const gitDir = repoDir ? resolveDir(dir, repoDir) : dir; // -C acts on that repo, whatever the cwd
+        const verdict = ruleFor(sub, args, branchFor(gitDir));
+        if (verdict) return { blocked: true, reason: verdict };
+        const switched = switchTarget(sub, args);
+        if (switched) branches.set(gitDir, switched);
+      }
     }
 
-    if (sub === 'commit' && commitStagesAll(args)) {
-      return {
-        blocked: true,
-        reason:
-          "git commit -a / -am stages every tracked change, bypassing per-ticket staging. Stage this ticket's files explicitly, then commit without -a. See CLAUDE.md.",
-      };
-    }
-
-    if (sub === 'commit' && branch === 'main') {
-      return {
-        blocked: true,
-        reason:
-          'Direct commits to main are not allowed — every ticket lands on its own branch via a squash-merged PR. Cut a <type>/<id>-<slug> branch first. See CLAUDE.md.',
-      };
-    }
-
-    if (sub === 'push' && pushesMain(args, branch)) {
-      return {
-        blocked: true,
-        reason:
-          'Direct pushes to main are not allowed — push your ticket branch and open a PR. See CLAUDE.md → Branch, commit & PR workflow.',
-      };
-    }
-
-    const switched = switchTarget(sub, args);
-    if (switched) branches.set(gitDir, switched);
+    for (let i = (segment.match(/\)+$/)?.[0].length) ?? 0; i > 0 && outer.length; i--) dir = outer.pop();
   }
 
   return { blocked: false };
 }
 
-function currentBranch(dir) {
+// `branch` is the branch of the repo THIS command acts on, not the hook's.
+function ruleFor(sub, args, branch) {
+  const destructive = destructiveGitReason(sub, args);
+  if (destructive) return destructive;
+
+  if ((sub === 'add' || sub === 'stage') && stagesEverything(args))
+    return "git add/stage of the whole tree (-A / --all / . / *) stages everything. Stage only this ticket's files explicitly (git add <path> ...). See CLAUDE.md → Branch, commit & PR workflow.";
+
+  if (sub === 'commit' && commitStagesAll(args))
+    return "git commit -a / -am stages every tracked change, bypassing per-ticket staging. Stage this ticket's files explicitly, then commit without -a. See CLAUDE.md.";
+
+  if (sub === 'commit' && branch === 'main')
+    return 'Direct commits to main are not allowed — every ticket lands on its own branch via a squash-merged PR. Cut a <type>/<id>-<slug> branch first. See CLAUDE.md.';
+
+  if (sub === 'push' && pushesMain(args, branch))
+    return 'Direct pushes to main are not allowed — push your ticket branch and open a PR. See CLAUDE.md → Branch, commit & PR workflow.';
+
+  return null;
+}
+
+function branchIn(cwd) {
   try {
     return execSync('git rev-parse --abbrev-ref HEAD', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      ...(dir ? { cwd: dir } : {}),
+      ...(cwd ? { cwd } : {}),
     }).trim();
   } catch {
-    return null; // detached / not a repo / bad dir → can't assert branch, so don't block
+    return null;
   }
+}
+
+// An unusable dir falls back to `fallbackDir`, not null: a null branch never blocks,
+// so without this `cd /typo; git commit` on main would slip through.
+function currentBranch(dir, fallbackDir) {
+  return (dir ? branchIn(dir) : null) ?? branchIn(fallbackDir);
 }
 
 function main() {
@@ -303,11 +303,10 @@ function main() {
     process.exit(0); // not our concern if we can't parse the event
   }
 
-  // payload.cwd is the project dir, not the Bash tool's cwd (verified 2026-07-15;
-  // the tool resets cwd each call), so an in-chain `cd` is the only way a command
-  // reaches another repo. Passed anyway in case that semantic ever changes.
+  // payload.cwd is the project dir, not the Bash tool's cwd (verified 2026-07-15).
   const startDir = payload?.cwd ?? process.cwd();
-  const { blocked, reason } = decide(payload?.tool_input?.command, currentBranch, startDir);
+  const getBranch = (dir) => currentBranch(dir, startDir);
+  const { blocked, reason } = decide(payload?.tool_input?.command, getBranch, startDir);
   if (blocked) {
     process.stderr.write(`[guard-bash] Blocked: ${reason}\n`);
     process.exit(2);
