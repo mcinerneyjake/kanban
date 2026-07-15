@@ -16,10 +16,12 @@
 // SCOPE: this is a best-effort guard against the assistant's own predictable
 // commands, NOT an adversarial sandbox. It does NOT defend against deliberately
 // obscure forms — e.g. `git --git-dir <path> ...` global-option spoofing, env
-// prefixes other than simple VAR=val, or hiding a branch change behind a plain
-// `git checkout <branch>` (only `switch` / `checkout -b` are tracked). Defending
-// those would mean reimplementing a shell parser; GitHub branch protection is
-// the real backstop. See CLAUDE.md → Branch, commit & PR workflow.
+// prefixes other than simple VAR=val, hiding a branch change behind a plain
+// `git checkout <branch>` (only `switch` / `checkout -b` are tracked), or
+// poisoning the unresolvable-dir slot, which every unknown `cd` target shares:
+// `cd $A && git switch -c x && cd $B && git commit`. Defending those would mean
+// reimplementing a shell parser; GitHub branch protection is the real backstop.
+// See CLAUDE.md → Branch, commit & PR workflow.
 //
 // Protocol: read the hook payload as JSON on stdin, inspect
 // `tool_input.command`. Exit 0 to allow; exit 2 to block (stderr is surfaced to
