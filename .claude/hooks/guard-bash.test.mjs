@@ -1,20 +1,31 @@
-import { describe, it, expect } from 'vitest';
-import { parseGit, decide } from './guard-bash.mjs';
+import { describe, it, expect, vi, afterAll } from 'vitest';
+import { execSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseGit, cdTarget, decide } from './guard-bash.mjs';
 
-// A branch resolver stub — most cases pin the branch explicitly.
+// A branch resolver stub — most cases pin the branch explicitly, ignoring dir.
 const onBranch = (name) => () => name;
 const blocked = (cmd, branch) => decide(cmd, onBranch(branch)).blocked;
 
+// Two repos, so a command's target actually matters (tkt-74bc8f9b6ba5).
+const KANBAN = '/repos/kanban';
+const OTHER = '/repos/other';
+const byDir = (map) => (dir) => map[dir] ?? null;
+const twoRepos = byDir({ [KANBAN]: 'main', [OTHER]: 'feat/x' });
+
 describe('parseGit', () => {
   it('extracts the subcommand and args', () => {
-    expect(parseGit('git add -A')).toEqual({ sub: 'add', args: ['-A'] });
-    expect(parseGit('git commit -m "x"')).toEqual({ sub: 'commit', args: ['-m', '"x"'] });
+    expect(parseGit('git add -A')).toEqual({ sub: 'add', args: ['-A'], repoDir: null });
+    expect(parseGit('git commit -m "x"')).toEqual({ sub: 'commit', args: ['-m', '"x"'], repoDir: null });
   });
 
-  it('skips global options that take a value (-C / -c) and env prefixes', () => {
-    expect(parseGit('git -C /repo add foo')).toEqual({ sub: 'add', args: ['foo'] });
-    expect(parseGit('git -c user.name=x commit')).toEqual({ sub: 'commit', args: [] });
-    expect(parseGit('FOO=bar git add foo')).toEqual({ sub: 'add', args: ['foo'] });
+  it('captures -C as repoDir, skips -c, skips env prefixes', () => {
+    expect(parseGit('git -C /repo add foo')).toEqual({ sub: 'add', args: ['foo'], repoDir: '/repo' });
+    expect(parseGit('git -c user.name=x commit')).toEqual({ sub: 'commit', args: [], repoDir: null });
+    expect(parseGit('FOO=bar git add foo')).toEqual({ sub: 'add', args: ['foo'], repoDir: null });
   });
 
   it('requires the command word to be git (not just a mention)', () => {
@@ -24,7 +35,34 @@ describe('parseGit', () => {
   });
 
   it('sees through subshell/group punctuation', () => {
-    expect(parseGit('(git add -A)')).toEqual({ sub: 'add', args: ['-A'] });
+    expect(parseGit('(git add -A)')).toEqual({ sub: 'add', args: ['-A'], repoDir: null });
+  });
+});
+
+describe('cdTarget', () => {
+  it('returns undefined for non-cd segments', () => {
+    expect(cdTarget('git commit -m x', KANBAN)).toBeUndefined();
+    expect(cdTarget('npm test', KANBAN)).toBeUndefined();
+  });
+
+  it('resolves absolute and relative targets', () => {
+    expect(cdTarget(`cd ${OTHER}`, KANBAN)).toBe(OTHER);
+    expect(cdTarget('cd ../other', KANBAN)).toBe(OTHER);
+  });
+
+  it('returns null when resolving would mean guessing', () => {
+    expect(cdTarget('cd -', KANBAN)).toBeNull();
+    expect(cdTarget('cd', KANBAN)).toBeNull();
+    expect(cdTarget('cd $SOMEWHERE', KANBAN)).toBeNull();
+    expect(cdTarget('cd ~jake/repo', KANBAN)).toBeNull();
+  });
+
+  it('returns null for a quoted path with a space rather than a truncated one', () => {
+    // Tokens are whitespace-split upstream, so '/repos/my repo' arrives as '"/repos/my'.
+    // Returning '/repos/my' would judge that repo by a different one's branch.
+    expect(cdTarget('cd "/repos/my repo"', KANBAN)).toBeNull();
+    expect(cdTarget("cd '/repos/my repo'", KANBAN)).toBeNull();
+    expect(cdTarget('cd "/repos/other"', KANBAN)).toBe(OTHER);
   });
 });
 
@@ -183,6 +221,105 @@ describe('decide — hardened bypasses (tkt-0b9b9543907f)', () => {
     expect(blocked('git checkout - && git commit -m x', 'feat/x')).toBe(true);
     // switching to a named feature branch then committing is still fine
     expect(blocked('git switch feat/y && git commit -m x', 'main')).toBe(false);
+  });
+});
+
+describe('decide — the command target picks the repo (tkt-74bc8f9b6ba5)', () => {
+  // Before this fix, every command was judged against the hook's own cwd, so
+  // working in a sibling repo while kanban sat on main blocked every commit.
+  it('judges a commit by the repo the chain cd-ed into, not the start dir', () => {
+    expect(decide(`cd ${OTHER} && git commit -m x`, twoRepos, KANBAN).blocked).toBe(false);
+    expect(decide('git commit -m x', twoRepos, KANBAN).blocked).toBe(true); // kanban is on main
+  });
+
+  it('honors git -C without a cd', () => {
+    expect(decide(`git -C ${OTHER} commit -m x`, twoRepos, KANBAN).blocked).toBe(false);
+    expect(decide(`git -C ${KANBAN} commit -m x`, twoRepos, OTHER).blocked).toBe(true);
+  });
+
+  it('resolves a relative cd against startDir', () => {
+    expect(decide('cd ../other && git commit -m x', twoRepos, KANBAN).blocked).toBe(false);
+  });
+
+  it('keeps branch state per directory — a switch in one repo does not unlock another', () => {
+    expect(
+      decide(`cd ${OTHER} && git switch -c feat/y && cd ${KANBAN} && git commit -m x`, twoRepos, KANBAN).blocked,
+    ).toBe(true);
+  });
+
+  it('still blocks a push to main from a sibling repo', () => {
+    expect(decide(`cd ${OTHER} && git push origin main`, twoRepos, KANBAN).blocked).toBe(true);
+  });
+
+  it('falls back to the start dir when a cd is unresolvable, rather than giving up', () => {
+    // Mirrors the real currentBranch contract: any dir it can't read falls back to
+    // startDir. A stub that returned null here would model a hole the code doesn't have.
+    const realistic = (d) => twoRepos(d) ?? twoRepos(KANBAN);
+    expect(decide('cd - && git commit -m x', realistic, KANBAN).blocked).toBe(true);
+    expect(decide('cd /typo-dir && git commit -m x', realistic, KANBAN).blocked).toBe(true);
+  });
+
+  it('restores the outer dir when a subshell closes', () => {
+    // `(cd other && …)` does not move the caller's cwd, so the later commit is in kanban/main.
+    expect(decide(`(cd ${OTHER} && git status) && git commit -m x`, twoRepos, KANBAN).blocked).toBe(true);
+    expect(decide(`(cd ${OTHER} && git commit -m x)`, twoRepos, KANBAN).blocked).toBe(false);
+  });
+
+  it('resolves each distinct repo once', () => {
+    const spy = vi.fn(twoRepos);
+    decide(`git status && git log && cd ${OTHER} && git commit -m x && git push origin feat/x`, spy, KANBAN);
+    expect(spy.mock.calls.map((c) => c[0])).toEqual([KANBAN, OTHER]);
+  });
+});
+
+// Every other suite stubs getBranch. A stub can model a contract the real resolver
+// doesn't honor — which is exactly how the cd-to-nowhere fail-open shipped green.
+// This drives the real hook binary against real repos.
+describe('the real hook, end to end', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'guard-'));
+  const repo = (name, branch) => {
+    const p = join(tmp, name);
+    mkdirSync(p);
+    const run = (c) => execSync(c, { cwd: p, stdio: 'ignore' });
+    run('git init -q -b main');
+    run('git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init');
+    if (branch !== 'main') run(`git switch -q -c ${branch}`);
+    return p;
+  };
+  const onMain = repo('on-main', 'main');
+  const onFeat = repo('on-feat', 'feat/x');
+
+  const hook = fileURLToPath(new URL('./guard-bash.mjs', import.meta.url));
+  const runHook = (command, cwd) => {
+    const r = spawnSync('node', [hook], {
+      input: JSON.stringify({ cwd, tool_input: { command } }),
+      encoding: 'utf8',
+    });
+    return r.status; // 2 = blocked, 0 = allowed
+  };
+
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it('blocks a commit on main and allows one on a feature branch', () => {
+    expect(runHook('git commit -m x', onMain)).toBe(2);
+    expect(runHook('git commit -m x', onFeat)).toBe(0);
+  });
+
+  it('judges by the repo the chain cd-ed into — the bug this fixes', () => {
+    expect(runHook(`cd ${onFeat} && git commit -m x`, onMain)).toBe(0);
+    expect(runHook(`cd ${onMain} && git commit -m x`, onFeat)).toBe(2);
+  });
+
+  it('honors git -C', () => {
+    expect(runHook(`git -C ${onFeat} commit -m x`, onMain)).toBe(0);
+    expect(runHook(`git -C ${onMain} commit -m x`, onFeat)).toBe(2);
+  });
+
+  it('fails closed when the cd target is unusable', () => {
+    // The regression the review caught: these were ALLOWED before the fallback.
+    expect(runHook('cd /nonexistent-xyz && git commit -m x', onMain)).toBe(2);
+    expect(runHook('cd - && git commit -m x', onMain)).toBe(2);
+    expect(runHook('cd $NOPE && git commit -m x', onMain)).toBe(2);
   });
 });
 

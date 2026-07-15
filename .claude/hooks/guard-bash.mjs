@@ -32,13 +32,14 @@
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 // Pull the git subcommand + its args out of a single shell segment. The command
 // WORD must be `git` (after stripping leading subshell/group punctuation and
 // simple VAR=val env prefixes) — so data that merely mentions git, e.g.
-// `echo "git add -A"`, is not treated as a git invocation. Skips global options
-// that take a value (`git -C <path> add`, `git -c k=v commit`). Returns null for
-// non-git segments.
+// `echo "git add -A"`, is not treated as a git invocation. `-C <path>` is
+// captured, not skipped: it names the repo the command acts on.
 export function parseGit(segment) {
   const stripped = segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '');
   const tokens = stripped.split(/\s+/);
@@ -46,11 +47,41 @@ export function parseGit(segment) {
   while (cmd < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[cmd])) cmd++; // env prefix
   if (tokens[cmd] !== 'git') return null;
   let i = cmd + 1;
+  let repoDir = null;
   while (i < tokens.length && tokens[i].startsWith('-')) {
-    i += tokens[i] === '-C' || tokens[i] === '-c' ? 2 : 1; // -C/-c take a value
+    if (tokens[i] === '-C') { repoDir = tokens[i + 1] ?? null; i += 2; }
+    else if (tokens[i] === '-c') { i += 2; } // -c takes a value we don't care about
+    else i += 1;
   }
   if (i >= tokens.length) return null;
-  return { sub: tokens[i], args: tokens.slice(i + 1) };
+  return { sub: tokens[i], args: tokens.slice(i + 1), repoDir };
+}
+
+// null rather than a guess — a wrong dir judges one repo by another's branch.
+function resolveDir(dir, target) {
+  const quoted = /^["']/.test(target);
+  const balanced = quoted && target.length > 1 && target.at(-1) === target[0];
+  if (quoted && !balanced) return null; // whitespace-split upstream truncated a quoted path
+  const t = balanced ? target.slice(1, -1) : target;
+  if (!t || t.includes('$') || t.includes('*')) return null;
+  if (t === '~') return homedir();
+  if (t.startsWith('~/')) return join(homedir(), t.slice(2));
+  if (t.startsWith('~')) return null; // ~user
+  if (isAbsolute(t)) return t;
+  return dir ? resolve(dir, t) : null;
+}
+
+// undefined = not a cd; null = unresolvable (`cd -`, bare `cd`) → currentBranch
+// falls back to the hook's cwd rather than giving up.
+export function cdTarget(segment, dir) {
+  const stripped = segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '');
+  const tokens = stripped.split(/\s+/);
+  let cmd = 0;
+  while (cmd < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[cmd])) cmd++;
+  if (tokens[cmd] !== 'cd') return undefined;
+  const target = tokens[cmd + 1];
+  if (!target || target.startsWith('-')) return null; // `cd`, `cd -`, `cd -P …`
+  return resolveDir(dir, target);
 }
 
 // Args that stage the whole working tree rather than named paths.
@@ -183,10 +214,10 @@ export function splitSegments(command) {
   return segments.map((s) => s.trim()).filter(Boolean);
 }
 
-// Decide whether a (possibly compound) command should be blocked. `getBranch`
-// is injected so the logic is pure and testable; it returns the current branch
-// name or null when it can't be determined. Returns { blocked, reason }.
-export function decide(command, getBranch) {
+// `getBranch(dir)` is injected so the logic stays pure and testable. Branch state is
+// keyed by directory: a chain can `cd` between repos, and a switch in one must not
+// change what we believe another is on (tkt-74bc8f9b6ba5).
+export function decide(command, getBranch, startDir) {
   if (typeof command !== 'string' || !command.trim()) return { blocked: false };
 
   // Quote/substitution-aware split so each git invocation is checked
@@ -194,64 +225,74 @@ export function decide(command, getBranch) {
   // `|` is intentionally not a split point.
   const segments = splitSegments(command);
 
-  let branch = getBranch(); // effective branch, updated as we walk switch/checkout in a chain
+  let dir = startDir ?? null;
+  const outer = []; // dirs saved at `(` — a real shell restores cwd when the subshell exits
+  const branches = new Map(); // dir -> effective branch; memoized, so one lookup per repo
+  const branchFor = (d) => {
+    if (!branches.has(d)) branches.set(d, getBranch(d));
+    return branches.get(d);
+  };
 
   for (const segment of segments) {
-    const git = parseGit(segment);
-    if (!git) continue;
-    const { sub, args } = git;
+    for (let i = (segment.match(/^\(+/)?.[0].length) ?? 0; i > 0; i--) outer.push(dir);
 
-    const destructive = destructiveGitReason(sub, args);
-    if (destructive) return { blocked: true, reason: destructive };
-
-    if ((sub === 'add' || sub === 'stage') && stagesEverything(args)) {
-      return {
-        blocked: true,
-        reason:
-          "git add/stage of the whole tree (-A / --all / . / *) stages everything. Stage only this ticket's files explicitly (git add <path> ...). See CLAUDE.md → Branch, commit & PR workflow.",
-      };
+    const moved = cdTarget(segment, dir);
+    if (moved !== undefined) {
+      dir = moved;
+    } else {
+      const git = parseGit(segment);
+      if (git) {
+        const { sub, args, repoDir } = git;
+        const gitDir = repoDir ? resolveDir(dir, repoDir) : dir; // -C acts on that repo, whatever the cwd
+        const verdict = ruleFor(sub, args, branchFor(gitDir));
+        if (verdict) return { blocked: true, reason: verdict };
+        const switched = switchTarget(sub, args);
+        if (switched) branches.set(gitDir, switched);
+      }
     }
 
-    if (sub === 'commit' && commitStagesAll(args)) {
-      return {
-        blocked: true,
-        reason:
-          "git commit -a / -am stages every tracked change, bypassing per-ticket staging. Stage this ticket's files explicitly, then commit without -a. See CLAUDE.md.",
-      };
-    }
-
-    if (sub === 'commit' && branch === 'main') {
-      return {
-        blocked: true,
-        reason:
-          'Direct commits to main are not allowed — every ticket lands on its own branch via a squash-merged PR. Cut a <type>/<id>-<slug> branch first. See CLAUDE.md.',
-      };
-    }
-
-    if (sub === 'push' && pushesMain(args, branch)) {
-      return {
-        blocked: true,
-        reason:
-          'Direct pushes to main are not allowed — push your ticket branch and open a PR. See CLAUDE.md → Branch, commit & PR workflow.',
-      };
-    }
-
-    const moved = switchTarget(sub, args);
-    if (moved) branch = moved;
+    for (let i = (segment.match(/\)+$/)?.[0].length) ?? 0; i > 0 && outer.length; i--) dir = outer.pop();
   }
 
   return { blocked: false };
 }
 
-function currentBranch() {
+// `branch` is the branch of the repo THIS command acts on, not the hook's.
+function ruleFor(sub, args, branch) {
+  const destructive = destructiveGitReason(sub, args);
+  if (destructive) return destructive;
+
+  if ((sub === 'add' || sub === 'stage') && stagesEverything(args))
+    return "git add/stage of the whole tree (-A / --all / . / *) stages everything. Stage only this ticket's files explicitly (git add <path> ...). See CLAUDE.md → Branch, commit & PR workflow.";
+
+  if (sub === 'commit' && commitStagesAll(args))
+    return "git commit -a / -am stages every tracked change, bypassing per-ticket staging. Stage this ticket's files explicitly, then commit without -a. See CLAUDE.md.";
+
+  if (sub === 'commit' && branch === 'main')
+    return 'Direct commits to main are not allowed — every ticket lands on its own branch via a squash-merged PR. Cut a <type>/<id>-<slug> branch first. See CLAUDE.md.';
+
+  if (sub === 'push' && pushesMain(args, branch))
+    return 'Direct pushes to main are not allowed — push your ticket branch and open a PR. See CLAUDE.md → Branch, commit & PR workflow.';
+
+  return null;
+}
+
+function branchIn(cwd) {
   try {
     return execSync('git rev-parse --abbrev-ref HEAD', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      ...(cwd ? { cwd } : {}),
     }).trim();
   } catch {
-    return null; // detached / not a repo → can't assert branch, so don't block
+    return null;
   }
+}
+
+// An unusable dir falls back to `fallbackDir`, not null: a null branch never blocks,
+// so without this `cd /typo; git commit` on main would slip through.
+function currentBranch(dir, fallbackDir) {
+  return (dir ? branchIn(dir) : null) ?? branchIn(fallbackDir);
 }
 
 function main() {
@@ -262,7 +303,10 @@ function main() {
     process.exit(0); // not our concern if we can't parse the event
   }
 
-  const { blocked, reason } = decide(payload?.tool_input?.command, currentBranch);
+  // payload.cwd is the project dir, not the Bash tool's cwd (verified 2026-07-15).
+  const startDir = payload?.cwd ?? process.cwd();
+  const getBranch = (dir) => currentBranch(dir, startDir);
+  const { blocked, reason } = decide(payload?.tool_input?.command, getBranch, startDir);
   if (blocked) {
     process.stderr.write(`[guard-bash] Blocked: ${reason}\n`);
     process.exit(2);
