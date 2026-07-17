@@ -1,5 +1,6 @@
 import { type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS, handleToolCall, type ToolResult } from '../../mcp/handlers.js';
+import { listProjects } from '../../server/tickets.js';
 import { type DocumentIndex } from '../retrieval/retrieval.js';
 import { type Provenance } from '../../shared/constants.js';
 
@@ -56,8 +57,30 @@ async function searchBoard(args: Record<string, unknown> | undefined, index: Doc
   return textResult(JSON.stringify(flat, null, 2));
 }
 
-// Writes stamped with run provenance (source: agent + runId), so an agent-authored ticket traces back to its run's usage/cost.
-const PROVENANCE_TOOLS = new Set(['create_ticket', 'update_ticket']);
+// The two write tools — stamped with run provenance (source: agent + runId) AND project-constrained.
+const WRITE_TOOLS = new Set(['create_ticket', 'update_ticket']);
+
+// Projects are DERIVED from tickets, so the human UI mints a new project just by naming one — but the
+// untrusted-intake agent must not: it hallucinates project names (tkt-beef54d90c59). Match a proposed
+// project to a real one case- and whitespace-insensitively (a weaker local model's "kanban" resolves to
+// the board's "Kanban") and canonicalize to the board's exact spelling; a name that matches nothing is
+// DROPPED so the write omits it — on create it defaults to unassigned, on update the existing project is
+// kept rather than cleared. null (clear) / unset / a non-string all pass through. Pure — no fs, so unit-testable.
+export function constrainAgentProject(
+  args: Record<string, unknown> | undefined,
+  knownProjects: string[],
+): { args: Record<string, unknown> | undefined; dropped: string | null } {
+  if (!args || typeof args.project !== 'string') return { args, dropped: null };
+  const project = args.project;
+  const norm = project.trim().toLowerCase();
+  const canonical = norm === '' ? undefined : knownProjects.find((p) => p.trim().toLowerCase() === norm);
+  if (canonical === undefined) {
+    const rest = { ...args };
+    delete rest.project;
+    return { args: rest, dropped: project };
+  }
+  return canonical === project ? { args, dropped: null } : { args: { ...args, project: canonical }, dropped: null };
+}
 
 // One tool call → one ToolResult. Anything outside the whitelist is refused — double-gating so delete_ticket/start_ticket can never reach the service via the agent. `runId` stamps create/update writes with provenance — the agent-only boundary the human MCP client never crosses.
 export async function dispatchTool(
@@ -71,6 +94,16 @@ export async function dispatchTool(
   }
   if (name === 'search_board') return searchBoard(args, index);
   const provenance: Provenance | undefined =
-    runId && PROVENANCE_TOOLS.has(name) ? { source: 'agent', runId } : undefined;
-  return handleToolCall(name, args, provenance);
+    runId && WRITE_TOOLS.has(name) ? { source: 'agent', runId } : undefined;
+  let callArgs = args;
+  // Only a string project needs constraining — gate the full-board listProjects() read on that, so a
+  // create/update with no project (the common case) doesn't scan every ticket.
+  if (WRITE_TOOLS.has(name) && typeof args?.project === 'string') {
+    const { args: constrained, dropped } = constrainAgentProject(args, await listProjects());
+    // Loud, not silent: a dropped project is a corrected model hallucination the reviewer should see.
+    // Path-agnostic wording — on create the ticket is unassigned, on update the existing project is kept.
+    if (dropped !== null) console.warn(`[agent] ignored unknown project "${dropped}" — not a project on the board.`);
+    callArgs = constrained;
+  }
+  return handleToolCall(name, callArgs, provenance);
 }
