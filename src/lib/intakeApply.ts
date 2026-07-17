@@ -21,6 +21,17 @@ function createSafePrefill(prefill: Prefill): Prefill {
   return clamped;
 }
 
+// "Draft new ticket" reuses an UPDATE proposal's prefill to CREATE a fresh ticket. The proposed
+// status is a transition for the *existing* target (e.g. done/in-progress), not a birth status —
+// drop it so the new ticket takes the create default instead of being born past the pipeline
+// (tkt-e346dd06e8bb). Dropping status entirely also subsumes createSafePrefill's qa/archived clamp.
+export function createFromUpdatePrefill(prefill: Prefill): Prefill {
+  if (prefill.status === undefined) return prefill;
+  const next: Prefill = { ...prefill };
+  delete next.status;
+  return next;
+}
+
 // Routed on the ACTION: an update_ticket proposal MUST resolve to a loaded ticket; a missing/blank/unloaded id is 'not-found', never a create (which would draft a DUPLICATE — tkt-1dfa61b8830e). A create-bound prefill is status-clamped (createSafePrefill) so the draft can't 400.
 export function resolveProposalPlan(proposal: CapturedProposal, allTickets: Ticket[]): IntakePlan {
   const prefill = proposalToPrefill(proposal.args);

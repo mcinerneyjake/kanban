@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTicketForm, blockersForProject, isHiddenBlockerEdge, resolveProposalPlan } from './intakeApply.js';
+import { buildTicketForm, blockersForProject, isHiddenBlockerEdge, resolveProposalPlan, createFromUpdatePrefill } from './intakeApply.js';
 import { changedFormFields } from './ticketDiff.js';
 import type { Ticket } from '../../shared/constants.js';
 
@@ -165,5 +165,33 @@ describe('resolveProposalPlan', () => {
     const plan = resolveProposalPlan({ action: 'update_ticket', args: { id: 'tkt-u', status: 'qa' } }, [t]);
     expect(plan.mode).toBe('update');
     expect(plan.prefill.status).toBe('qa');
+  });
+});
+
+// tkt-e346dd06e8bb: "Draft new ticket" reuses an UPDATE-mode prefill for a CREATE. The proposed
+// status is a transition for the existing target, so drafting a NEW ticket must drop it entirely —
+// not just clamp qa/archived — or a create-valid transition (done/in-progress) births a ticket
+// already past the pipeline.
+describe('createFromUpdatePrefill', () => {
+  it('drops a create-valid transition status (done) so the new ticket takes the create default', () => {
+    expect(createFromUpdatePrefill({ title: 'X', status: 'done' }).status).toBeUndefined();
+  });
+
+  it('drops an in-progress transition status too', () => {
+    expect(createFromUpdatePrefill({ status: 'in-progress' }).status).toBeUndefined();
+  });
+
+  it('also drops a create-unsafe status (subsumes the qa/archived clamp)', () => {
+    expect(createFromUpdatePrefill({ status: 'qa' }).status).toBeUndefined();
+  });
+
+  it('leaves the other content fields untouched while dropping status', () => {
+    expect(createFromUpdatePrefill({ title: 'X', body: 'b', priority: 'high', status: 'done' }))
+      .toEqual({ title: 'X', body: 'b', priority: 'high' });
+  });
+
+  it('returns a status-less prefill unchanged', () => {
+    const prefill = { title: 'X', body: 'b' };
+    expect(createFromUpdatePrefill(prefill)).toEqual(prefill);
   });
 });
