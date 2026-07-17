@@ -9,7 +9,7 @@ import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
 import { ticketProvenance } from '../lib/provenance.js';
 import { type Prefill } from '../lib/proposalPrefill.js';
-import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge } from '../lib/intakeApply.js';
+import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge, createFromUpdatePrefill } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
 import Spinner from './ui/Spinner.js';
@@ -107,6 +107,16 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
     } catch {
       setDraftPhase('error');
     }
+  };
+
+  // Bypass a suggested match (update / not-found) and draft the agent's proposal as a NEW ticket.
+  // createFromUpdatePrefill drops the update-transition status so the new ticket isn't born past the pipeline (tkt-e346dd06e8bb).
+  const draftAsNew = (prefill: Prefill, runId: string) => {
+    setForm((f) => ({ ...f, ...createFromUpdatePrefill(prefill) }));
+    setUpdateSuggestion(null);
+    setUpdateNotFound(null);
+    setDrafted(true);
+    setDraftRunId(runId);
   };
 
   const set = (k: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
@@ -227,6 +237,13 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                   >
                     Open &amp; apply →
                   </button>
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => draftAsNew(updateSuggestion.prefill, updateSuggestion.runId)}
+                  >
+                    Draft new ticket →
+                  </button>
                 </div>
               )}
               {updateNotFound && (
@@ -238,7 +255,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                     <button
                       type="button"
                       className="link"
-                      onClick={() => { setForm((f) => ({ ...f, ...updateNotFound.prefill })); setDrafted(true); setDraftRunId(updateNotFound.runId); }}
+                      onClick={() => draftAsNew(updateNotFound.prefill, updateNotFound.runId)}
                     >
                       draft it as a new ticket →
                     </button>
@@ -482,7 +499,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
             <button type="button" className="btn" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="btn primary" disabled={saving}>
+            <button type="submit" className="btn primary" disabled={saving || !form.title.trim()}>
               {saving ? 'Saving…' : ticket ? 'Save' : 'Create'}
             </button>
           </div>
