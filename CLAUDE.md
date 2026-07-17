@@ -234,6 +234,15 @@ Comments are sparse. Keep only a non-obvious *why*: invariants, security/concurr
 
 This **supersedes** any instinct to match the codebase's former high comment density — do not re-add narration when editing existing files.
 
+## Probe discipline
+
+When you need a fact you can't read directly — a repo's commit count, a PDF's text, a server's state — you write a probe (a regex, a grep flag, a script, an inference). **A broken probe fails silently and confidently: it returns a plausible value, so "I couldn't measure this" and "here's the answer" are the same output.** That produced ~12 confident false results in one 2026-07-15 session, including a case-sensitive `git log --grep` that undercounted AI-co-authored commits 3× and nearly got a *true* resume claim weakened (`tkt-ceebed633013`). Same shape as the fail-open guard and the transcribed trace — see memory `feedback_validate_probe_with_controls`.
+
+- **A surprising result is a hypothesis about the instrument, not a finding.** A 3× discrepancy or "every string absent" is the tell that the probe is broken — chase the instrument first.
+- **Prove the instrument with a control before reporting its output as fact.** Positive control: show it finds a known-present. Negative control (for any *absent* claim): show it doesn't match a known-absent. Purpose-built tools lie too (`git log --grep` is case-sensitive by default) — control them anyway.
+- **Rank by consequence.** A probe whose result would *cause an action* (weaken a claim, delete a file) gets validated first, not the one that's easiest to run.
+- **Recurring, code-shaped probes get a tested probe with a built-in control that fails loud** — the executable precedent is `scripts/probe/repo-stats.mjs` (+ `.test.mjs`): trailer-aware commit counting whose `assertInstruments` throws rather than return a false zero, and whose test watches the reconstructed broken probe go red. It is also the source for the published repo stats (never hand-transcribe them — see `feedback_generate_dont_transcribe`).
+
 ## Stack
 
 React + Vite frontend, Express API, markdown files as the database (no SQL).
