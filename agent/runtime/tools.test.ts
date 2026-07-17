@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
-import { AGENT_TOOLS, dispatchTool } from './tools.js';
+import { AGENT_TOOLS, dispatchTool, constrainAgentProject } from './tools.js';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { TOOLS } from '../../mcp/handlers.js';
 import { createTicket, getTicket } from '../../server/tickets.js';
@@ -148,6 +148,105 @@ describe('dispatchTool — security gate', () => {
   it('blocks an unknown tool', async () => {
     const index = await DocumentIndex.build(embedder, []);
     expect((await dispatchTool('frobnicate', {}, index)).isError).toBe(true);
+  });
+});
+
+// tkt-beef54d90c59: the agent must not mint new projects — an unknown project name is dropped.
+describe('constrainAgentProject', () => {
+  const known = ['kanban', 'consulting'];
+
+  it('drops an unknown non-empty project (omits the field)', () => {
+    const { args, dropped } = constrainAgentProject({ title: 'X', project: 'Made Up' }, known);
+    expect(dropped).toBe('Made Up');
+    expect(args).toEqual({ title: 'X' });
+    expect(args && 'project' in args).toBe(false);
+  });
+
+  it('keeps a known project', () => {
+    const { args, dropped } = constrainAgentProject({ title: 'X', project: 'kanban' }, known);
+    expect(dropped).toBeNull();
+    expect(args).toEqual({ title: 'X', project: 'kanban' });
+  });
+
+  it('canonicalizes a case/whitespace variant to the board spelling', () => {
+    const { args, dropped } = constrainAgentProject({ title: 'X', project: 'kanban ' }, ['Kanban', 'consulting']);
+    expect(dropped).toBeNull();
+    expect(args).toEqual({ title: 'X', project: 'Kanban' }); // resolved to the real project
+  });
+
+  it('leaves an already-canonical known project as-is', () => {
+    const { args, dropped } = constrainAgentProject({ project: 'consulting' }, known);
+    expect(dropped).toBeNull();
+    expect(args).toEqual({ project: 'consulting' });
+  });
+
+  it('leaves an explicit null (clear) untouched', () => {
+    const { args, dropped } = constrainAgentProject({ project: null }, known);
+    expect(dropped).toBeNull();
+    expect(args).toEqual({ project: null });
+  });
+
+  it('leaves args without a project key untouched (unset)', () => {
+    const { args, dropped } = constrainAgentProject({ title: 'X' }, known);
+    expect(dropped).toBeNull();
+    expect(args).toEqual({ title: 'X' });
+  });
+
+  it('drops a whitespace-only project instead of minting it as a phantom project', () => {
+    const { args, dropped } = constrainAgentProject({ project: '   ' }, known);
+    expect(dropped).toBe('   ');
+    expect(args && 'project' in args).toBe(false);
+  });
+
+  it('does not mutate the caller args when dropping', () => {
+    const input = { title: 'X', project: 'Ghost' };
+    constrainAgentProject(input, known);
+    expect(input.project).toBe('Ghost'); // original untouched — a fresh object is returned
+  });
+
+  it('handles undefined args', () => {
+    expect(constrainAgentProject(undefined, known)).toEqual({ args: undefined, dropped: null });
+  });
+});
+
+describe('dispatchTool — project constraint (create/update)', () => {
+  // Safe id extraction (cast-free) — the create result is the ticket as JSON.
+  function idFrom(text: string): string {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === 'object' && parsed !== null && 'id' in parsed && typeof parsed.id === 'string') return parsed.id;
+    throw new Error('result had no id');
+  }
+
+  it('drops an unknown agent-proposed project so the created ticket is unassigned', async () => {
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Bad project', project: 'Create Modal Enhancements' }, index);
+    const ticket = await getTicket(idFrom(res.content[0].text));
+    expect(ticket.project).toBeNull();
+  });
+
+  it('keeps a project that already exists on the board', async () => {
+    await createTicket({ title: 'Seeds the project', project: 'kanban' });
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Good project', project: 'kanban' }, index);
+    const ticket = await getTicket(idFrom(res.content[0].text));
+    expect(ticket.project).toBe('kanban');
+  });
+
+  it('canonicalizes a case/whitespace variant to the real board project', async () => {
+    await createTicket({ title: 'Seeds Marketing', project: 'Marketing' });
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Loose casing', project: 'marketing ' }, index);
+    const ticket = await getTicket(idFrom(res.content[0].text));
+    expect(ticket.project).toBe('Marketing');
+  });
+
+  it('does not clear a valid existing project on update when the proposed one is unknown', async () => {
+    const seeded = await createTicket({ title: 'Has a project', project: 'kanban' });
+    const index = await DocumentIndex.build(embedder, []);
+    await dispatchTool('update_ticket', { id: seeded.id, project: 'Ghosttown', priority: 'high' }, index);
+    const after = await getTicket(seeded.id);
+    expect(after.project).toBe('kanban'); // unknown project omitted → existing kept
+    expect(after.priority).toBe('high');  // the valid field still applied
   });
 });
 
