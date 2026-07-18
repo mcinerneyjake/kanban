@@ -14,6 +14,7 @@ import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
 import { computeActiveBlockerCounts } from './lib/blockers.js';
+import { filterTickets } from './lib/filterTickets.js';
 import { resolveTicket } from './lib/resolveTicket.js';
 import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
@@ -71,28 +72,19 @@ export default function App() {
 
   const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets]);
 
-  const filteredTickets = useMemo(() => {
-    let result = tickets.filter((t) => t.status !== 'archived');
-    if (filter.types.length > 0) result = result.filter((t) => filter.types.includes(t.type));
-    if (filter.priority) result = result.filter((t) => t.priority === filter.priority);
-    if (filter.project) result = result.filter((t) => t.project === filter.project);
-    if (filter.assignee) result = result.filter((t) => t.assignee === filter.assignee);
-    if (filter.dateFrom || filter.dateTo) {
-      result = result.filter((t) => {
-        const d = t[filter.dateField].slice(0, 10);
-        if (filter.dateFrom && d < filter.dateFrom) return false;
-        if (filter.dateTo && d > filter.dateTo) return false;
-        return true;
-      });
-    }
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      result = result.filter(
-        (t) => t.title.toLowerCase().includes(term) || t.body.toLowerCase().includes(term),
-      );
-    }
-    return result;
-  }, [tickets, filter, searchTerm]);
+  const filteredTickets = useMemo(
+    () => filterTickets(tickets.filter((t) => t.status !== 'archived'), filter, searchTerm),
+    [tickets, filter, searchTerm],
+  );
+
+  // Archived tickets obey the same FilterPopover filters so the Archive lane narrows with the board
+  // (tkt-d7919e9f1e9b) — one predicate via filterTickets, so board + archive can't drift. The board
+  // SEARCH box stays board-only (empty searchTerm here); only the FilterPopover `filter` narrows the
+  // archive. Skipped while the lane is collapsed — its cards/empty-state aren't rendered then.
+  const filteredArchivedTickets = useMemo(
+    () => (showArchive ? filterTickets(archivedTickets, filter, '') : []),
+    [showArchive, archivedTickets, filter],
+  );
 
   // parent id → sub-ticket count, from all tickets not filtered (see computeChildCounts).
   const childCounts = useMemo(() => computeChildCounts(tickets), [tickets]);
@@ -280,7 +272,7 @@ export default function App() {
         {view === 'board' ? (
           <>
             <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
-            <ArchiveLane tickets={archivedTickets} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
+            <ArchiveLane tickets={filteredArchivedTickets} totalCount={archivedTickets.length} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : view === 'economics' ? (
           <EconomicsDashboard refreshKey={refreshKey} />
