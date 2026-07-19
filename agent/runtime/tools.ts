@@ -7,9 +7,18 @@ import { type Provenance } from '../../shared/constants.js';
 // Tool layer: a safe whitelist of MCP tools (reused verbatim via handleToolCall) + search_board over the retrieval index, adapted to the OpenAI function-tool shape.
 
 // Read + non-destructive writes only. Deliberately EXCLUDES delete_ticket (destructive, reachable from untrusted intake) and start_ticket (dev-workflow). search_board is agent-only — it needs the embedding index.
-const AGENT_TOOL_NAMES = new Set<string>([
+export const AGENT_TOOL_NAMES = new Set<string>([
   'list_tickets', 'get_ticket', 'search_board', 'create_ticket', 'update_ticket',
 ]);
+
+// Create-only mode (the Claude-delegated path, tkt-2492e26a277a): drop update_ticket so a mis-matched
+// retrieval can't overwrite an existing ticket's body. A delegated create that duplicates is a
+// non-destructive nuisance (delete/merge later); a delegated update that clobbers a rich hand-authored
+// body is data loss (tickets/ is gitignored — no undo). The interactive/demo path keeps update_ticket
+// for its anti-duplicate story.
+export const CREATE_ONLY_TOOL_NAMES = new Set<string>(
+  [...AGENT_TOOL_NAMES].filter((n) => n !== 'update_ticket'),
+);
 
 // The one tool not in mcp/handlers — semantic search over the board.
 const SEARCH_BOARD_TOOL: Tool = {
@@ -36,11 +45,14 @@ function toChatTool(t: Tool): ChatTool {
   return { type: 'function', function: { name: t.name, description: t.description ?? '', parameters: t.inputSchema } };
 }
 
-// The agent's advertised tools: whitelisted MCP tools + search_board.
-export const AGENT_TOOLS: ChatTool[] = [
-  ...TOOLS.filter((t) => AGENT_TOOL_NAMES.has(t.name)),
-  SEARCH_BOARD_TOOL,
-].map(toChatTool);
+function buildAgentTools(names: Set<string>): ChatTool[] {
+  return [...TOOLS.filter((t) => names.has(t.name)), SEARCH_BOARD_TOOL].map(toChatTool);
+}
+
+// The agent's advertised tools: whitelisted MCP tools + search_board. The create-only variant drops
+// update_ticket so the model is never offered it (dispatchTool refuses it too — double-gated).
+export const AGENT_TOOLS: ChatTool[] = buildAgentTools(AGENT_TOOL_NAMES);
+export const AGENT_TOOLS_CREATE_ONLY: ChatTool[] = buildAgentTools(CREATE_ONLY_TOOL_NAMES);
 
 // Text-only result matching the MCP ToolResult shape.
 function textResult(text: string, isError = false): ToolResult {
@@ -88,8 +100,14 @@ export async function dispatchTool(
   args: Record<string, unknown> | undefined,
   index: DocumentIndex,
   runId?: string,
+  allowedNames: Set<string> = AGENT_TOOL_NAMES,
 ): Promise<ToolResult> {
-  if (!AGENT_TOOL_NAMES.has(name)) {
+  // Two gates. AGENT_TOOL_NAMES is the HARD FLOOR — delete_ticket/start_ticket are never dispatchable
+  // no matter what a caller passes, so a mode set can only NARROW within the safe whitelist, never widen
+  // it to a destructive tool. allowedNames then applies the per-mode narrowing (create-only drops
+  // update_ticket). Keeping the floor here, not just in allowedNames, means a future mode built by
+  // analogy can't accidentally re-admit a destructive tool.
+  if (!AGENT_TOOL_NAMES.has(name) || !allowedNames.has(name)) {
     return textResult(`Tool not available to the agent: ${name}`, true);
   }
   if (name === 'search_board') return searchBoard(args, index);

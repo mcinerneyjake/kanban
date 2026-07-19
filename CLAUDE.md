@@ -20,7 +20,7 @@ If no tickets are `todo`, just show the summary and wait for instructions.
 
 ## MCP server
 
-The kanban MCP server is wired in `.mcp.json` at the project root (project scope) and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. The server is **auto-enabled** via `enabledMcpjsonServers: ["kanban"]` in `.claude/settings.json` (no trust prompt), and the five non-destructive tools are allowlisted there so they run **without permission prompts** (`delete_ticket` is intentionally left to prompt). If the tools are not available in a session, check that `.mcp.json` has the `kanban` entry and restart the session — MCP servers load at startup and are not hot-reloaded. Note: MCP server **definitions** in `.claude/settings.json` are ignored — that file does not support an `mcpServers` key (it does support `enabledMcpjsonServers`, which enables servers defined in `.mcp.json`).
+The kanban MCP server is wired in `.mcp.json` at the project root (project scope) and auto-starts with the project. It exposes `list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`, and `delete_ticket`. Always prefer these tools over file-grepping or helper scripts. The server is **auto-enabled** via `enabledMcpjsonServers: ["kanban"]` in `.claude/settings.json` (no trust prompt), and the five non-destructive tools are allowlisted there so they run **without permission prompts** (`delete_ticket` is intentionally left to prompt; `create_ticket`, though allowlisted, is now **blocked at runtime by the `guard-ticket` hook** — new-ticket authoring is delegated to the local agent, see **Ticket creation flow**). If the tools are not available in a session, check that `.mcp.json` has the `kanban` entry and restart the session — MCP servers load at startup and are not hot-reloaded. Note: MCP server **definitions** in `.claude/settings.json` are ignored — that file does not support an `mcpServers` key (it does support `enabledMcpjsonServers`, which enables servers defined in `.mcp.json`).
 
 **This board is the central board for every repo (as of 2026-07-16).** The kanban ticket engine was extracted into the standalone **`ticket-workflow`** package (epic `tkt-fad0d18e2d35`), and a machine-local **user-scope** `kanban` MCP server (in `~/.claude.json`, pointed here via `BOARD_DIR_OVERRIDE`) plus a global `track-steps` hook let *any* repo drive this board and record pipeline milestones to it. In *this* repo the project-scope server above wins (local > user scope; same board), so nothing here changes. Two things to know: (1) the global `track-steps` hook double-logs events alongside this repo's project `track-steps` — harmless (reducer is last-write-wins; cleanup `tkt-af4669ce9a0d`); (2) `list_tickets` returns the whole board, which now overflows the tool-output cap (400+ tickets) — **filter with `status=`/`project=`** until `tkt-d6fb2ce5c780` adds a limit. Architecture record: memory `project-ticket-workflow-boards`, plan `~/.claude/plans/polymorphic-bubbling-diffie.md`.
 
@@ -84,24 +84,27 @@ Two reinforcements that make the seam load-bearing (prefer these over piling on 
 
 > **Why this rule exists:** the in-app intake feature shipped ~8 real bugs (silent no-op saves, update→duplicate-create misrouting, dropped agent-proposed fields, stripped provenance, untracked spend) that all lived in the propose→apply seam and survived a green unit suite + per-ticket reviews. They were built as separate tickets and reviewed diff-by-diff, so nothing exercised the whole path. See the agentic-rag-demo round-trip harness ticket (`tkt-345255727ffe`).
 
-When asked to create a ticket, use `create_ticket`. When asked what's on the board or what's left to do, call `list_tickets`.
+When asked to create a ticket, **delegate authoring to the local intake agent** (below) — never call `create_ticket` yourself. When asked what's on the board or what's left to do, call `list_tickets`.
 
-### Ticket creation flow
+### Ticket creation flow (authored by the local LLM)
 
-**Infer the fields, then confirm in one step** — do not make the user answer four separate prompts.
+In **this repo's sessions**, every **new** ticket is authored by the local intake agent, **not Claude**, so its title/body/classification is written inside a **metered local-LLM run** and the ticket carries a real usage record (`tkt-2492e26a277a`). Claude calling `create_ticket` is **blocked by the `guard-ticket` PreToolUse hook** — an enforced gate, not honor-system (mirrors how `guard-bash` enforces the git workflow).
 
-1. **Infer all four fields** from the request, using these heuristics (so the inference is reproducible):
-   - **Type** (`bug` | `feature` | `task` | `chore`) — from intent: "fix / broken / regression / bug" → `bug`; "add / build / support / new" → `feature`; "update / tidy / bump / rename / clean up" → `chore`; otherwise `task`.
-   - **Priority** (`low` | `medium` | `high` | `urgent`) — from urgency words: "quick / minor / nit / whenever" → `low`; "urgent / asap / blocking / drop everything" → `urgent`; "soon / important" → `high`; otherwise `medium`.
-   - **Status** (`backlog` | `todo` | `in-progress` | `qa` | `done`) — default `backlog`; `todo` if the user wants it queued next; `in-progress` if they want to start it now.
-   - **Project** — match against projects visible on the board; else `None`.
-   - **Title** — a concise imperative drawn from the request.
+> **Scope of enforcement (best-effort, like `guard-bash` — not a sandbox):** the hook is wired in *this* repo's project-scope `.claude/settings.json`, so it only guards sessions run here, and it guards only the **MCP tool**. A session in another repo driving the same central board via the user-scope `kanban` server (see the MCP-server section) isn't guarded, and a direct `POST /api/tickets` or a service-layer `createTicket` script would bypass it. Closing those (wiring the guard at user scope; rejecting un-metered creates server-side) is follow-up work — the policy below is the honor-system default where the hook can't reach.
 
-2. **Confirm once.** State the inferred fields in a single line and ask the user to confirm or adjust — e.g. *"I'll create **Update the README** — chore · low · backlog · no project. Confirm or edit?"*. A confirmation creates it; any correction ("make it high") is applied first. Prefer this lightweight plain-text confirm over a prompt.
+1. **Confirm the report once.** Restate the *substance* you're about to file in one line — not exact field values, since the agent classifies and words it — e.g. *"I'll have the local agent file a ticket for: the CSV export crashes on empty rows. Go?"*. Don't pre-negotiate type/priority/status/project; the agent decides them.
+2. **Delegate to the agent.** On confirmation, run:
+   ```bash
+   npm run agent -- --yes --create-only "<the report, in the user's words plus any clarifying detail>"
+   ```
+   `--yes` auto-approves the write so the create happens **inside** the metered run (the run→ticket linkage the run log needs). `--create-only` drops `update_ticket` from the agent's toolset so a mis-matched retrieval can only ever create a **new** ticket — never overwrite an existing ticket's body (the interactive `npm run agent` path keeps the anti-duplicate update behavior). The agent authors title + body and classifies the four fields; if a related ticket exists it cites the id in the body rather than updating it. **Trade-off:** a retrieval miss yields a duplicate (non-destructive — delete/merge later), never a clobbered body.
+3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). Under `--create-only` the agent can't update, so it always creates — but it may still merge several issues from one report into a **single** create; when you handed it multiple distinct findings, confirm each got its own ticket and flag any that looks dropped.
+4. **Local model down → block, don't fall back.** If the agent exits non-zero (models unavailable) or `GET /api/intake/health` reports down, tell the user the local runtime is unavailable and **stop**. Do **not** author the ticket yourself via `create_ticket` — that creates an *untracked* ticket, defeating the metering (and the hook blocks it regardless).
 
-3. **Fall back to an explicit `AskUserQuestion`** only for the field(s) that are genuinely ambiguous (e.g. intent doesn't map cleanly to a type) — pre-select the best inference as the recommended option.
-
-Never call `create_ticket` before the user has confirmed (or accepted the inferred defaults).
+**What stays Claude's, directly (no agent):**
+- **Structured-field updates** (status, priority, type, project, parent, blockers, assignee, dueDate) → `update_ticket`. Routine status/priority moves don't pipe through the local LLM.
+- **Body edits + the mandatory `## Implementation summary`** → `update_ticket`. The agent authors *intake from a report*; it can't summarize the work Claude just did, so summaries and directed body edits remain Claude's.
+- **Delete** → `delete_ticket` (the agent's toolset excludes it; still prompts).
 
 ## Branch, commit & PR workflow
 
@@ -116,8 +119,9 @@ The workflow commands run **prompt-free**: `.claude/settings.json` allowlists th
 - **git rules are intentionally broad** (`git add`/`commit`/`push`/…) but safe because the **`guard-bash` hook** inspects each actual command and blocks the dangerous shapes — `git add -A`/`-f`, `commit -a`, commits/pushes to `main`, force-push, `branch -D`, `reset --hard`, `clean -f`, `checkout -f` (proven by `guard-bash.test.mjs`).
 - **`gh`/`npm`/`npx` rules have no such runtime hook**, so they are pinned to **specific subcommands** (`npm run lint`, `gh pr merge`, `npx vitest run *`, …) — never a wildcarded subcommand like `npm run *`.
 - **`delete_ticket` and destructive shapes stay excluded** — they still prompt.
+- **`create_ticket` is allowlisted but blocked at runtime by the `guard-ticket` hook** — ticket authoring is delegated to the local agent (see **Ticket creation flow**), parallel to the broad git rules being `guard-bash`-backed. The allow entry only avoids a re-prompt if that policy is ever relaxed; the hook is the real gate.
 
-`.claude/settings.audit.test.mjs` enforces this in the gate: it pins the non-git allows to a reviewed set, rejects explicit dangerous tokens, keeps `delete_ticket` gated, and asserts the `guard-bash` backstop is wired — **failing CI** if any of those drift. (It does not — and cannot — prove a broad git glob is safe at runtime; that is the hook's job, which is why the two are coupled.)
+`.claude/settings.audit.test.mjs` enforces this in the gate: it pins the non-git allows to a reviewed set, rejects explicit dangerous tokens, keeps `delete_ticket` gated, and asserts both the `guard-bash` and `guard-ticket` backstops are wired — **failing CI** if any of those drift. (It does not — and cannot — prove a broad git glob is safe at runtime; that is the hook's job, which is why the two are coupled.)
 
 ### 1. Branch (at `start_ticket`)
 
@@ -179,7 +183,7 @@ gh pr view <number> --comments
 
 If there are significant findings, present them to the user and ask: **"Fix these in the current PR, or create follow-up tickets?"**
 - **Fix now** — implement, commit, push; wait for CI to go green again, then return to this step
-- **Follow-up tickets** — call `create_ticket` for each finding, then proceed to merge
+- **Follow-up tickets** — file each finding via the local agent (`npm run agent -- --yes --create-only "<finding>"`, per **Ticket creation flow**), then proceed to merge. If the local runtime is down, say so and let the user decide (fix-now, or hold the merge until it's back) — don't hand-author the ticket.
 
 If the review found no significant issues (or the secret wasn't configured), proceed directly.
 

@@ -26,6 +26,7 @@
       "Bash(npm test)",
       "Bash(npm run test:coverage)",
       "Bash(npm run build)",
+      "Bash(npm run agent -- --yes *)",
       "Bash(npx vitest run *)"
     ]
   },
@@ -37,6 +38,15 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__kanban__create_ticket",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-ticket.mjs\""
           }
         ]
       }

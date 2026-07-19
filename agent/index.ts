@@ -2,7 +2,7 @@ import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
 import { buildBoardIndex } from './retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
-import { runIntake, RUN_PREFIX_TEXT } from './runtime/loop.js';
+import { runIntake, RUN_PREFIX_TEXT, RUN_PREFIX_TEXT_CREATE_ONLY } from './runtime/loop.js';
 import { getTicket } from '../server/tickets.js';
 import { askApproval } from './runtime/approval.js';
 import { mergeUsage } from './cost/usage.js';
@@ -13,6 +13,9 @@ import { meterRun } from './cost/meterRun.js';
 //   npm run agent -- "the dashboard crashes when I export to CSV"
 //   npm run agent -- --yes "…"   auto-approve every write (non-interactive; for
 //                                driving a metered run from a Claude Code session)
+//   npm run agent -- --create-only "…"   drop update_ticket — always create a NEW
+//                                ticket (the Claude-delegated path; a mis-matched
+//                                retrieval can't overwrite an existing body)
 
 try { process.loadEnvFile('.env'); } catch { /* no .env — use process env + defaults */ }
 
@@ -20,13 +23,15 @@ async function main(): Promise<void> {
   // LEADING flags only, so a `-y` inside the report text isn't mistaken for the option.
   const argv = process.argv.slice(2);
   let autoApprove = false;
-  while (argv.length > 0 && (argv[0] === '--yes' || argv[0] === '-y')) {
-    autoApprove = true;
+  let createOnly = false;
+  while (argv.length > 0 && (argv[0] === '--yes' || argv[0] === '-y' || argv[0] === '--create-only')) {
+    if (argv[0] === '--create-only') createOnly = true;
+    else autoApprove = true;
     argv.shift();
   }
   const input = argv.join(' ').trim();
   if (!input) {
-    console.error('Usage: npm run agent -- [--yes] "<report>"');
+    console.error('Usage: npm run agent -- [--yes] [--create-only] "<report>"');
     process.exit(1);
   }
 
@@ -64,8 +69,8 @@ async function main(): Promise<void> {
   try {
     console.log('Building the board index…');
     const index = await buildBoardIndex(embedder);
-    console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}…`);
-    const result = await runIntake(input, { chat, index, approve });
+    console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}${createOnly ? ' (create-only)' : ''}…`);
+    const result = await runIntake(input, { chat, index, approve, createOnly });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
 
     // Per-run cost & economics via the shared meterRun (usage from both runtime clients). Best-effort — the tickets are already written, so a run-log failure won't fail the run.
@@ -77,7 +82,7 @@ async function main(): Promise<void> {
       outcome: result.outcome,
       reviewMs,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
-      prefixText: RUN_PREFIX_TEXT,
+      prefixText: createOnly ? RUN_PREFIX_TEXT_CREATE_ONLY : RUN_PREFIX_TEXT,
       dynamicText: input,
     });
     console.log(`\n${renderSummary(summary)}`);
