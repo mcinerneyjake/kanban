@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
-import { AGENT_TOOLS, dispatchTool, constrainAgentProject } from './tools.js';
+import {
+  AGENT_TOOLS,
+  AGENT_TOOLS_CREATE_ONLY,
+  CREATE_ONLY_TOOL_NAMES,
+  dispatchTool,
+  constrainAgentProject,
+} from './tools.js';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { TOOLS } from '../../mcp/handlers.js';
 import { createTicket, getTicket } from '../../server/tickets.js';
@@ -80,6 +86,21 @@ describe('AGENT_TOOLS', () => {
   });
 });
 
+describe('AGENT_TOOLS_CREATE_ONLY', () => {
+  const names = AGENT_TOOLS_CREATE_ONLY.map((t) => t.function.name);
+
+  it('drops update_ticket but keeps create + reads + search', () => {
+    expect(names).not.toContain('update_ticket');
+    expect(names).toEqual(expect.arrayContaining(['list_tickets', 'get_ticket', 'search_board', 'create_ticket']));
+    expect(names).toHaveLength(4);
+  });
+
+  it('still excludes the destructive / dev-workflow tools', () => {
+    expect(names).not.toContain('delete_ticket');
+    expect(names).not.toContain('start_ticket');
+  });
+});
+
 describe('dispatchTool — search_board', () => {
   it('routes to the index and returns structured, ordered results', async () => {
     const index = await DocumentIndex.build(embedder, [doc('t1', 'Fix login bug'), doc('t2', 'Add dashboard')]);
@@ -143,6 +164,35 @@ describe('dispatchTool — security gate', () => {
   it('blocks start_ticket', async () => {
     const index = await DocumentIndex.build(embedder, []);
     expect((await dispatchTool('start_ticket', { id: 'x' }, index)).isError).toBe(true);
+  });
+
+  // create-only mode (tkt-2492e26a277a): update_ticket must be refused AND the target body untouched —
+  // the data-loss regression where a mis-matched retrieval overwrote a rich ticket body.
+  it('refuses update_ticket under the create-only tool set and does NOT mutate the body', async () => {
+    const created = await createTicket({ title: 'Rich ticket', body: 'ORIGINAL BODY — must survive' });
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('update_ticket', { id: created.id, body: 'CLOBBERED' }, index, undefined, CREATE_ONLY_TOOL_NAMES);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not available');
+    expect((await getTicket(created.id)).body).toBe('ORIGINAL BODY — must survive');
+  });
+
+  it('still allows create_ticket under the create-only tool set', async () => {
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Create-only made this' }, index, undefined, CREATE_ONLY_TOOL_NAMES);
+    expect(res.isError).toBeFalsy();
+  });
+
+  // The hard floor: a caller can NARROW the tool set but never WIDEN it to a destructive tool — even if
+  // allowedNames wrongly includes delete_ticket, AGENT_TOOL_NAMES still refuses it.
+  it('refuses delete_ticket even when a caller passes a widened allowedNames set', async () => {
+    const created = await createTicket({ title: 'Do not delete' });
+    const index = await DocumentIndex.build(embedder, []);
+    const widened = new Set([...CREATE_ONLY_TOOL_NAMES, 'delete_ticket']);
+    const res = await dispatchTool('delete_ticket', { id: created.id }, index, undefined, widened);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not available');
+    expect((await getTicket(created.id)).id).toBe(created.id);
   });
 
   it('blocks an unknown tool', async () => {

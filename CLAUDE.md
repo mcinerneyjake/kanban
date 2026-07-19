@@ -95,10 +95,10 @@ In **this repo's sessions**, every **new** ticket is authored by the local intak
 1. **Confirm the report once.** Restate the *substance* you're about to file in one line — not exact field values, since the agent classifies and words it — e.g. *"I'll have the local agent file a ticket for: the CSV export crashes on empty rows. Go?"*. Don't pre-negotiate type/priority/status/project; the agent decides them.
 2. **Delegate to the agent.** On confirmation, run:
    ```bash
-   npm run agent -- --yes "<the report, in the user's words plus any clarifying detail>"
+   npm run agent -- --yes --create-only "<the report, in the user's words plus any clarifying detail>"
    ```
-   `--yes` auto-approves the write so the create happens **inside** the metered run (the run→ticket linkage the run log needs). The agent authors title + body, classifies the four fields, and — via retrieval — will `update_ticket` an existing **open** duplicate instead of creating a near-copy (retrieval-based dedup — not infallible, but it replaces the old manual `list_tickets` pre-check).
-3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). Two review-findings that both matched one open ticket may have folded into a single `update_ticket` — flag it if a finding looks dropped.
+   `--yes` auto-approves the write so the create happens **inside** the metered run (the run→ticket linkage the run log needs). `--create-only` drops `update_ticket` from the agent's toolset so a mis-matched retrieval can only ever create a **new** ticket — never overwrite an existing ticket's body (the interactive `npm run agent` path keeps the anti-duplicate update behavior). The agent authors title + body and classifies the four fields; if a related ticket exists it cites the id in the body rather than updating it. **Trade-off:** a retrieval miss yields a duplicate (non-destructive — delete/merge later), never a clobbered body.
+3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). Under `--create-only` the agent can't update, so it always creates — but it may still merge several issues from one report into a **single** create; when you handed it multiple distinct findings, confirm each got its own ticket and flag any that looks dropped.
 4. **Local model down → block, don't fall back.** If the agent exits non-zero (models unavailable) or `GET /api/intake/health` reports down, tell the user the local runtime is unavailable and **stop**. Do **not** author the ticket yourself via `create_ticket` — that creates an *untracked* ticket, defeating the metering (and the hook blocks it regardless).
 
 **What stays Claude's, directly (no agent):**
@@ -183,7 +183,7 @@ gh pr view <number> --comments
 
 If there are significant findings, present them to the user and ask: **"Fix these in the current PR, or create follow-up tickets?"**
 - **Fix now** — implement, commit, push; wait for CI to go green again, then return to this step
-- **Follow-up tickets** — file each finding via the local agent (`npm run agent -- --yes "<finding>"`, per **Ticket creation flow**), then proceed to merge. If the local runtime is down, say so and let the user decide (fix-now, or hold the merge until it's back) — don't hand-author the ticket.
+- **Follow-up tickets** — file each finding via the local agent (`npm run agent -- --yes --create-only "<finding>"`, per **Ticket creation flow**), then proceed to merge. If the local runtime is down, say so and let the user decide (fix-now, or hold the merge until it's back) — don't hand-author the ticket.
 
 If the review found no significant issues (or the secret wasn't configured), proceed directly.
 

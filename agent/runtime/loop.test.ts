@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
-import { runIntake } from './loop.js';
+import { runIntake, SYSTEM_PROMPT_CREATE_ONLY } from './loop.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
 import { type ChatTool } from './tools.js';
 import { DocumentIndex, type Embedder } from '../retrieval/retrieval.js';
-import { listTickets, createTicket } from '../../server/tickets.js';
+import { listTickets, createTicket, getTicket } from '../../server/tickets.js';
 
 // Stub embedder: every text maps to the same vector — ranking is irrelevant
 // here, the loop tests only care about dispatch/termination mechanics.
@@ -24,9 +24,11 @@ const toolCall = (id: string, name: string, args: string): ToolCall => ({ id, ty
 class ScriptedChat implements ChatClient {
   public calls = 0;
   public sawTools = false;
+  public lastToolNames: string[] = [];
   constructor(private readonly turns: ChatMessage[]) {}
   complete(_messages: ChatMessage[], tools: ChatTool[]): Promise<ChatMessage> {
     if (tools.length > 0) this.sawTools = true;
+    this.lastToolNames = tools.map((t) => t.function.name);
     const turn = this.turns[this.calls] ?? assistant('(no more turns)');
     this.calls++;
     return Promise.resolve(turn);
@@ -109,6 +111,27 @@ describe('runIntake', () => {
     expect(result.final).toBe('Created it.');
     const board = await listTickets();
     expect(board.some((t) => t.title === 'From the agent')).toBe(true);
+  });
+
+  it('create-only mode uses the create-only prompt and offers no update_ticket tool', async () => {
+    const chat = new ScriptedChat([assistant('done')]);
+    const result = await runIntake('a report', { chat, index: await buildIndex(), createOnly: true });
+    expect(result.messages[0].content).toBe(SYSTEM_PROMPT_CREATE_ONLY);
+    expect(chat.lastToolNames).not.toContain('update_ticket');
+    expect(chat.lastToolNames).toContain('create_ticket');
+  });
+
+  it('create-only mode refuses an update_ticket call and leaves the target body intact', async () => {
+    const existing = await createTicket({ title: 'Existing', body: 'ORIGINAL — must survive' });
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'update_ticket', `{"id":"${existing.id}","body":"CLOBBERED"}`)]),
+      assistant('Could not update; nothing changed.'),
+    ]);
+    const result = await runIntake('rewrite that ticket', { chat, index: await buildIndex(), createOnly: true, approve: () => true });
+    const toolMsg = result.messages.find((m) => m.role === 'tool');
+    expect(toolMsg?.content).toContain('not available');
+    expect((await getTicket(existing.id)).body).toBe('ORIGINAL — must survive');
+    expect(result.updatedIds).toHaveLength(0);
   });
 
   it('mints a runId and returns it on the result', async () => {
