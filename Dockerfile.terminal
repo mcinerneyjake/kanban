@@ -1,0 +1,25 @@
+# Session image for the in-app terminal widget (tkt-be809dd2b7fb).
+# Self-contained: no COPY, so the build context is irrelevant — the board project(s)
+# are bind-mounted read-write at runtime and the subscription credential is mounted
+# read-only. Build once:  docker build -f Dockerfile.terminal -t kanban-terminal .
+FROM node:20-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl gnupg less \
+    && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (official apt repo) — the demo's branch/PR flow runs `gh` in-container.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code native installer → /root/.local/bin/claude.
+# Alternative if the installer URL drifts:  npm install -g @anthropic-ai/claude-code
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}"
+
+CMD ["bash", "-l"]
