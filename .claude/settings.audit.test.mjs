@@ -8,7 +8,10 @@ import { readFileSync } from 'node:fs';
 const settings = JSON.parse(readFileSync(new URL('./settings.json', import.meta.url), 'utf8'));
 const allow = settings.permissions?.allow ?? [];
 
-// MCP tools safe to auto-approve: reads + non-destructive writes.
+// MCP tools safe to auto-approve: reads + non-destructive writes. create_ticket stays here but is
+// blocked at runtime by guard-ticket (authoring is delegated to the local agent, tkt-2492e26a277a) —
+// parallel to the broad git rules being guard-bash-backed. The allowlist entry avoids a re-prompt if
+// that policy is ever relaxed; the hook (asserted below) is the real gate.
 const REQUIRED_MCP = [
   'mcp__kanban__list_tickets',
   'mcp__kanban__get_ticket',
@@ -29,6 +32,7 @@ const EXPECTED_NONGIT_BASH = new Set([
   'Bash(npm test)',
   'Bash(npm run test:coverage)',
   'Bash(npm run build)',
+  'Bash(npm run agent -- --yes *)', // the delegated create path (tkt-2492e26a277a) — --yes = metered, non-interactive
   'Bash(npx vitest run *)',
 ]);
 
@@ -80,5 +84,14 @@ describe('.claude/settings.json permission allowlist', () => {
     const matchers = settings.hooks?.PreToolUse ?? [];
     const commands = matchers.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
     expect(commands.some((c) => c.includes('guard-bash'))).toBe(true);
+  });
+
+  // create_ticket is allowlisted but must be blocked at runtime by guard-ticket (authoring is
+  // delegated to the local agent) — the allow entry is only safe because this hook is wired.
+  it('keeps the guard-ticket PreToolUse hook wired (backstop for the create_ticket allow entry)', () => {
+    const matchers = settings.hooks?.PreToolUse ?? [];
+    const createGuards = matchers.filter((m) => (m.matcher ?? '').includes('create_ticket'));
+    const commands = createGuards.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
+    expect(commands.some((c) => c.includes('guard-ticket'))).toBe(true);
   });
 });
