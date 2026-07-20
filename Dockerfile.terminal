@@ -21,5 +21,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Alternative if the installer URL drifts:  npm install -g @anthropic-ai/claude-code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/root/.local/bin:${PATH}"
+# A login shell (bash -l, used for the shell-mode session) re-sources /etc/profile and
+# resets PATH, dropping the ENV addition above — so also export it via profile.d, or an
+# interactive session can't find `claude`.
+RUN printf 'export PATH="/root/.local/bin:$PATH"\n' > /etc/profile.d/claude-path.sh
 
 CMD ["bash", "-l"]

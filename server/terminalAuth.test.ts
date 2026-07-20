@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildContainerArgs, resolveSessionCommand, type CredMount,
+  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame, type CredMount,
 } from './terminalAuth.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -158,5 +158,44 @@ describe('resolveSessionCommand', () => {
     expect(joined).toContain('tkt-0123456789ab');
     expect(joined).toContain('Fix the CSV export crash');
     expect(joined).toContain('--add-dir');
+  });
+});
+
+describe('authorizeUpgrade', () => {
+  const base = {
+    path: '/terminal-ws', wsPath: '/terminal-ws', origin: 'http://localhost:5173',
+    token: 'secret', expected: 'secret', activeSessions: 0, maxSessions: 2,
+  };
+  it('accepts a fully valid upgrade', () => {
+    expect(authorizeUpgrade(base)).toEqual({ ok: true });
+  });
+  it('ignores a non-terminal path (404 so HMR/others pass through)', () => {
+    const d = authorizeUpgrade({ ...base, path: '/other' });
+    expect(d).toEqual({ ok: false, status: 404, reason: 'not the terminal path' });
+  });
+  it('rejects a bad origin (403)', () => {
+    expect(authorizeUpgrade({ ...base, origin: 'https://evil.example' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeUpgrade({ ...base, origin: undefined })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects a bad/missing token (403)', () => {
+    expect(authorizeUpgrade({ ...base, token: 'wrong' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeUpgrade({ ...base, token: null })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects once the session cap is reached (503)', () => {
+    expect(authorizeUpgrade({ ...base, activeSessions: 2 })).toMatchObject({ ok: false, status: 503 });
+  });
+});
+
+describe('parseClientFrame', () => {
+  it('parses input and resize frames', () => {
+    expect(parseClientFrame('{"t":"i","d":"ls\\n"}')).toEqual({ t: 'i', d: 'ls\n' });
+    expect(parseClientFrame('{"t":"r","cols":120,"rows":40}')).toEqual({ t: 'r', cols: 120, rows: 40 });
+  });
+  it('drops malformed, mistyped, or unknown frames', () => {
+    expect(parseClientFrame('not json')).toBeNull();
+    expect(parseClientFrame('null')).toBeNull();
+    expect(parseClientFrame('{"t":"i"}')).toBeNull();          // missing d
+    expect(parseClientFrame('{"t":"r","cols":"80","rows":24}')).toBeNull(); // cols not a number
+    expect(parseClientFrame('{"t":"x"}')).toBeNull();          // unknown type
   });
 });

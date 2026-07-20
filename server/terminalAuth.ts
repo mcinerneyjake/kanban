@@ -106,6 +106,49 @@ export function buildSeedPrompt(ticket: Ticket): string {
 
 export interface SessionCommand { cmd: string; args: string[] }
 
+// ── WS upgrade authorization (pure decision, so the gate is testable) ─────────
+
+export type UpgradeDecision = { ok: true } | { ok: false; status: number; reason: string };
+
+// Ordered checks: wrong path (let HMR/others through) → origin → token → session cap.
+// Returns a status so the caller can reply then destroy the socket. Fail-closed: any
+// failed check returns { ok:false } — a green result requires every gate to pass.
+export function authorizeUpgrade(opts: {
+  path: string;
+  wsPath: string;
+  origin: string | undefined;
+  token: string | null;
+  expected: string;
+  activeSessions: number;
+  maxSessions: number;
+}): UpgradeDecision {
+  if (opts.path !== opts.wsPath) return { ok: false, status: 404, reason: 'not the terminal path' };
+  if (!isAllowedOrigin(opts.origin)) return { ok: false, status: 403, reason: 'origin not allowed' };
+  if (!isValidToken(opts.token, opts.expected)) return { ok: false, status: 403, reason: 'invalid token' };
+  if (opts.activeSessions >= opts.maxSessions) return { ok: false, status: 503, reason: 'session limit reached' };
+  return { ok: true };
+}
+
+// ── Client → server framing ──────────────────────────────────────────────────
+
+export type ClientFrame = { t: 'i'; d: string } | { t: 'r'; cols: number; rows: number };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+// Keystroke input ({t:'i',d}) or a resize ({t:'r',cols,rows}); anything else is dropped.
+export function parseClientFrame(raw: string): ClientFrame | null {
+  let data: unknown;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!isRecord(data)) return null;
+  if (data.t === 'i' && typeof data.d === 'string') return { t: 'i', d: data.d };
+  if (data.t === 'r' && typeof data.cols === 'number' && typeof data.rows === 'number') {
+    return { t: 'r', cols: data.cols, rows: data.rows };
+  }
+  return null;
+}
+
 export async function resolveSessionCommand(opts: {
   ticket?: string | null;
   getTicket: (id: string) => Promise<Ticket>;

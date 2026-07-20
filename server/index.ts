@@ -27,7 +27,7 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   const PORT = process.env.PORT || 3001;
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Kanban API → http://localhost:${PORT}`);
     // Best-effort warm so the first intake search is instant. Free locally; embedder
     // down → lazy build on first use. On a paid embedder this re-embeds the whole
@@ -36,5 +36,12 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
       .then((ix) => console.log(`[intake] index warmed (${ix.size} tickets)`))
       .catch((e: unknown) => console.warn(`[intake] index warm skipped: ${e instanceof Error ? e.message : String(e)}`));
   });
+  // Dev-only embedded terminal (tkt-be809dd2b7fb). Dynamic import so node-pty/ws never load
+  // in prod or tests — only under `npm run dev`, which sets KANBAN_TERMINAL=1.
+  if (process.env.KANBAN_TERMINAL === '1') {
+    const { attachTerminal } = await import('./terminal.js');
+    attachTerminal(server);
+    console.log('[terminal] embedded terminal enabled → ws /terminal-ws');
+  }
 }
 /* v8 ignore stop */
