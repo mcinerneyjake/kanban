@@ -95,22 +95,23 @@ export function rootMountArgs(roots: string[]): string[] {
   return args;
 }
 
-export function buildContainerArgs(opts: {
+// The dtach session socket inside the container (per session id). `claude` runs under
+// `dtach -c <socket>`; each browser connection attaches via `dtach -a <socket>`, decoupling the
+// exec stream from claude's lifetime so the session survives an Express restart (epic tkt-d7e129290ff7).
+export function dtachSocket(sessionId: string): string {
+  return `/tmp/kanban-term-${sessionId}.dtach`;
+}
+
+// Shared mount/HOME/git middle of the container argv (between the run flags and -w/image/cmd).
+function containerBaseArgs(opts: {
   roots: string[];
   credMount: CredMount;
-  image: string;
-  containerName: string;
-  innerCmd: string[];
   gitIdentity?: { name: string; email: string };
 }): string[] {
-  const [primaryRoot] = opts.roots;
-  if (primaryRoot === undefined) throw new Error('buildContainerArgs: roots must be non-empty');
-
-  const args = ['run', '-it', '--rm', '--name', opts.containerName, ...rootMountArgs(opts.roots)];
-  // Persistent HOME so ALL of claude's state survives the --rm container — not just ~/.claude
-  // but also ~/.claude.json (onboarding/account/trust), which lives in home. One whole-dir
-  // mount (vs a single-file mount) survives claude's atomic-rename writes. Outside every
-  // project mount, so the token still isn't reachable via a project's file tree; HOME isn't a secret.
+  const args = [...rootMountArgs(opts.roots)];
+  // Persistent HOME so ALL of claude's state survives the container — not just ~/.claude but also
+  // ~/.claude.json (onboarding/account/trust). One whole-dir mount survives claude's atomic-rename
+  // writes. Outside every project mount, so the token isn't reachable via a project's file tree.
   args.push('-v', `${opts.credMount.hostHome}:${opts.credMount.containerHome}`);
   args.push('-e', `HOME=${opts.credMount.containerHome}`);
   if (opts.gitIdentity) {
@@ -120,8 +121,38 @@ export function buildContainerArgs(opts: {
       '-e', `GIT_COMMITTER_NAME=${name}`, '-e', `GIT_COMMITTER_EMAIL=${email}`,
     );
   }
-  args.push('-w', primaryRoot, opts.image, ...opts.innerCmd);
   return args;
+}
+
+// Detached run (tkt-00dd79b261d7): start the session container in the background with `claude` under
+// `dtach -N` (create the session but do NOT attach, and stay in the foreground as the container's
+// main process — `-c` would try to attach, which needs a terminal a `docker run -d` doesn't have).
+// claude thus outlives any single browser connection. `--rm` is intentionally DROPPED — the
+// container must persist independent of the `docker run` client; dispose force-removes it. The
+// `kanban.session` label lets a restarted server rediscover the container (S3a). Bare `claude`,
+// never a shell or a positional prompt (the seed is typed in as prefill); confinement is the mounts.
+export function buildDetachedRunArgs(opts: {
+  roots: string[];
+  sessionId: string;
+  credMount: CredMount;
+  image: string;
+  containerName: string;
+  gitIdentity?: { name: string; email: string };
+}): string[] {
+  const [primaryRoot] = opts.roots;
+  if (primaryRoot === undefined) throw new Error('buildDetachedRunArgs: roots must be non-empty');
+  return [
+    'run', '-d', '--name', opts.containerName, '--label', `kanban.session=${opts.sessionId}`,
+    ...containerBaseArgs(opts),
+    '-w', primaryRoot, opts.image,
+    'dtach', '-N', dtachSocket(opts.sessionId), 'claude',
+  ];
+}
+
+// Attach a fresh interactive pty to the running container's dtach session. `-r winch` makes dtach
+// redraw claude's current screen via SIGWINCH on attach — so a reload/reattach repaints for free.
+export function buildAttachArgs(containerName: string, sessionId: string): string[] {
+  return ['exec', '-it', containerName, 'dtach', '-a', dtachSocket(sessionId), '-E', '-r', 'winch'];
 }
 
 // ── Session resolution (id → validated ticket → seeded command) ──────────────
@@ -146,7 +177,13 @@ export function buildSeedPrompt(ticket: Ticket): string {
 // trailing newline → editable, not auto-submitted). Absent for a bare (no-ticket) session.
 // roots: the confinement roots — the transport pre-installs their node_modules before the
 // interactive session (so the install never delays claude / mistimes the prefill).
-export interface SessionCommand { cmd: string; args: string[]; prefill?: string; roots: string[] }
+export interface SessionCommand {
+  runArgs: string[];    // `docker run -d …` — start the detached session container
+  attachArgs: string[]; // `docker exec -it … dtach -a …` — stream a fresh pty from it
+  socket: string;       // the dtach socket path inside the container (for the ready-probe)
+  prefill?: string;
+  roots: string[];
+}
 
 // Parse the ?ticket= param the widget puts on the WS URL (it encodeURIComponent's the board
 // id). Shared with the server and the seam test so the client→server hop can't silently drift.
@@ -256,6 +293,7 @@ export function parseClientFrame(raw: string): ClientFrame | null {
 
 export async function resolveSessionCommand(opts: {
   ticket?: string | null;
+  sessionId: string;
   getTicket: (id: string) => Promise<Ticket>;
   projectRoots: Record<string, string>;
   kanbanRoot: string;
@@ -271,17 +309,19 @@ export async function resolveSessionCommand(opts: {
     ticket = await opts.getTicket(opts.ticket); // throws if unknown → caller rejects the socket
   }
   const roots = allowedRootsFor({ ticket, projectRoots: opts.projectRoots, kanbanRoot: opts.kanbanRoot });
-  // Launch BARE `claude` as the container's PID 1 — never a raw shell, and never the ticket
-  // as a positional prompt (that auto-submits). The ticket seed is returned as `prefill`,
-  // which the transport types into the input box once claude is ready — editable, not run.
-  // Confinement is enforced by the container mounts, so we don't pass --add-dir either.
-  const args = buildContainerArgs({
+  const runArgs = buildDetachedRunArgs({
     roots,
+    sessionId: opts.sessionId,
     credMount: opts.credMount,
     image: opts.image,
     containerName: opts.containerName,
-    innerCmd: ['claude'],
     gitIdentity: opts.gitIdentity,
   });
-  return { cmd: 'docker', args, prefill: ticket ? buildSeedPrompt(ticket) : undefined, roots };
+  return {
+    runArgs,
+    attachArgs: buildAttachArgs(opts.containerName, opts.sessionId),
+    socket: dtachSocket(opts.sessionId),
+    prefill: ticket ? buildSeedPrompt(ticket) : undefined,
+    roots,
+  };
 }

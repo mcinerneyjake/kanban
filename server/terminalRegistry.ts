@@ -30,6 +30,9 @@ export interface TerminalEntry {
   currentWs: ClientSocket | null;
   graceTimer?: ReturnType<typeof setTimeout>;
   nudgeTimer?: ReturnType<typeof setTimeout>; // pending second half of the reattach SIGWINCH nudge
+  // True once the container is running — even before a pty attaches. A detach before this disposes
+  // (nothing to keep); a detach after it graces, because a live container exists to reattach to.
+  containerStarted: boolean;
   disposed: boolean;
   cleanup?: () => void;         // extra teardown (prefill timers/subscription) set by terminal.ts
 }
@@ -53,25 +56,27 @@ export class TerminalRegistry {
   // Reserve a slot synchronously (before the async container setup) so the session cap can't be
   // undercounted while a new session is still booting. pty is filled in by attachPty once spawned.
   create(id: string, containerName: string, ws: ClientSocket): TerminalEntry {
-    const entry: TerminalEntry = { pty: null, containerName, currentWs: ws, disposed: false };
+    const entry: TerminalEntry = { pty: null, containerName, currentWs: ws, containerStarted: false, disposed: false };
     this.entries.set(id, entry);
     return entry;
   }
 
   attachPty(id: string, pty: PtyHandle): void {
     const entry = this.entries.get(id);
-    if (entry && !entry.disposed) entry.pty = pty;
+    if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; }
   }
 
   // Socket-close handler. A reload drops the socket but the container must survive: null the
   // socket and start the grace window. Two guards: a stale socket whose entry was already rebound
-  // by a faster reattach is ignored; a session that dropped before its pty ever spawned is freed
-  // immediately (nothing running to preserve).
+  // by a faster reattach is ignored; a session that dropped before its CONTAINER started is freed
+  // immediately (nothing running to preserve). Keyed on containerStarted, not pty: the container is
+  // live throughout the (now longer) window before the pty attaches, so a reload there must grace
+  // and reattach — not dispose a running container (review of tkt-00dd79b261d7).
   detach(id: string, ws: ClientSocket): void {
     const entry = this.entries.get(id);
     if (!entry || entry.disposed || entry.currentWs !== ws) return;
     entry.currentWs = null;
-    if (!entry.pty) { this.dispose(id); return; }
+    if (!entry.containerStarted) { this.dispose(id); return; }
     entry.graceTimer = setTimeout(() => this.dispose(id), this.deps.graceMs);
   }
 

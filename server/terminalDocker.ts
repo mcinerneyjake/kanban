@@ -18,21 +18,23 @@ type SpawnFn = (command: string, args: readonly string[], options: { stdio: 'ign
 type SpawnSyncFn = (command: string, args: readonly string[], options: { stdio: 'ignore' }) => unknown;
 
 export interface DockerCli {
-  // Best-effort async kill (fire-and-forget); a missing container is not an error.
-  kill(name: string): void;
-  // Synchronous kill for the process-'exit' hook, which cannot await.
-  killSync(name: string): void;
-  // Run a container to completion; resolves its exit code, or null if `docker` couldn't spawn.
+  // Best-effort async force-remove (kill + rm); a missing container is not an error. Detached
+  // session containers run without `--rm`, so dispose must remove them explicitly.
+  remove(name: string): void;
+  // Synchronous force-remove for the process-'exit' hook, which cannot await.
+  removeSync(name: string): void;
+  // Run a container (or any `docker` subcommand) to completion; resolves its exit code, or null if
+  // `docker` couldn't spawn.
   run(args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<number | null>;
 }
 
 export function spawnDockerCli(spawn: SpawnFn = nodeSpawn, spawnSync: SpawnSyncFn = nodeSpawnSync): DockerCli {
   return {
-    kill(name) {
-      spawn('docker', ['kill', name], { stdio: 'ignore' }).on('error', () => { /* already gone */ });
+    remove(name) {
+      spawn('docker', ['rm', '-f', name], { stdio: 'ignore' }).on('error', () => { /* already gone */ });
     },
-    killSync(name) {
-      spawnSync('docker', ['kill', name], { stdio: 'ignore' });
+    removeSync(name) {
+      spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
     },
     run(args, opts = {}) {
       return new Promise((resolve) => {

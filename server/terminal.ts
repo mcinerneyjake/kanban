@@ -41,7 +41,7 @@ const docker = spawnDockerCli();
 const registry = new TerminalRegistry({
   graceMs: GRACE_MS,
   nudgeMs: NUDGE_MS,
-  killContainer: (name) => docker.kill(name),
+  killContainer: (name) => docker.remove(name),
 });
 
 // Populate each root's node_modules volume with Linux deps in a one-shot container BEFORE the
@@ -64,6 +64,24 @@ function ensureDeps(roots: string[]): Promise<void> {
   return inFlight;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Poll until dtach has created its session socket inside the container (it does so at startup), so
+// the first `dtach -a` attach can't race container boot. The window is generous because a COLD
+// node_modules install (if ensureDeps silently failed) runs in the entrypoint before dtach starts;
+// but if the container has EXITED (claude/dtach crashed immediately — `docker run -d` returns 0
+// regardless), we fail fast instead of hanging the whole window (review of tkt-00dd79b261d7).
+async function waitForDtachSocket(containerName: string, socket: string, timeoutMs = 120_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await docker.run(['exec', containerName, 'test', '-S', socket]) === 0) return true;
+    // `exec` into a stopped container fails → the container died during startup; stop waiting.
+    if (await docker.run(['exec', containerName, 'true']) !== 0) return false;
+    await sleep(1000);
+  }
+  return false;
+}
+
 // Containers still running, so an abrupt process exit doesn't orphan them (+ their in-container
 // claude/MCP children). Normal detach/dispose is handled by the registry per-session.
 let exitHookInstalled = false;
@@ -71,7 +89,7 @@ function installExitHook(): void {
   if (exitHookInstalled) return;
   exitHookInstalled = true;
   process.on('exit', () => {
-    for (const entry of registry.values()) docker.killSync(entry.containerName);
+    for (const entry of registry.values()) docker.removeSync(entry.containerName);
   });
 }
 
@@ -177,42 +195,58 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   const entry = registry.create(id, containerName, ws);
   ws.on('close', () => registry.detach(id, ws));
 
-  let command: { cmd: string; args: string[]; prefill?: string; roots: string[] };
+  const fail = (message: string) => {
+    // Errors go to the CURRENT socket (a reload may have reattached during the await).
+    const w = entry.currentWs;
+    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(); }
+    registry.disposeIfCurrent(id, entry);
+  };
+
+  let command;
   try {
     command = await resolveSessionCommand({
-      ticket, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
+      ticket, sessionId: id, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
       credMount: credMount(), image: IMAGE, containerName, gitIdentity: gitIdentity(),
     });
   } catch (err) {
     // Bad/unknown ticket → tell the terminal and close, rather than spawn a shell silently.
-    // Errors go to the CURRENT socket (a reload may have reattached during the await).
-    const message = err instanceof Error ? err.message : 'failed to start session';
-    const w = entry.currentWs;
-    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(); }
-    registry.disposeIfCurrent(id, entry);
+    fail(err instanceof Error ? err.message : 'failed to start session');
     return;
   }
 
-  // Install Linux deps (once, serialized) before the interactive session so it never runs in
-  // the PTY. The client sees the "Loading…" overlay meanwhile.
+  // Install Linux deps (once, serialized) before the session so the container entrypoint's `npm ci`
+  // no-ops and dtach/claude come up fast. The client sees the "Loading…" overlay meanwhile.
   await ensureDeps(command.roots);
-
   // Torn down during setup (client vanished with no reattach) → stop. NOT keyed on the original
   // socket: a reload that reattached mid-boot swapped entry.currentWs and closed the old socket,
   // and we must CONTINUE booting so the reattached client gets a working session (tkt review #1/#2).
   if (entry.disposed) return;
 
+  // Start the DETACHED container (claude under dtach). `docker run -d` returns once it's launched;
+  // claude then runs independent of any browser connection so it survives a reload (and, once S3a
+  // lands, an Express restart).
+  const runCode = await docker.run(command.runArgs, { env: buildSessionEnv(process.env) });
+  // Disposed mid-run → the container may have been created AFTER dispose's rm -f no-op'd against a
+  // not-yet-existing name; force-remove it by name now so it can't leak (review of tkt-00dd79b261d7).
+  if (entry.disposed) { docker.remove(containerName); return; }
+  if (runCode !== 0) { fail('failed to start session container'); return; }
+  // A live container now exists — a reload from here on must reattach, not dispose it.
+  entry.containerStarted = true;
+
+  // Wait for dtach to create its socket before attaching (a fresh container needs a moment even
+  // with deps pre-installed). Then a browser connection is a `docker exec … dtach -a` pty.
+  const ready = await waitForDtachSocket(containerName, command.socket);
+  if (entry.disposed) { docker.remove(containerName); return; }
+  if (!ready) { fail(`session container did not become ready (see: docker logs ${containerName})`); return; }
+
   let term: pty.IPty;
   try {
-    term = pty.spawn(command.cmd, command.args, {
+    term = pty.spawn('docker', command.attachArgs, {
       name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
     });
   } catch (err) {
     // e.g. node-pty's spawn-helper lacks +x → posix_spawnp failed. Don't leak the slot.
-    const message = err instanceof Error ? err.message : 'failed to start terminal';
-    const w = entry.currentWs;
-    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(); }
-    registry.disposeIfCurrent(id, entry);
+    fail(err instanceof Error ? err.message : 'failed to start terminal');
     return;
   }
   registry.attachPty(id, term);
