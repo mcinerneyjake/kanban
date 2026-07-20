@@ -5,8 +5,10 @@
 # read-only. Build once:  docker build -f Dockerfile.terminal -t kanban-terminal .
 FROM node:20-bookworm
 
+# dtach: the detach/reattach layer that lets a Claude session survive an Express restart —
+# claude runs under `dtach` in the container and each connection re-attaches (epic tkt-d7e129290ff7).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates curl gnupg less \
+      dtach git ca-certificates curl gnupg less \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (official apt repo) — the demo's branch/PR flow runs `gh` in-container.
