@@ -66,6 +66,16 @@ export class TerminalRegistry {
     if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; }
   }
 
+  // Adopt a container that outlived an Express restart (rediscovered via docker ps). No socket or
+  // pty yet — a reattach spawns a fresh exec into its surviving dtach session. Starts a grace timer
+  // so an orphan nobody reattaches to is still reaped (S3a, tkt-5b21136f3317). No-op if already known.
+  adopt(id: string, containerName: string): void {
+    if (this.entries.has(id)) return;
+    const entry: TerminalEntry = { pty: null, containerName, currentWs: null, containerStarted: true, disposed: false };
+    this.entries.set(id, entry);
+    entry.graceTimer = setTimeout(() => this.dispose(id), this.deps.graceMs);
+  }
+
   // Socket-close handler. A reload drops the socket but the container must survive: null the
   // socket and start the grace window. Two guards: a stale socket whose entry was already rebound
   // by a faster reattach is ignored; a session that dropped before its CONTAINER started is freed

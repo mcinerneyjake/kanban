@@ -95,8 +95,12 @@ export function rootMountArgs(roots: string[]): string[] {
   return args;
 }
 
+// Docker label carrying the session id, so a restarted server can rediscover its running
+// containers via `docker ps --filter label=…` and re-adopt them (S3a, tkt-5b21136f3317).
+export const SESSION_LABEL_KEY = 'kanban.session';
+
 // The dtach session socket inside the container (per session id). `claude` runs under
-// `dtach -c <socket>`; each browser connection attaches via `dtach -a <socket>`, decoupling the
+// `dtach -N <socket>`; each browser connection attaches via `dtach -a <socket>`, decoupling the
 // exec stream from claude's lifetime so the session survives an Express restart (epic tkt-d7e129290ff7).
 export function dtachSocket(sessionId: string): string {
   return `/tmp/kanban-term-${sessionId}.dtach`;
@@ -142,7 +146,7 @@ export function buildDetachedRunArgs(opts: {
   const [primaryRoot] = opts.roots;
   if (primaryRoot === undefined) throw new Error('buildDetachedRunArgs: roots must be non-empty');
   return [
-    'run', '-d', '--name', opts.containerName, '--label', `kanban.session=${opts.sessionId}`,
+    'run', '-d', '--name', opts.containerName, '--label', `${SESSION_LABEL_KEY}=${opts.sessionId}`,
     ...containerBaseArgs(opts),
     '-w', primaryRoot, opts.image,
     'dtach', '-N', dtachSocket(opts.sessionId), 'claude',

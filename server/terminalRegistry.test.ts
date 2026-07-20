@@ -90,6 +90,35 @@ describe('TerminalRegistry lifecycle', () => {
     expect(killContainer).toHaveBeenCalledWith('cont-1');
   });
 
+  it('adopt registers a detached container (no pty/ws) and reaps it after grace if unclaimed (S3a)', () => {
+    const { registry, killContainer } = makeRegistry();
+    registry.adopt(ID, 'cont-1');
+    expect(registry.has(ID)).toBe(true);
+    expect(registry.lookup(ID)).toBe('found'); // detached, awaiting reattach
+    expect(registry.size()).toBe(1);
+    vi.advanceTimersByTime(GRACE_MS);
+    expect(registry.size()).toBe(0);
+    expect(killContainer).toHaveBeenCalledWith('cont-1');
+  });
+
+  it('a reattach to an adopted container cancels its grace and exposes the containerName (pty null → caller spawns a fresh exec)', () => {
+    const { registry, killContainer } = makeRegistry();
+    registry.adopt(ID, 'cont-1');
+    const entry = registry.reattach(ID, makeWs());
+    expect(entry?.containerName).toBe('cont-1');
+    expect(entry?.pty).toBeNull();
+    vi.advanceTimersByTime(GRACE_MS * 2);
+    expect(registry.size()).toBe(1); // grace cancelled → not reaped
+    expect(killContainer).not.toHaveBeenCalled();
+  });
+
+  it('adopt never clobbers an already-known session', () => {
+    const { registry } = makeRegistry();
+    boot(registry, ID, 'cont-live');
+    registry.adopt(ID, 'cont-other');
+    expect(registry.get(ID)?.containerName).toBe('cont-live');
+  });
+
   it('reattach within grace reuses the same pty + container, cancels grace, and never takes a 2nd slot', () => {
     const { registry, killContainer } = makeRegistry();
     const { ws: wsA, pty } = boot(registry, ID, 'cont-1');

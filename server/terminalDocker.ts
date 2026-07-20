@@ -1,4 +1,4 @@
-import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
+import { spawn as nodeSpawn, spawnSync as nodeSpawnSync, execFileSync } from 'node:child_process';
 
 // The embedded terminal's Docker CLI seam (tkt-e1144d4ef7f5, epic tkt-d7e129290ff7). Every `docker`
 // invocation goes through here so that (1) container names — built from a client-derived session id
@@ -26,6 +26,20 @@ export interface DockerCli {
   // Run a container (or any `docker` subcommand) to completion; resolves its exit code, or null if
   // `docker` couldn't spawn.
   run(args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<number | null>;
+  // Running session containers keyed by the given label → [{name, session}]. Used once at boot to
+  // re-adopt containers that outlived a restart (S3a). Empty on any failure.
+  ps(labelKey: string): Array<{ name: string; session: string }>;
+}
+
+// Parse `docker ps --format '{{.Names}}\t{{.Label "…"}}'` output → rows. Pure + tested; a row needs
+// both a name and a non-empty session value (the label). Tolerant of blank lines / trailing newline.
+export function parsePsLines(stdout: string | null | undefined): Array<{ name: string; session: string }> {
+  const rows: Array<{ name: string; session: string }> = [];
+  for (const line of String(stdout ?? '').split('\n')) {
+    const [name, session] = line.split('\t');
+    if (name && session && session.trim()) rows.push({ name: name.trim(), session: session.trim() });
+  }
+  return rows;
 }
 
 export function spawnDockerCli(spawn: SpawnFn = nodeSpawn, spawnSync: SpawnSyncFn = nodeSpawnSync): DockerCli {
@@ -42,6 +56,18 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn, spawnSync: SpawnSyncF
         proc.on('exit', (code) => resolve(code));
         proc.on('error', () => resolve(null));
       });
+    },
+    ps(labelKey) {
+      try {
+        const out = execFileSync(
+          'docker',
+          ['ps', '--filter', `label=${labelKey}`, '--format', `{{.Names}}\t{{.Label "${labelKey}"}}`],
+          { encoding: 'utf8' },
+        );
+        return parsePsLines(out);
+      } catch {
+        return []; // docker down / no such filter → adopt nothing (fresh start)
+      }
     },
   };
 }

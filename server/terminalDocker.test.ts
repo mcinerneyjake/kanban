@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { spawnDockerCli } from './terminalDocker.js';
+import { spawnDockerCli, parsePsLines } from './terminalDocker.js';
 
 // A stand-in for a spawned child: .on('error'|'exit', …) is all the seam uses.
 function fakeChild() {
@@ -49,5 +49,21 @@ describe('spawnDockerCli', () => {
     const p = spawnDockerCli(() => child).run(['run', 'img']);
     child.emit('error', new Error('ENOENT'));
     expect(await p).toBeNull();
+  });
+});
+
+describe('parsePsLines', () => {
+  it('parses name<TAB>session rows for boot-time adoption', () => {
+    const out = 'kanban-term-aaa\t11111111-2222-4333-8444-555566667777\nkanban-term-bbb\t99999999-8888-4777-a666-555544443333\n';
+    expect(parsePsLines(out)).toEqual([
+      { name: 'kanban-term-aaa', session: '11111111-2222-4333-8444-555566667777' },
+      { name: 'kanban-term-bbb', session: '99999999-8888-4777-a666-555544443333' },
+    ]);
+  });
+  it('drops rows missing a name or session, and tolerates blanks / trailing newline / nullish', () => {
+    expect(parsePsLines('kanban-term-x\t\n\t abc \nonlyname\n')).toEqual([]);
+    expect(parsePsLines('')).toEqual([]);
+    expect(parsePsLines(null)).toEqual([]);
+    expect(parsePsLines(undefined)).toEqual([]);
   });
 });
