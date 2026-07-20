@@ -68,7 +68,9 @@ export class TerminalRegistry {
 
   attachPty(id: string, pty: PtyHandle): void {
     const entry = this.entries.get(id);
-    if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; }
+    // Clear `adopted` once a pty attaches: a restored survivor is now an ordinary live session, so
+    // its grace slot becomes reclaimable again after it's later detached (review G1).
+    if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; entry.adopted = false; }
   }
 
   // Adopt a container that outlived an Express restart (rediscovered via docker ps). No socket or

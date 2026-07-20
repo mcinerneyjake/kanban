@@ -104,6 +104,9 @@ export const SESSION_LABEL_KEY = 'kanban.session';
 // versa. A restart of the same checkout has the same root, so it still re-adopts its own (review F3).
 export const ROOT_LABEL_KEY = 'kanban.root';
 
+// Prefix for every session container name — the marker adoption uses to recognize OUR containers.
+export const CONTAINER_NAME_PREFIX = 'kanban-term-';
+
 // Which discovered containers a booting server may adopt: only OUR containers (name prefix), with a
 // valid session-id label, that aren't already tracked. Pure so the adoption gate is testable (F10).
 // Root-scoping is enforced by the `docker ps` label filter upstream, so it isn't re-checked here.
@@ -111,7 +114,7 @@ export function filterAdoptable(
   rows: Array<{ name: string; session: string }>,
   isKnown: (id: string) => boolean,
 ): Array<{ name: string; session: string }> {
-  return rows.filter((r) => r.name.startsWith('kanban-term-') && isValidSessionId(r.session) && !isKnown(r.session));
+  return rows.filter((r) => r.name.startsWith(CONTAINER_NAME_PREFIX) && isValidSessionId(r.session) && !isKnown(r.session));
 }
 
 // The dtach session socket inside the container (per session id). `claude` runs under

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TerminalRegistry } from './terminalRegistry.js';
+import { parsePsLines } from './terminalDocker.js';
+import { filterAdoptable } from './terminalAuth.js';
 import { authorizeReattach, isValidSessionId, parseSessionParam } from './terminalAuth.js';
 
 // Fakes standing in for node-pty / ws so the whole lifecycle runs with no real docker or sockets.
@@ -125,6 +127,34 @@ describe('TerminalRegistry lifecycle', () => {
     expect(registry.reapDetached()).toBe(false);
     expect(registry.has(ID)).toBe(true);
     expect(killContainer).not.toHaveBeenCalled();
+  });
+
+  it('reapDetached CAN reclaim a survivor once reattached then abandoned (adopted cleared on attach, review G1)', () => {
+    const { registry } = makeRegistry();
+    registry.adopt(ID, 'cont-1');
+    registry.reattach(ID, makeWs());
+    registry.attachPty(ID, makePty()); // fresh exec attached → no longer an unclaimed survivor
+    registry.detach(ID, registry.get(ID)?.currentWs ?? makeWs());
+    // Now it's an ordinary detached (grace) entry → reclaimable to free a slot.
+    expect(registry.reapDetached()).toBe(true);
+  });
+
+  // Mandatory adoption round-trip seam (CLAUDE.md): a survivor's session id threads from raw
+  // `docker ps` output → parsePsLines → filterAdoptable → registry.adopt → a reattachable entry,
+  // with source id == the id you reattach under and the containerName preserved (review G7).
+  it('adoption seam: threads a survivor session id to a reattachable entry, dropping non-ours', () => {
+    const { registry } = makeRegistry();
+    const survivor = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
+    // What `docker ps --format '{{.Names}}\t{{.Label "kanban.session"}}'` prints: one of our
+    // survivors + one unrelated container (wrong name prefix) that must NOT be adopted.
+    const rows = parsePsLines(`kanban-term-77aa\t${survivor}\nsome-other-box\t${survivor}\n`);
+    filterAdoptable(rows, (id) => registry.has(id)).forEach(({ name, session }) => registry.adopt(session, name));
+
+    expect(registry.size()).toBe(1); // exactly the survivor, not the foreign container
+    expect(registry.has(survivor)).toBe(true);
+    const entry = registry.reattach(survivor, makeWs());
+    expect(entry?.containerName).toBe('kanban-term-77aa'); // id → containerName round-trips
+    expect(entry?.pty).toBeNull();                          // adopted → caller spawns a fresh exec
   });
 
   it('reattach within grace reuses the same pty + container, cancels grace, and never takes a 2nd slot', () => {

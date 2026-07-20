@@ -11,9 +11,9 @@ import { getTicket } from './tickets.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
-  authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, dtachSocket, filterAdoptable,
-  isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam, resolveSessionCommand,
-  rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, type CredMount,
+  authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, CONTAINER_NAME_PREFIX,
+  dtachSocket, filterAdoptable, isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam,
+  resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, type CredMount,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
 import { spawnDockerCli } from './terminalDocker.js';
@@ -26,9 +26,11 @@ import { spawnDockerCli } from './terminalDocker.js';
 //
 // Detach/reattach (tkt-dd308ec91efc): a browser reload drops the WS but the pty/container survive
 // server-side, keyed by a client-minted session id, and a reload REATTACHES rather than killing the
-// session. Known limitations (v1): does NOT survive an Express restart (a `server/**` edit under
-// `tsx watch` kills every container); scrollback produced while detached is not restored (the
-// current screen is, via a SIGWINCH repaint); a detached session is held for GRACE_MS then reaped.
+// session. Sessions also survive an Express restart (S3a, tkt-5b21136f3317): containers run detached
+// with claude under dtach and are re-adopted from `docker ps` on boot. Known limitations: the browser
+// widget doesn't yet auto-reconnect after a restart (the user reopens the terminal to trigger the
+// reattach); quitting the dev server leaves containers until the next boot re-adopts+reaps them (or
+// the reaper / `terminal:clean`); scrollback while detached isn't restored (the current screen is).
 
 const WS_PATH = '/terminal-ws';
 const MAX_SESSIONS = 2;
@@ -90,10 +92,11 @@ async function waitForDtachSocket(containerName: string, socket: string, timeout
 // NOTE (deliberate trade-off): with the old process-'exit' kill-all removed, quitting the dev server
 // leaves detached containers running until the next boot re-adopts (then reaps) them, or S3b's
 // reaper / `terminal:clean` removes them.
-function adoptRunningSessions(): void {
+async function adoptRunningSessions(): Promise<void> {
   // Scope to THIS checkout's containers (kanban.root label) so a second dev server on the same
-  // daemon isn't adopted (and later reaped) by us (review F3).
-  const rows = docker.ps(SESSION_LABEL_KEY, [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`]);
+  // daemon isn't adopted (and later reaped) by us (review F3). Async so a hung daemon can't block
+  // the event loop at boot (review G6).
+  const rows = await docker.ps(SESSION_LABEL_KEY, [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`]);
   const adoptable = filterAdoptable(rows, (id) => registry.has(id));
   // Cap adoption at MAX_SESSIONS (docker ps is newest-first): adopt the most recent, force-remove any
   // excess — with cap 2, extras for THIS root are crash-orphans, never live user sessions (review F6).
@@ -128,7 +131,9 @@ function rejectSocket(socket: Duplex, status: number, reason: string): void {
 }
 
 export function attachTerminal(server: Server): void {
-  adoptRunningSessions(); // re-adopt containers that survived a previous process (S3a)
+  // Re-adopt containers that survived a previous process (S3a). Fire-and-forget: it never rejects
+  // (docker.ps resolves [] on failure), and running it off the boot path keeps startup non-blocking.
+  void adoptRunningSessions();
   // Echo the offered subprotocol (the token) so the browser completes the handshake.
   const wss = new WebSocketServer({
     noServer: true,
@@ -199,7 +204,7 @@ function bindMessages(id: string, entry: TerminalEntry, ws: WebSocket): void {
 
 async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Promise<void> {
   const ticket = parseTicketParam(req.url ?? '');
-  const containerName = `kanban-term-${randomUUID().slice(0, 8)}`;
+  const containerName = `${CONTAINER_NAME_PREFIX}${randomUUID().slice(0, 8)}`;
   // Reserve the slot synchronously so the cap can't be undercounted during async setup, and bind
   // close BEFORE the await so a disconnect mid-setup still frees the slot.
   const entry = registry.create(id, containerName, ws);
@@ -262,8 +267,11 @@ function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], con
     term = pty.spawn('docker', attachArgs, {
       name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
     });
-  } catch {
-    return null; // e.g. node-pty spawn-helper transiently unavailable — caller handles (review F4)
+  } catch (err) {
+    // Log the real cause (e.g. spawn-helper lost +x → posix_spawnp/EACCES); the caller shows the
+    // user a generic message, but the server must record why (review G4, log-external-failures rule).
+    console.error('[terminal] pty spawn (docker exec) failed:', err instanceof Error ? err.message : err);
+    return null; // caller handles: new session fails; adopted reattach leaves the container for a retry
   }
   registry.attachPty(id, term);
   if (prefill) setupPrefill(term, prefill, entry);
@@ -303,14 +311,15 @@ async function reattachSession(id: string, ws: WebSocket): Promise<void> {
   try {
     // The adopted container may have died during the grace window — confirm it's alive + dtach is
     // ready before attaching, so we don't flash a docker error and tear it down (review F5).
-    const ready = await waitForDtachSocket(entry.containerName, dtachSocket(id), 10_000);
+    const ready = await waitForDtachSocket(entry.containerName, dtachSocket(id), 30_000);
     if (entry.disposed) return;
-    if (!ready) { registry.dispose(id); try { ws.close(); } catch { /* noop */ } return; }
-    // A transient spawn failure must NOT kill a surviving container — close this socket and let it
-    // re-grace so another reattach can retry (review F4).
-    if (!spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) {
-      try { ws.close(); } catch { /* noop */ }
-    }
+    // Close the CURRENT socket (a newer reattach may have swapped it in — review G5) so it re-graces.
+    const closeCurrent = () => { const w = entry.currentWs; if (w && w.readyState === WebSocket.OPEN) w.close(); };
+    // Not ready → the container may be slow-but-alive; do NOT force-remove it (review G3). Re-grace and
+    // let a later reattach retry; a genuinely-dead container is reaped by its grace timer.
+    if (!ready) { closeCurrent(); return; }
+    // Transient spawn failure → same: leave the container, re-grace so another reattach can retry (F4).
+    if (!spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) closeCurrent();
   } finally {
     entry.attaching = false;
   }

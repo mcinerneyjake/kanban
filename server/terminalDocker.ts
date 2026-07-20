@@ -1,4 +1,4 @@
-import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
+import { spawn as nodeSpawn } from 'node:child_process';
 
 // The embedded terminal's Docker CLI seam (tkt-e1144d4ef7f5, epic tkt-d7e129290ff7). Every `docker`
 // invocation goes through here so that (1) container names — built from a client-derived session id
@@ -25,8 +25,9 @@ export interface DockerCli {
   run(args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<number | null>;
   // Running containers matching ALL `filterLabels` (each a `key` or `key=value`) → [{name, session}]
   // where session is the `sessionLabelKey` value. Used once at boot to re-adopt containers that
-  // outlived a restart (S3a). Bounded + empty on any failure so a hung daemon can't stall boot.
-  ps(sessionLabelKey: string, filterLabels: string[]): Array<{ name: string; session: string }>;
+  // outlived a restart (S3a). ASYNC + bounded so a hung daemon can't block the event loop; resolves
+  // empty (and logs loudly) on any failure so a transient error can't silently look like "no survivors".
+  ps(sessionLabelKey: string, filterLabels: string[]): Promise<Array<{ name: string; session: string }>>;
 }
 
 // Parse `docker ps --format '{{.Names}}\t{{.Label "…"}}'` output → rows. Pure + tested; a row needs
@@ -53,17 +54,35 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
       });
     },
     ps(sessionLabelKey, filterLabels) {
-      try {
+      // Real async spawn (not the injected one, which pipes nothing) so we can capture stdout without
+      // a synchronous stall (review G6). Its logic is parsePsLines, tested separately.
+      return new Promise((resolve) => {
         const filters = filterLabels.flatMap((l) => ['--filter', `label=${l}`]);
-        const out = execFileSync(
+        const proc = nodeSpawn(
           'docker',
           ['ps', ...filters, '--format', `{{.Names}}\t{{.Label "${sessionLabelKey}"}}`],
-          { encoding: 'utf8', timeout: 5_000 }, // bounded: a hung daemon must not stall boot (review F7)
+          { stdio: ['ignore', 'pipe', 'ignore'] },
         );
-        return parsePsLines(out);
-      } catch {
-        return []; // docker down / no such filter → adopt nothing (fresh start)
-      }
+        let out = '';
+        let settled = false;
+        const finish = (rows: Array<{ name: string; session: string }>) => {
+          if (!settled) { settled = true; clearTimeout(timer); resolve(rows); }
+        };
+        const timer = setTimeout(() => {
+          try { proc.kill(); } catch { /* already gone */ }
+          console.error('[terminal] docker ps for session adoption timed out (5s) — no containers adopted');
+          finish([]);
+        }, 5_000);
+        proc.stdout?.on('data', (d) => { out += String(d); });
+        proc.on('exit', (code) => {
+          if (code === 0) finish(parsePsLines(out));
+          else { console.error(`[terminal] docker ps for session adoption exited ${code ?? 'null'} — no containers adopted`); finish([]); }
+        });
+        proc.on('error', (err) => {
+          console.error('[terminal] docker ps for session adoption failed:', err instanceof Error ? err.message : err);
+          finish([]);
+        });
+      });
     },
   };
 }
