@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame, type CredMount,
+  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame,
+  parseTicketParam, type CredMount,
 } from './terminalAuth.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -131,12 +132,14 @@ describe('resolveSessionCommand', () => {
     image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
-  it('no ticket → docker run of a bare claude session (never a raw shell)', async () => {
-    const { cmd, args } = await resolveSessionCommand({ ...common });
+  it('no ticket → bare claude, no prefill (never a raw shell)', async () => {
+    const { cmd, args, prefill } = await resolveSessionCommand({ ...common });
     expect(cmd).toBe('docker');
     const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['claude', '--add-dir', KANBAN]);
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
     expect(args).not.toContain('bash');
+    expect(args).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
+    expect(prefill).toBeUndefined();
   });
   it('rejects a malformed ticket id and never calls getTicket', async () => {
     let called = false;
@@ -153,18 +156,46 @@ describe('resolveSessionCommand', () => {
     })).rejects.toThrow(/not found/);
   });
 
-  // Integration seam (id → getTicket → seed prompt): the real id + title must survive
-  // into the spawned command — no field dropped/mangled at the boundary.
-  it('seeds claude with the real ticket id and title (fidelity invariant)', async () => {
-    const { args } = await resolveSessionCommand({
+  // Integration seam (id → getTicket → seed prefill): the real id + title must survive the
+  // lookup into the prefill — no field dropped/mangled at the boundary. The command stays
+  // bare claude (the prefill is typed in by the transport, not passed as an arg).
+  it('carries the real ticket id and title into the prefill (fidelity invariant)', async () => {
+    const { args, prefill } = await resolveSessionCommand({
       ...common, ticket: 'tkt-0123456789ab',
       getTicket: async (id) => ticket({ id, title: 'Fix the CSV export crash' }),
     });
-    const joined = args.join(' ');
-    expect(args).toContain('claude');
-    expect(joined).toContain('tkt-0123456789ab');
-    expect(joined).toContain('Fix the CSV export crash');
-    expect(joined).toContain('--add-dir');
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    expect(prefill).toContain('tkt-0123456789ab');
+    expect(prefill).toContain('Fix the CSV export crash');
+  });
+});
+
+// End-to-end seam: the ticket id the widget puts on the WS URL (encodeURIComponent) must
+// survive parse → lookup → seed into the spawned command. Drives the REAL chain, stubbing
+// only getTicket — so a drop/mangle anywhere from URL to argv fails here (per CLAUDE.md).
+describe('ticket-param round trip (widget URL → server parse → seeded command)', () => {
+  it('threads the id from the ?ticket= query all the way into the seed', async () => {
+    const id = 'tkt-0123456789ab';
+    const title = 'Fix the CSV export crash';
+    const rawUrl = `/terminal-ws?ticket=${encodeURIComponent(id)}`; // what TerminalWidget builds
+    const parsed = parseTicketParam(rawUrl);
+    expect(parsed).toBe(id);
+
+    const { args, prefill } = await resolveSessionCommand({
+      ticket: parsed, getTicket: async (tid) => ticket({ id: tid, title }),
+      projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
+      image: 'kanban-terminal', containerName: 'kanban-term-1',
+    });
+    // The command stays bare; the id + title thread through to the prefill the transport types in.
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    expect(prefill).toContain(id);
+    expect(prefill).toContain(title);
+  });
+  it('no ?ticket= → shell/bare session (null, not a crash)', () => {
+    expect(parseTicketParam('/terminal-ws')).toBeNull();
+    expect(parseTicketParam('')).toBeNull();
   });
 });
 

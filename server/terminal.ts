@@ -11,7 +11,7 @@ import { getTicket } from './tickets.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
-  authorizeUpgrade, buildSessionEnv, parseClientFrame, resolveSessionCommand, type CredMount,
+  authorizeUpgrade, buildSessionEnv, parseClientFrame, parseTicketParam, resolveSessionCommand, type CredMount,
 } from './terminalAuth.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes
@@ -95,15 +95,22 @@ export function attachTerminal(server: Server): void {
 
 async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<WebSocket>): Promise<void> {
   sessions.add(ws); // reserve the slot synchronously so the session cap can't be undercounted
-  const ticket = new URL(req.url ?? '', 'http://localhost').searchParams.get('ticket');
+  const ticket = parseTicketParam(req.url ?? '');
   const containerName = `kanban-term-${randomUUID().slice(0, 8)}`;
 
   let term: pty.IPty | null = null;
   let disposed = false;
+  // Pre-fill machinery (typed once claude's startup output settles); torn down with the session.
+  let prefillSub: pty.IDisposable | undefined;
+  let prefillSettle: ReturnType<typeof setTimeout> | undefined;
+  let prefillCap: ReturnType<typeof setTimeout> | undefined;
   // Idempotent teardown, safe on every path (disconnect during setup, spawn failure, exit).
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    if (prefillSub) prefillSub.dispose();
+    if (prefillSettle) clearTimeout(prefillSettle);
+    if (prefillCap) clearTimeout(prefillCap);
     if (term) { try { term.kill(); } catch { /* already exited */ } }
     // Kill the container directly in case killing the pty leader didn't cascade to `docker run`.
     if (activeContainers.delete(containerName)) {
@@ -114,7 +121,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<We
   // Attach BEFORE the await: a disconnect during async setup must still free the slot.
   ws.on('close', dispose);
 
-  let command: { cmd: string; args: string[] };
+  let command: { cmd: string; args: string[]; prefill?: string };
   try {
     command = await resolveSessionCommand({
       ticket, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
@@ -143,6 +150,28 @@ async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<We
     return;
   }
   activeContainers.add(containerName);
+
+  // Type the ticket seed into claude's input box once its startup output settles (a quiet
+  // gap = the UI is ready and waiting). No trailing newline → it pre-fills, editable, and is
+  // NOT submitted. A cap covers the case where output never quiets.
+  if (command.prefill) {
+    const spawned = term;
+    const seed = command.prefill;
+    let prefilled = false;
+    const typeSeed = () => {
+      if (prefilled || disposed) return;
+      prefilled = true;
+      if (prefillSub) prefillSub.dispose();
+      if (prefillSettle) clearTimeout(prefillSettle);
+      if (prefillCap) clearTimeout(prefillCap);
+      try { spawned.write(seed); } catch { /* pty gone */ }
+    };
+    prefillSub = spawned.onData(() => {
+      if (prefillSettle) clearTimeout(prefillSettle);
+      prefillSettle = setTimeout(typeSeed, 600);
+    });
+    prefillCap = setTimeout(typeSeed, 5000);
+  }
 
   term.onData((data) => { if (ws.readyState === WebSocket.OPEN) ws.send(data); });
   term.onExit(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); dispose(); });

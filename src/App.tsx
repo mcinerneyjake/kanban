@@ -303,6 +303,8 @@ export default function App() {
             onOpen={openTicket}
             onOpenRun={openRun}
             onClose={closeTicket}
+            // Close the editor first so the seeded terminal isn't hidden behind the modal.
+            onRunInTerminal={(id) => { closeTicket(); setTerminalSession({ ticket: id }); }}
           />
         )}
 

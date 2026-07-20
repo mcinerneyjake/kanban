@@ -27,6 +27,8 @@ type Props = {
   onOpen: (ticket: Ticket, initial?: Prefill, runId?: string) => void
   onOpenRun: (runId: string) => void
   onClose: () => void
+  // Dev-only: open the embedded terminal seeded with this ticket (see App / TerminalWidget).
+  onRunInTerminal?: (ticketId: string) => void
   initial?: Prefill
   // Non-null → Save applies through the intake-apply endpoint (update-suggestion reopen path).
   initialRunId?: string
@@ -50,7 +52,7 @@ function getDescendantIds(id: string, all: Ticket[]): Set<string> {
   return ids;
 }
 
-export default function TicketModal({ ticket, initial, initialRunId, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose }: Props) {
+export default function TicketModal({ ticket, initial, initialRunId, allTickets, projects, assignees, onSave, onDelete, onOpen, onOpenRun, onClose, onRunInTerminal }: Props) {
   // Save PATCHes only fields changed vs baseline (open-time state, WITHOUT the prefill) so an unchanged field can't clobber a concurrent external edit; baselining WITH the prefill made agent edits diff to {} and vanish (tkt-128ee05af9ba). Both captured once — never re-baselined.
   const [form, setForm] = useState<FormState>(() => buildTicketForm(ticket, allTickets, initial));
   const [baseline] = useState<FormState>(() => buildTicketForm(ticket, allTickets));
@@ -493,6 +495,16 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                 onClick={() => onDelete(ticket.id)}
               >
                 Delete
+              </button>
+            )}
+            {import.meta.env.DEV && ticket && onRunInTerminal && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onRunInTerminal(ticket.id)}
+                title="Open a confined Claude Code session seeded with this ticket"
+              >
+                ▶ Run in terminal
               </button>
             )}
             <div className="spacer" />

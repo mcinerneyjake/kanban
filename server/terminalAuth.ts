@@ -113,7 +113,15 @@ export function buildSeedPrompt(ticket: Ticket): string {
   return `Start ticket ${ticket.id} — "${ticket.title}" — and follow the ticket workflow in CLAUDE.md.`;
 }
 
-export interface SessionCommand { cmd: string; args: string[] }
+// prefill: the ticket seed the transport types into claude's input box once it's ready (no
+// trailing newline → editable, not auto-submitted). Absent for a bare (no-ticket) session.
+export interface SessionCommand { cmd: string; args: string[]; prefill?: string }
+
+// Parse the ?ticket= param the widget puts on the WS URL (it encodeURIComponent's the board
+// id). Shared with the server and the seam test so the client→server hop can't silently drift.
+export function parseTicketParam(rawUrl: string): string | null {
+  return new URL(rawUrl, 'http://localhost').searchParams.get('ticket');
+}
 
 // ── WS upgrade authorization (pure decision, so the gate is testable) ─────────
 
@@ -183,21 +191,17 @@ export async function resolveSessionCommand(opts: {
     ticket = await opts.getTicket(opts.ticket); // throws if unknown → caller rejects the socket
   }
   const roots = allowedRootsFor({ ticket, projectRoots: opts.projectRoots, kanbanRoot: opts.kanbanRoot });
-  // Always launch `claude` as the container's PID 1 — never a raw shell. The session IS the
-  // Claude Code TUI; when it exits the container exits (no shell to drop into), so the user
-  // can't run commands directly — everything goes through Claude's confined tools. Seeded
-  // with the ticket when present, bare otherwise.
-  const addDirs = roots.flatMap((root) => ['--add-dir', root]);
-  const innerCmd = ticket
-    ? ['claude', ...addDirs, buildSeedPrompt(ticket)]
-    : ['claude', ...addDirs];
+  // Launch BARE `claude` as the container's PID 1 — never a raw shell, and never the ticket
+  // as a positional prompt (that auto-submits). The ticket seed is returned as `prefill`,
+  // which the transport types into the input box once claude is ready — editable, not run.
+  // Confinement is enforced by the container mounts, so we don't pass --add-dir either.
   const args = buildContainerArgs({
     roots,
     credMount: opts.credMount,
     image: opts.image,
     containerName: opts.containerName,
-    innerCmd,
+    innerCmd: ['claude'],
     gitIdentity: opts.gitIdentity,
   });
-  return { cmd: 'docker', args };
+  return { cmd: 'docker', args, prefill: ticket ? buildSeedPrompt(ticket) : undefined };
 }
