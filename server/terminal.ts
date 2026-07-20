@@ -1,6 +1,6 @@
 import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { execSync, spawn as spawnChild } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -15,6 +15,7 @@ import {
   parseSessionParam, parseTicketParam, resolveSessionCommand, rootMountArgs, type CredMount,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
+import { spawnDockerCli } from './terminalDocker.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes are piped,
 // verbatim, to a node-pty that wraps `docker run -it` for a confined Claude Code session. Dev-only
@@ -34,12 +35,13 @@ const GRACE_MS = 60_000;   // how long a detached (reloading) session waits to b
 const NUDGE_MS = 50;       // gap between the two-step SIGWINCH resize halves on reattach
 const IMAGE = process.env.KANBAN_TERMINAL_IMAGE ?? 'kanban-terminal';
 
+// All `docker` CLI access goes through this seam — never a shell string (tkt-e1144d4ef7f5).
+const docker = spawnDockerCli();
+
 const registry = new TerminalRegistry({
   graceMs: GRACE_MS,
   nudgeMs: NUDGE_MS,
-  killContainer: (name) => {
-    spawnChild('docker', ['kill', name], { stdio: 'ignore' }).on('error', () => { /* already gone */ });
-  },
+  killContainer: (name) => docker.kill(name),
 });
 
 // Populate each root's node_modules volume with Linux deps in a one-shot container BEFORE the
@@ -52,13 +54,11 @@ function ensureDeps(roots: string[]): Promise<void> {
   const key = roots.join(':');
   let inFlight = depsInFlight.get(key);
   if (!inFlight) {
-    inFlight = new Promise<void>((resolve) => {
-      const args = ['run', '--rm', ...rootMountArgs(roots), IMAGE, 'true'];
-      const proc = spawnChild('docker', args, { stdio: 'ignore', env: buildSessionEnv(process.env) });
-      // Best-effort: on failure the interactive session still starts (degraded MCP, logged in-container).
-      proc.on('exit', () => resolve());
-      proc.on('error', () => resolve());
-    }).finally(() => depsInFlight.delete(key));
+    // Best-effort: on failure the interactive session still starts (degraded MCP, logged in-container).
+    const args = ['run', '--rm', ...rootMountArgs(roots), IMAGE, 'true'];
+    inFlight = docker.run(args, { env: buildSessionEnv(process.env) })
+      .then(() => undefined)
+      .finally(() => depsInFlight.delete(key));
     depsInFlight.set(key, inFlight);
   }
   return inFlight;
@@ -71,9 +71,7 @@ function installExitHook(): void {
   if (exitHookInstalled) return;
   exitHookInstalled = true;
   process.on('exit', () => {
-    for (const entry of registry.values()) {
-      try { execSync(`docker kill ${entry.containerName}`, { stdio: 'ignore' }); } catch { /* already gone */ }
-    }
+    for (const entry of registry.values()) docker.killSync(entry.containerName);
   });
 }
 
