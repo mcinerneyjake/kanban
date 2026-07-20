@@ -33,6 +33,11 @@ export interface TerminalEntry {
   // True once the container is running — even before a pty attaches. A detach before this disposes
   // (nothing to keep); a detach after it graces, because a live container exists to reattach to.
   containerStarted: boolean;
+  // True for a container adopted at boot (survived a restart). Distinguishes it from a still-booting
+  // new session (both have pty null): only an adopted entry's reattach spawns a fresh exec, and an
+  // adopted survivor is never reaped to free a cap slot (it's a live session to restore). (review F1/F2)
+  adopted: boolean;
+  attaching?: boolean;          // a reattach is mid-spawn — guards against a double-spawn (review F2)
   disposed: boolean;
   cleanup?: () => void;         // extra teardown (prefill timers/subscription) set by terminal.ts
 }
@@ -56,14 +61,26 @@ export class TerminalRegistry {
   // Reserve a slot synchronously (before the async container setup) so the session cap can't be
   // undercounted while a new session is still booting. pty is filled in by attachPty once spawned.
   create(id: string, containerName: string, ws: ClientSocket): TerminalEntry {
-    const entry: TerminalEntry = { pty: null, containerName, currentWs: ws, containerStarted: false, disposed: false };
+    const entry: TerminalEntry = { pty: null, containerName, currentWs: ws, containerStarted: false, adopted: false, disposed: false };
     this.entries.set(id, entry);
     return entry;
   }
 
   attachPty(id: string, pty: PtyHandle): void {
     const entry = this.entries.get(id);
-    if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; }
+    // Clear `adopted` once a pty attaches: a restored survivor is now an ordinary live session, so
+    // its grace slot becomes reclaimable again after it's later detached (review G1).
+    if (entry && !entry.disposed) { entry.pty = pty; entry.containerStarted = true; entry.adopted = false; }
+  }
+
+  // Adopt a container that outlived an Express restart (rediscovered via docker ps). No socket or
+  // pty yet — a reattach spawns a fresh exec into its surviving dtach session. Starts a grace timer
+  // so an orphan nobody reattaches to is still reaped (S3a, tkt-5b21136f3317). No-op if already known.
+  adopt(id: string, containerName: string): void {
+    if (this.entries.has(id)) return;
+    const entry: TerminalEntry = { pty: null, containerName, currentWs: null, containerStarted: true, adopted: true, disposed: false };
+    this.entries.set(id, entry);
+    entry.graceTimer = setTimeout(() => this.dispose(id), this.deps.graceMs);
   }
 
   // Socket-close handler. A reload drops the socket but the container must survive: null the
@@ -107,7 +124,9 @@ export class TerminalRegistry {
   // sessions are never reaped. Returns whether a slot was actually freed.
   reapDetached(): boolean {
     for (const [id, entry] of this.entries) {
-      if (!entry.disposed && entry.currentWs === null) { this.dispose(id); return true; }
+      // Never reclaim an ADOPTED survivor to free a cap slot — it's a live session waiting to be
+      // restored, not a stale reload-grace entry. Only genuinely transient detached entries. (F1)
+      if (!entry.disposed && !entry.adopted && entry.currentWs === null) { this.dispose(id); return true; }
     }
     return false;
   }
