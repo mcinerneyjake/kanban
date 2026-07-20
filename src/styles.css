@@ -1252,4 +1252,6 @@ body {
 .tw-overlay {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   background: var(--card-bg); color: var(--muted); font-size: 13px;
+  /* Don't trap keystrokes/clicks meant for the focused xterm beneath (e.g. type-to-recover). */
+  pointer-events: none;
 }

@@ -109,8 +109,18 @@ export function buildContainerArgs(opts: {
 
 const TICKET_ID_RE = /^tkt-[0-9a-f]{12}$/;
 
+// The seed is TYPED into the pty as a prefill, so any control byte in the (board-controlled)
+// title would act as a keystroke: CR/LF = Enter (auto-submitting the seed, defeating the
+// "editable, not submitted" guarantee), ESC = a control sequence. Strip C0 controls + DEL and
+// cap the length so no title can inject keystrokes or produce a pathological prefill. The id
+// is already regex-validated hex, so only the title needs sanitizing.
+function sanitizeForInput(text: string): string {
+  // eslint-disable-next-line no-control-regex -- intentional: matching control bytes in order to strip them
+  return text.replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 200);
+}
+
 export function buildSeedPrompt(ticket: Ticket): string {
-  return `Start ticket ${ticket.id} — "${ticket.title}" — and follow the ticket workflow in CLAUDE.md.`;
+  return `Start ticket ${ticket.id} — "${sanitizeForInput(ticket.title)}" — and follow the ticket workflow in CLAUDE.md.`;
 }
 
 // prefill: the ticket seed the transport types into claude's input box once it's ready (no

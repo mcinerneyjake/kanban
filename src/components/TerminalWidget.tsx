@@ -95,10 +95,17 @@ export default function TerminalWidget({ session, theme, onClose }: {
           if (settleTimer) clearTimeout(settleTimer);
           if (bootCapTimer) clearTimeout(bootCapTimer);
         };
-        ws.onopen = () => { wasOpen = true; setStatus('open'); fit.fit(); sendResize(); term.focus(); };
+        ws.onopen = () => {
+          if (disposed) return;
+          wasOpen = true;
+          setStatus('open');
+          fit.fit(); sendResize(); term.focus();
+          // Bound the reveal from OPEN (not first byte) so a session that emits no output still reveals.
+          bootCapTimer = setTimeout(reveal, 2500);
+        };
         ws.onmessage = (e) => {
+          if (disposed) return;
           if (!revealed) {
-            if (!bootCapTimer) bootCapTimer = setTimeout(reveal, 2500);
             if (settleTimer) clearTimeout(settleTimer);
             settleTimer = setTimeout(reveal, 150);
           }
@@ -108,11 +115,11 @@ export default function TerminalWidget({ session, theme, onClose }: {
         };
         ws.onclose = () => {
           if (disposed) return;
-          setStatus('closed');
-          // Session ended (e.g. exiting Claude) → dismiss the widget. Deterministic: keyed off
-          // the authoritative socket close, no keystroke prediction or timers. A never-opened
-          // socket (auth/connect failure) stays put so its error is visible.
+          // Connected-then-ended → dismiss (deterministic, off the authoritative close). A
+          // never-opened socket = a connect/auth failure → surface the error, rather than let
+          // 'closed' fall through to a perpetual "Loading…" overlay.
           if (wasOpen) onCloseRef.current();
+          else setStatus('error');
         };
         ws.onerror = () => { if (!disposed) setStatus('error'); };
       })

@@ -169,6 +169,21 @@ describe('resolveSessionCommand', () => {
     expect(prefill).toContain('tkt-0123456789ab');
     expect(prefill).toContain('Fix the CSV export crash');
   });
+
+  // The prefill is TYPED into the pty, so a title with a CR/LF would auto-submit and ESC could
+  // inject a control sequence. A board-controlled title must never carry a control byte through.
+  it('strips control chars from the title so the prefill cannot auto-submit or inject', async () => {
+    const CR = String.fromCharCode(13), LF = String.fromCharCode(10), ESC = String.fromCharCode(27);
+    const title = `evil"${CR}${LF}rm -rf${ESC}[2J then more`;
+    const { prefill } = await resolveSessionCommand({
+      ...common, ticket: 'tkt-0123456789ab',
+      getTicket: async (id) => ticket({ id, title }),
+    });
+    expect(prefill).toBeDefined();
+    // No CR/LF (would submit) or ESC/C0 controls (would inject a sequence) survive into the prefill.
+    const controls = [...(prefill ?? '')].filter((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+    expect(controls).toEqual([]);
+  });
 });
 
 // End-to-end seam: the ticket id the widget puts on the WS URL (encodeURIComponent) must

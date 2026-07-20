@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { api } from './api.js';
 import Board from './components/Board.jsx';
 import Dashboard from './components/Dashboard.jsx';
@@ -9,7 +9,9 @@ import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
-import TerminalWidget, { type TerminalSession } from './components/TerminalWidget.jsx';
+import { type TerminalSession } from './components/TerminalWidget.jsx';
+// Lazy + DEV-gated so the xterm payload lands in its own chunk (loaded only in dev), never the prod main bundle.
+const TerminalWidget = lazy(() => import('./components/TerminalWidget.jsx'));
 import ErrorBanner from './components/ui/ErrorBanner.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
@@ -327,12 +329,14 @@ export default function App() {
         </button>
       )}
       {import.meta.env.DEV && terminalSession && (
-        <TerminalWidget
-          key={terminalSession.ticket ?? 'shell'}
-          session={terminalSession}
-          theme={theme}
-          onClose={() => setTerminalSession(null)}
-        />
+        <Suspense fallback={null}>
+          <TerminalWidget
+            key={terminalSession.ticket ?? 'shell'}
+            session={terminalSession}
+            theme={theme}
+            onClose={() => setTerminalSession(null)}
+          />
+        </Suspense>
       )}
     </div>
   );
