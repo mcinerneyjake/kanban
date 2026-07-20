@@ -2,6 +2,7 @@ import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { execSync, spawn as spawnChild } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
@@ -37,13 +38,15 @@ function installExitHook(): void {
   });
 }
 
-// Subscription credential mounted read-only into the container (created once by
-// scripts/terminal-setup-cred.mjs) — kept off `env` so it can't leak on camera. Stored
-// OUTSIDE any mounted project root (~/.kanban-terminal), so the in-container session can't
-// read the raw token back through a project's read-write mount.
+// Persistent HOME for the session, so login/onboarding survive between the --rm containers
+// (no re-sign-in each time) — this captures ~/.claude AND ~/.claude.json, both of which
+// hold sign-in state. Seeded by scripts/terminal-setup-cred.mjs and stored OUTSIDE any
+// mounted project root, so the session can't read the token back through a project mount.
+// Ensured to exist (incl. .claude/) so docker doesn't create it root-owned.
 function credMount(): CredMount {
-  const hostFile = process.env.KANBAN_TERMINAL_CRED ?? path.join(homedir(), '.kanban-terminal', 'credentials.json');
-  return { hostFile, containerPath: '/root/.claude/.credentials.json' };
+  const hostHome = process.env.KANBAN_TERMINAL_HOME ?? path.join(homedir(), '.kanban-terminal', 'home');
+  mkdirSync(path.join(hostHome, '.claude'), { recursive: true, mode: 0o700 });
+  return { hostHome, containerHome: '/kanban-home' };
 }
 
 // Host git identity so in-container commits are attributed correctly.

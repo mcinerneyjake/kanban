@@ -70,8 +70,8 @@ export function allowedRootsFor(opts: {
 // ── docker run argv ──────────────────────────────────────────────────────────
 
 export interface CredMount {
-  hostFile: string;      // host path to the subscription credential file
-  containerPath: string; // where claude reads it inside the container
+  hostHome: string;      // persistent host dir used as the container's HOME
+  containerHome: string; // mount point inside the container (its HOME)
 }
 
 export function buildContainerArgs(opts: {
@@ -88,8 +88,12 @@ export function buildContainerArgs(opts: {
   const args = ['run', '-it', '--rm', '--name', opts.containerName];
   // Only the allowed roots are mounted → everything else on the host is unreachable.
   for (const root of opts.roots) args.push('-v', `${root}:${root}`);
-  // Subscription token as a read-only file mount — NOT an -e var, so it never shows in `env` on camera.
-  args.push('-v', `${opts.credMount.hostFile}:${opts.credMount.containerPath}:ro`);
+  // Persistent HOME so ALL of claude's state survives the --rm container — not just ~/.claude
+  // but also ~/.claude.json (onboarding/account/trust), which lives in home. One whole-dir
+  // mount (vs a single-file mount) survives claude's atomic-rename writes. Outside every
+  // project mount, so the token still isn't reachable via a project's file tree; HOME isn't a secret.
+  args.push('-v', `${opts.credMount.hostHome}:${opts.credMount.containerHome}`);
+  args.push('-e', `HOME=${opts.credMount.containerHome}`);
   if (opts.gitIdentity) {
     const { name, email } = opts.gitIdentity;
     args.push(
@@ -179,9 +183,14 @@ export async function resolveSessionCommand(opts: {
     ticket = await opts.getTicket(opts.ticket); // throws if unknown → caller rejects the socket
   }
   const roots = allowedRootsFor({ ticket, projectRoots: opts.projectRoots, kanbanRoot: opts.kanbanRoot });
+  // Always launch `claude` as the container's PID 1 — never a raw shell. The session IS the
+  // Claude Code TUI; when it exits the container exits (no shell to drop into), so the user
+  // can't run commands directly — everything goes through Claude's confined tools. Seeded
+  // with the ticket when present, bare otherwise.
+  const addDirs = roots.flatMap((root) => ['--add-dir', root]);
   const innerCmd = ticket
-    ? ['claude', ...roots.flatMap((root) => ['--add-dir', root]), buildSeedPrompt(ticket)]
-    : ['bash', '-l'];
+    ? ['claude', ...addDirs, buildSeedPrompt(ticket)]
+    : ['claude', ...addDirs];
   const args = buildContainerArgs({
     roots,
     credMount: opts.credMount,

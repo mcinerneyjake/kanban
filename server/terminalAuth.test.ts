@@ -8,7 +8,7 @@ import type { Ticket } from '../shared/constants.js';
 const KANBAN = '/repo/kanban';
 const PORTFOLIO = '/repo/portfolio-site';
 const PROJECT_ROOTS = { kanban: KANBAN, 'portfolio-site': PORTFOLIO };
-const CRED: CredMount = { hostFile: '/host/.cred.json', containerPath: '/root/.claude/.credentials.json' };
+const CRED: CredMount = { hostHome: '/host/home', containerHome: '/kanban-home' };
 
 function ticket(overrides: Partial<Ticket> = {}): Ticket {
   return {
@@ -96,9 +96,10 @@ describe('buildContainerArgs', () => {
     expect(joined).toContain(`${PORTFOLIO}:${PORTFOLIO}`);
     expect(joined).toContain(`${KANBAN}:${KANBAN}`);
   });
-  it('mounts the credential file read-only and NEVER as an -e var', () => {
+  it('mounts the persistent HOME + sets HOME, and never passes the token as an -e var', () => {
     const args = buildContainerArgs(base);
-    expect(args.join(' ')).toContain(`${CRED.hostFile}:${CRED.containerPath}:ro`);
+    expect(args.join(' ')).toContain(`${CRED.hostHome}:${CRED.containerHome}`);
+    expect(args.join(' ')).toContain(`HOME=${CRED.containerHome}`);
     expect(args.some((a) => a.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
     expect(args.some((a) => a.includes('ANTHROPIC'))).toBe(false);
   });
@@ -107,7 +108,7 @@ describe('buildContainerArgs', () => {
     const mounts = args.filter((_, i) => args[i - 1] === '-v');
     for (const mount of mounts) {
       const host = mount.split(':')[0];
-      expect(host === KANBAN || host === CRED.hostFile).toBe(true);
+      expect(host === KANBAN || host === CRED.hostHome).toBe(true);
     }
   });
   it('sets run/-it/--rm, name, workdir, image, then the inner command', () => {
@@ -130,11 +131,12 @@ describe('resolveSessionCommand', () => {
     image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
-  it('no ticket → docker run of a shell', async () => {
+  it('no ticket → docker run of a bare claude session (never a raw shell)', async () => {
     const { cmd, args } = await resolveSessionCommand({ ...common });
     expect(cmd).toBe('docker');
     const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['bash', '-l']);
+    expect(args.slice(imgIdx + 1)).toEqual(['claude', '--add-dir', KANBAN]);
+    expect(args).not.toContain('bash');
   });
   it('rejects a malformed ticket id and never calls getTicket', async () => {
     let called = false;

@@ -1206,3 +1206,50 @@ body {
   color: var(--econ-line); font-variant-numeric: tabular-nums;
 }
 .econ-ticket-chip:hover { border-color: var(--econ-line); }
+
+/* Embedded terminal widget (tkt-be809dd2b7fb) — dev-only, fixed corner panel above all chrome. */
+.terminal-fab {
+  position: fixed; bottom: 16px; right: 16px; z-index: 200;
+  padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card-bg); color: var(--text); cursor: pointer;
+  font-size: 13px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.terminal-fab:hover { border-color: var(--primary); }
+
+.terminal-widget {
+  position: fixed; bottom: 16px; right: 16px; z-index: 200;
+  width: min(760px, 92vw); height: min(460px, 72vh);
+  display: flex; flex-direction: column;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.4); overflow: hidden;
+}
+.terminal-widget.minimized { height: auto; }
+.terminal-widget.minimized .tw-body-wrap { display: none; }
+
+.tw-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--col-bg); border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.tw-title {
+  flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tw-status { font-size: 10px; line-height: 1; }
+.tw-status-connecting { color: var(--muted); }
+.tw-status-open { color: #3fb950; }
+.tw-status-closed { color: var(--muted); }
+.tw-status-error { color: var(--danger); }
+.tw-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.tw-btn:hover { background: var(--border); color: var(--text); }
+
+.tw-body-wrap { position: relative; flex: 1; min-height: 0; }
+.tw-body { position: absolute; inset: 0; padding: 4px 6px; background: var(--card-bg); }
+.tw-body .xterm, .tw-body .xterm .xterm-viewport { height: 100%; }
+.tw-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--card-bg); color: var(--muted); font-size: 13px;
+}

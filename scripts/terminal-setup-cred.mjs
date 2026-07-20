@@ -8,15 +8,18 @@
 //   node scripts/terminal-setup-cred.mjs   # paste when prompted (input is hidden)
 // or pipe it:  printf '%s' "$TOKEN" | node scripts/terminal-setup-cred.mjs
 //
-// Writes ~/.kanban-terminal/credentials.json (mode 0600, dir 0700). Kept OUTSIDE the repo
-// so the in-container session can't read the raw token via a project mount. Re-run to rotate.
+// Seeds ~/.kanban-terminal/home/.claude/.credentials.json (mode 0600, dir 0700). That home
+// dir is mounted as the session's persistent HOME, so login/onboarding also persist (incl.
+// ~/.claude.json) and you don't sign in every time. Kept OUTSIDE the repo so the in-container
+// session can't read the raw token via a project mount. Re-run to rotate. (You can also just
+// `/login` once inside a session — it now persists too.)
 import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-const OUT_DIR = path.join(homedir(), '.kanban-terminal');
-const OUT_FILE = path.join(OUT_DIR, 'credentials.json');
+const OUT_DIR = path.join(homedir(), '.kanban-terminal', 'home', '.claude');
+const OUT_FILE = path.join(OUT_DIR, '.credentials.json');
 
 async function readToken() {
   if (!process.stdin.isTTY) {
