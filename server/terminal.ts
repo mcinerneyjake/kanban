@@ -2,6 +2,7 @@ import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { execSync, spawn as spawnChild } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import * as pty from 'node-pty';
@@ -37,9 +38,11 @@ function installExitHook(): void {
 }
 
 // Subscription credential mounted read-only into the container (created once by
-// scripts/terminal-setup-cred.mjs) — kept off `env` so it can't leak on camera.
+// scripts/terminal-setup-cred.mjs) — kept off `env` so it can't leak on camera. Stored
+// OUTSIDE any mounted project root (~/.kanban-terminal), so the in-container session can't
+// read the raw token back through a project's read-write mount.
 function credMount(): CredMount {
-  const hostFile = process.env.KANBAN_TERMINAL_CRED ?? path.join(kanbanRoot(), '.terminal', 'credentials.json');
+  const hostFile = process.env.KANBAN_TERMINAL_CRED ?? path.join(homedir(), '.kanban-terminal', 'credentials.json');
   return { hostFile, containerPath: '/root/.claude/.credentials.json' };
 }
 
@@ -81,14 +84,32 @@ export function attachTerminal(server: Server): void {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => { void openSession(ws, req, sessions); });
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      openSession(ws, req, sessions).catch(() => { try { ws.close(); } catch { /* noop */ } });
+    });
   });
 }
 
 async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<WebSocket>): Promise<void> {
-  sessions.add(ws);
+  sessions.add(ws); // reserve the slot synchronously so the session cap can't be undercounted
   const ticket = new URL(req.url ?? '', 'http://localhost').searchParams.get('ticket');
   const containerName = `kanban-term-${randomUUID().slice(0, 8)}`;
+
+  let term: pty.IPty | null = null;
+  let disposed = false;
+  // Idempotent teardown, safe on every path (disconnect during setup, spawn failure, exit).
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    if (term) { try { term.kill(); } catch { /* already exited */ } }
+    // Kill the container directly in case killing the pty leader didn't cascade to `docker run`.
+    if (activeContainers.delete(containerName)) {
+      spawnChild('docker', ['kill', containerName], { stdio: 'ignore' }).on('error', () => { /* gone */ });
+    }
+    sessions.delete(ws);
+  };
+  // Attach BEFORE the await: a disconnect during async setup must still free the slot.
+  ws.on('close', dispose);
 
   let command: { cmd: string; args: string[] };
   try {
@@ -99,37 +120,37 @@ async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<We
   } catch (err) {
     // Bad/unknown ticket → tell the terminal and close, rather than spawn a shell silently.
     const message = err instanceof Error ? err.message : 'failed to start session';
-    if (ws.readyState === WebSocket.OPEN) ws.send(`\r\n[terminal] ${message}\r\n`);
-    ws.close();
-    sessions.delete(ws);
+    if (ws.readyState === WebSocket.OPEN) { ws.send(`\r\n[terminal] ${message}\r\n`); ws.close(); }
+    dispose();
     return;
   }
 
-  const term = pty.spawn(command.cmd, command.args, {
-    name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
-  });
+  // Client vanished during the await → don't start a container for a dead socket.
+  if (ws.readyState !== WebSocket.OPEN) { dispose(); return; }
+
+  try {
+    term = pty.spawn(command.cmd, command.args, {
+      name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
+    });
+  } catch (err) {
+    // e.g. node-pty's spawn-helper lacks +x → posix_spawnp failed. Don't leak the slot.
+    const message = err instanceof Error ? err.message : 'failed to start terminal';
+    if (ws.readyState === WebSocket.OPEN) { ws.send(`\r\n[terminal] ${message}\r\n`); ws.close(); }
+    dispose();
+    return;
+  }
   activeContainers.add(containerName);
 
   term.onData((data) => { if (ws.readyState === WebSocket.OPEN) ws.send(data); });
-  term.onExit(() => {
-    activeContainers.delete(containerName);
-    if (ws.readyState === WebSocket.OPEN) ws.close();
-    sessions.delete(ws);
-  });
+  term.onExit(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); dispose(); });
 
   ws.on('message', (raw: RawData) => {
     const frame = parseClientFrame(raw.toString());
-    if (!frame) return;
-    if (frame.t === 'i') term.write(frame.d);
-    else term.resize(frame.cols, frame.rows);
-  });
-
-  ws.on('close', () => {
-    try { term.kill(); } catch { /* already exited */ }
-    // Belt-and-suspenders: kill the container directly in case killing the pty leader
-    // didn't cascade to `docker run`.
-    spawnChild('docker', ['kill', containerName], { stdio: 'ignore' }).on('error', () => { /* gone */ });
-    activeContainers.delete(containerName);
-    sessions.delete(ws);
+    if (!frame || !term) return;
+    // Guard the pty call: it may have exited between frames (write/resize would throw).
+    try {
+      if (frame.t === 'i') term.write(frame.d);
+      else term.resize(frame.cols, frame.rows);
+    } catch { /* pty gone — ignore */ }
   });
 }

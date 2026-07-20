@@ -32,7 +32,12 @@ export function isValidToken(provided: string | null | undefined, expected: stri
 // denylist) means a secret-shaped host var can't leak through by omission — nothing
 // enters unless named here. The container's own env is set separately in
 // buildContainerArgs (and carries no secrets).
-const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL'];
+const ENV_ALLOWLIST = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL',
+  // docker CLI daemon selection (colima/rootless/remote/Desktop) — not secrets. Without
+  // these, `docker run` can fail to reach the daemon on non-default setups.
+  'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
+];
 
 export function buildSessionEnv(parentEnv: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
@@ -137,14 +142,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+// Largest terminal dimension we'll forward. Guards against absurd values; well above any real pane.
+const MAX_DIM = 1000;
+
 // Keystroke input ({t:'i',d}) or a resize ({t:'r',cols,rows}); anything else is dropped.
+// Resize dims are clamped to positive integers ≤ MAX_DIM: node-pty's resize THROWS on 0/
+// negative/NaN, and xterm's FitAddon legitimately computes 0×0 for a hidden pane (our
+// minimize state) — an unclamped value there would crash the server.
 export function parseClientFrame(raw: string): ClientFrame | null {
   let data: unknown;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!isRecord(data)) return null;
   if (data.t === 'i' && typeof data.d === 'string') return { t: 'i', d: data.d };
   if (data.t === 'r' && typeof data.cols === 'number' && typeof data.rows === 'number') {
-    return { t: 'r', cols: data.cols, rows: data.rows };
+    const { cols, rows } = data;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;
+    return { t: 'r', cols: Math.min(cols, MAX_DIM), rows: Math.min(rows, MAX_DIM) };
   }
   return null;
 }

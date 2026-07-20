@@ -60,6 +60,11 @@ describe('buildSessionEnv', () => {
     expect('GITHUB_TOKEN' in env).toBe(false);
     expect('AWS_SECRET_ACCESS_KEY' in env).toBe(false);
   });
+  it('keeps DOCKER_ daemon-selection vars (not secrets, needed to reach the daemon)', () => {
+    const env = buildSessionEnv({ PATH: '/usr/bin', DOCKER_HOST: 'tcp://x', DOCKER_CONTEXT: 'colima' });
+    expect(env.DOCKER_HOST).toBe('tcp://x');
+    expect(env.DOCKER_CONTEXT).toBe('colima');
+  });
 });
 
 describe('allowedRootsFor', () => {
@@ -197,5 +202,13 @@ describe('parseClientFrame', () => {
     expect(parseClientFrame('{"t":"i"}')).toBeNull();          // missing d
     expect(parseClientFrame('{"t":"r","cols":"80","rows":24}')).toBeNull(); // cols not a number
     expect(parseClientFrame('{"t":"x"}')).toBeNull();          // unknown type
+  });
+  it('rejects non-positive / non-integer resize dims (node-pty would throw → server crash)', () => {
+    expect(parseClientFrame('{"t":"r","cols":0,"rows":0}')).toBeNull();     // FitAddon on a hidden pane
+    expect(parseClientFrame('{"t":"r","cols":-5,"rows":10}')).toBeNull();
+    expect(parseClientFrame('{"t":"r","cols":80.5,"rows":24}')).toBeNull(); // non-integer
+  });
+  it('clamps oversized resize dims to the max', () => {
+    expect(parseClientFrame('{"t":"r","cols":99999,"rows":99999}')).toEqual({ t: 'r', cols: 1000, rows: 1000 });
   });
 });

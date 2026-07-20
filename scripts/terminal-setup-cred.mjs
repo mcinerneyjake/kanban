@@ -8,12 +8,14 @@
 //   node scripts/terminal-setup-cred.mjs   # paste when prompted (input is hidden)
 // or pipe it:  printf '%s' "$TOKEN" | node scripts/terminal-setup-cred.mjs
 //
-// Writes .terminal/credentials.json (gitignored, mode 0600). Re-run to rotate.
+// Writes ~/.kanban-terminal/credentials.json (mode 0600, dir 0700). Kept OUTSIDE the repo
+// so the in-container session can't read the raw token via a project mount. Re-run to rotate.
 import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-const OUT_DIR = path.join(process.cwd(), '.terminal');
+const OUT_DIR = path.join(homedir(), '.kanban-terminal');
 const OUT_FILE = path.join(OUT_DIR, 'credentials.json');
 
 async function readToken() {
@@ -44,7 +46,8 @@ const credentials = {
   claudeAiOauth: { accessToken: token, refreshToken: '', expiresAt, scopes: ['user:inference', 'user:profile'] },
 };
 
-mkdirSync(OUT_DIR, { recursive: true });
+mkdirSync(OUT_DIR, { recursive: true, mode: 0o700 });
+chmodSync(OUT_DIR, 0o700); // enforce even if the dir pre-existed with looser perms
 writeFileSync(OUT_FILE, JSON.stringify(credentials), { mode: 0o600 });
 chmodSync(OUT_FILE, 0o600);
-console.log(`Wrote ${path.relative(process.cwd(), OUT_FILE)} (0600). The terminal will mount it read-only.`);
+console.log(`Wrote ${OUT_FILE} (0600). The terminal will mount it read-only.`);
