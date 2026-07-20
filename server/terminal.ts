@@ -11,9 +11,9 @@ import { getTicket } from './tickets.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
-  authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, isValidSessionId,
-  parseClientFrame, parseSessionParam, parseTicketParam, resolveSessionCommand, rootMountArgs,
-  SESSION_LABEL_KEY, type CredMount,
+  authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, dtachSocket, filterAdoptable,
+  isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam, resolveSessionCommand,
+  rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, type CredMount,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
 import { spawnDockerCli } from './terminalDocker.js';
@@ -91,10 +91,14 @@ async function waitForDtachSocket(containerName: string, socket: string, timeout
 // leaves detached containers running until the next boot re-adopts (then reaps) them, or S3b's
 // reaper / `terminal:clean` removes them.
 function adoptRunningSessions(): void {
-  for (const { name, session } of docker.ps(SESSION_LABEL_KEY)) {
-    if (!name.startsWith('kanban-term-') || !isValidSessionId(session) || registry.has(session)) continue;
-    registry.adopt(session, name);
-  }
+  // Scope to THIS checkout's containers (kanban.root label) so a second dev server on the same
+  // daemon isn't adopted (and later reaped) by us (review F3).
+  const rows = docker.ps(SESSION_LABEL_KEY, [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`]);
+  const adoptable = filterAdoptable(rows, (id) => registry.has(id));
+  // Cap adoption at MAX_SESSIONS (docker ps is newest-first): adopt the most recent, force-remove any
+  // excess — with cap 2, extras for THIS root are crash-orphans, never live user sessions (review F6).
+  adoptable.slice(0, MAX_SESSIONS).forEach(({ name, session }) => registry.adopt(session, name));
+  adoptable.slice(MAX_SESSIONS).forEach(({ name }) => docker.remove(name));
 }
 
 // Persistent HOME for the session, so login/onboarding survive between the --rm containers
@@ -143,7 +147,9 @@ export function attachTerminal(server: Server): void {
     if (requestPath === WS_PATH && isValidSessionId(sessionId) && registry.has(sessionId)) {
       const decision = authorizeReattach({ origin, token, expected: terminalToken(), lookup: registry.lookup(sessionId) });
       if (!decision.ok) { rejectSocket(socket, decision.status, decision.reason); return; }
-      wss.handleUpgrade(req, socket, head, (ws) => reattachSession(sessionId, ws));
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        reattachSession(sessionId, ws).catch(() => { try { ws.close(); } catch { /* noop */ } });
+      });
       return;
     }
 
@@ -243,26 +249,21 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   if (entry.disposed) { docker.remove(containerName); return; }
   if (!ready) { fail(`session container did not become ready (see: docker logs ${containerName})`); return; }
 
-  if (!spawnAttach(id, entry, command.attachArgs, containerName, command.prefill)) return;
+  if (!spawnAttach(id, entry, command.attachArgs, containerName, command.prefill)) { fail('failed to start terminal'); return; }
   bindMessages(id, entry, ws);
 }
 
-// Spawn a fresh `docker exec … dtach -a` pty and wire it to the entry. Used by both a new session
-// and a reattach to an adopted/pty-less container. Returns false (after surfacing the error +
-// disposing) if node-pty can't spawn. Prefill runs on the new-session path only.
-function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], containerName: string, prefill?: string): boolean {
+// Spawn a fresh `docker exec … dtach -a` pty and wire it to the entry. Returns the pty, or null if
+// node-pty can't spawn — the CALLER decides what a failure means (a new session fails; an adopted
+// reattach leaves the container for a retry). Prefill runs on the new-session path only.
+function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], containerName: string, prefill?: string): pty.IPty | null {
   let term: pty.IPty;
   try {
     term = pty.spawn('docker', attachArgs, {
       name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
     });
-  } catch (err) {
-    // e.g. node-pty's spawn-helper lacks +x → posix_spawnp failed. Don't leak the slot.
-    const message = err instanceof Error ? err.message : 'failed to start terminal';
-    const w = entry.currentWs;
-    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(); }
-    registry.disposeIfCurrent(id, entry);
-    return false;
+  } catch {
+    return null; // e.g. node-pty spawn-helper transiently unavailable — caller handles (review F4)
   }
   registry.attachPty(id, term);
   if (prefill) setupPrefill(term, prefill, entry);
@@ -282,21 +283,37 @@ function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], con
     }
     registry.disposeIfCurrent(id, entry);
   });
-  return true;
+  return term;
 }
 
-// Rejoin a live session on a reloaded socket: rebind + repaint (registry.reattach), then wire the
-// new socket's handlers. A normal reload still has the persistent exec pty and just rebinds; an
-// ADOPTED container (survived an Express restart) has no pty, so spawn a fresh exec into its dtach
-// session. The client ?ticket is IGNORED — confinement was frozen at spawn (never re-derived).
-function reattachSession(id: string, ws: WebSocket): void {
-  const entry = registry.reattach(id, ws);
+// Rejoin a live session on a reloaded socket: rebind (registry.reattach), then wire the new socket's
+// handlers. Three cases keyed off the entry: a NORMAL reload still has the persistent exec pty and
+// just rebinds; a still-booting NEW session has no pty but openSession is its sole spawner (don't
+// double-spawn, review F2); an ADOPTED survivor (restart) has no pty, so spawn a FRESH exec — but
+// only after confirming the container is still alive (F5), and never disposing it on a transient
+// spawn failure (F4). The client ?ticket is IGNORED — confinement was frozen at spawn.
+async function reattachSession(id: string, ws: WebSocket): Promise<void> {
+  const entry = registry.reattach(id, ws); // sync: cancel grace, rebind ws, close a stale socket
   if (!entry) { try { ws.close(); } catch { /* noop */ } return; } // raced with disposal
-  // Synchronous through spawnAttach (pty.spawn is sync), so two reattaches can't double-spawn.
-  if (!entry.pty && !spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) return;
   bindMessages(id, entry, ws);
-  // A bare drop of THIS socket (another reload) → detach + grace; a newer reattach makes it a no-op.
   ws.on('close', () => registry.detach(id, ws));
+
+  if (entry.pty || !entry.adopted || entry.attaching) return; // reload / booting-new / already attaching
+  entry.attaching = true;
+  try {
+    // The adopted container may have died during the grace window — confirm it's alive + dtach is
+    // ready before attaching, so we don't flash a docker error and tear it down (review F5).
+    const ready = await waitForDtachSocket(entry.containerName, dtachSocket(id), 10_000);
+    if (entry.disposed) return;
+    if (!ready) { registry.dispose(id); try { ws.close(); } catch { /* noop */ } return; }
+    // A transient spawn failure must NOT kill a surviving container — close this socket and let it
+    // re-grace so another reattach can retry (review F4).
+    if (!spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) {
+      try { ws.close(); } catch { /* noop */ }
+    }
+  } finally {
+    entry.attaching = false;
+  }
 }
 
 // Prefill machinery: type the seed once claude's startup output settles (a quiet gap = the UI is

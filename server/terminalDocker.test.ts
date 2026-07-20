@@ -29,12 +29,6 @@ describe('spawnDockerCli', () => {
     expect(() => child.emit('error', new Error('no such container'))).not.toThrow();
   });
 
-  it('removeSync uses spawnSync with an argv array (for the exit hook)', () => {
-    const spawnSync = vi.fn(() => ({ status: 0 }));
-    spawnDockerCli(undefined, spawnSync).removeSync('kanban-term-xyz');
-    expect(spawnSync).toHaveBeenCalledWith('docker', ['rm', '-f', 'kanban-term-xyz'], { stdio: 'ignore' });
-  });
-
   it('run spawns docker with the given args + env and resolves the exit code', async () => {
     const child = fakeChild();
     const spawn = vi.fn(() => child);

@@ -119,6 +119,14 @@ describe('TerminalRegistry lifecycle', () => {
     expect(registry.get(ID)?.containerName).toBe('cont-live');
   });
 
+  it('reapDetached NEVER reclaims an adopted survivor (a live session to restore, review F1)', () => {
+    const { registry, killContainer } = makeRegistry();
+    registry.adopt(ID, 'cont-adopted'); // detached survivor (currentWs null), but adopted
+    expect(registry.reapDetached()).toBe(false);
+    expect(registry.has(ID)).toBe(true);
+    expect(killContainer).not.toHaveBeenCalled();
+  });
+
   it('reattach within grace reuses the same pty + container, cancels grace, and never takes a 2nd slot', () => {
     const { registry, killContainer } = makeRegistry();
     const { ws: wsA, pty } = boot(registry, ID, 'cont-1');

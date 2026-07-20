@@ -1,4 +1,4 @@
-import { spawn as nodeSpawn, spawnSync as nodeSpawnSync, execFileSync } from 'node:child_process';
+import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
 
 // The embedded terminal's Docker CLI seam (tkt-e1144d4ef7f5, epic tkt-d7e129290ff7). Every `docker`
 // invocation goes through here so that (1) container names — built from a client-derived session id
@@ -15,20 +15,18 @@ interface Spawned {
   on(event: 'exit', listener: (code: number | null) => void): unknown;
 }
 type SpawnFn = (command: string, args: readonly string[], options: { stdio: 'ignore'; env?: NodeJS.ProcessEnv }) => Spawned;
-type SpawnSyncFn = (command: string, args: readonly string[], options: { stdio: 'ignore' }) => unknown;
 
 export interface DockerCli {
   // Best-effort async force-remove (kill + rm); a missing container is not an error. Detached
   // session containers run without `--rm`, so dispose must remove them explicitly.
   remove(name: string): void;
-  // Synchronous force-remove for the process-'exit' hook, which cannot await.
-  removeSync(name: string): void;
   // Run a container (or any `docker` subcommand) to completion; resolves its exit code, or null if
   // `docker` couldn't spawn.
   run(args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<number | null>;
-  // Running session containers keyed by the given label → [{name, session}]. Used once at boot to
-  // re-adopt containers that outlived a restart (S3a). Empty on any failure.
-  ps(labelKey: string): Array<{ name: string; session: string }>;
+  // Running containers matching ALL `filterLabels` (each a `key` or `key=value`) → [{name, session}]
+  // where session is the `sessionLabelKey` value. Used once at boot to re-adopt containers that
+  // outlived a restart (S3a). Bounded + empty on any failure so a hung daemon can't stall boot.
+  ps(sessionLabelKey: string, filterLabels: string[]): Array<{ name: string; session: string }>;
 }
 
 // Parse `docker ps --format '{{.Names}}\t{{.Label "…"}}'` output → rows. Pure + tested; a row needs
@@ -42,13 +40,10 @@ export function parsePsLines(stdout: string | null | undefined): Array<{ name: s
   return rows;
 }
 
-export function spawnDockerCli(spawn: SpawnFn = nodeSpawn, spawnSync: SpawnSyncFn = nodeSpawnSync): DockerCli {
+export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
   return {
     remove(name) {
       spawn('docker', ['rm', '-f', name], { stdio: 'ignore' }).on('error', () => { /* already gone */ });
-    },
-    removeSync(name) {
-      spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
     },
     run(args, opts = {}) {
       return new Promise((resolve) => {
@@ -57,12 +52,13 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn, spawnSync: SpawnSyncF
         proc.on('error', () => resolve(null));
       });
     },
-    ps(labelKey) {
+    ps(sessionLabelKey, filterLabels) {
       try {
+        const filters = filterLabels.flatMap((l) => ['--filter', `label=${l}`]);
         const out = execFileSync(
           'docker',
-          ['ps', '--filter', `label=${labelKey}`, '--format', `{{.Names}}\t{{.Label "${labelKey}"}}`],
-          { encoding: 'utf8' },
+          ['ps', ...filters, '--format', `{{.Names}}\t{{.Label "${sessionLabelKey}"}}`],
+          { encoding: 'utf8', timeout: 5_000 }, // bounded: a hung daemon must not stall boot (review F7)
         );
         return parsePsLines(out);
       } catch {

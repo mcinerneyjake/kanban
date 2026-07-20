@@ -99,6 +99,21 @@ export function rootMountArgs(roots: string[]): string[] {
 // containers via `docker ps --filter label=…` and re-adopt them (S3a, tkt-5b21136f3317).
 export const SESSION_LABEL_KEY = 'kanban.session';
 
+// Second label carrying the kanban repo root, so adoption is scoped to THIS server's checkout — a
+// second dev server on the same Docker daemon can't adopt (and later reap) our containers, and vice
+// versa. A restart of the same checkout has the same root, so it still re-adopts its own (review F3).
+export const ROOT_LABEL_KEY = 'kanban.root';
+
+// Which discovered containers a booting server may adopt: only OUR containers (name prefix), with a
+// valid session-id label, that aren't already tracked. Pure so the adoption gate is testable (F10).
+// Root-scoping is enforced by the `docker ps` label filter upstream, so it isn't re-checked here.
+export function filterAdoptable(
+  rows: Array<{ name: string; session: string }>,
+  isKnown: (id: string) => boolean,
+): Array<{ name: string; session: string }> {
+  return rows.filter((r) => r.name.startsWith('kanban-term-') && isValidSessionId(r.session) && !isKnown(r.session));
+}
+
 // The dtach session socket inside the container (per session id). `claude` runs under
 // `dtach -N <socket>`; each browser connection attaches via `dtach -a <socket>`, decoupling the
 // exec stream from claude's lifetime so the session survives an Express restart (epic tkt-d7e129290ff7).
@@ -138,6 +153,7 @@ function containerBaseArgs(opts: {
 export function buildDetachedRunArgs(opts: {
   roots: string[];
   sessionId: string;
+  rootLabel: string; // the kanban repo root — scopes adoption to this checkout (kanban.root label)
   credMount: CredMount;
   image: string;
   containerName: string;
@@ -146,7 +162,8 @@ export function buildDetachedRunArgs(opts: {
   const [primaryRoot] = opts.roots;
   if (primaryRoot === undefined) throw new Error('buildDetachedRunArgs: roots must be non-empty');
   return [
-    'run', '-d', '--name', opts.containerName, '--label', `${SESSION_LABEL_KEY}=${opts.sessionId}`,
+    'run', '-d', '--name', opts.containerName,
+    '--label', `${SESSION_LABEL_KEY}=${opts.sessionId}`, '--label', `${ROOT_LABEL_KEY}=${opts.rootLabel}`,
     ...containerBaseArgs(opts),
     '-w', primaryRoot, opts.image,
     'dtach', '-N', dtachSocket(opts.sessionId), 'claude',
@@ -316,6 +333,7 @@ export async function resolveSessionCommand(opts: {
   const runArgs = buildDetachedRunArgs({
     roots,
     sessionId: opts.sessionId,
+    rootLabel: opts.kanbanRoot,
     credMount: opts.credMount,
     image: opts.image,
     containerName: opts.containerName,

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildDetachedRunArgs, buildAttachArgs, dtachSocket, resolveSessionCommand, authorizeUpgrade,
-  authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam, isValidSessionId,
-  rootMountArgs, type CredMount,
+  buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
+  authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
+  isValidSessionId, rootMountArgs, type CredMount,
 } from './terminalAuth.js';
 
 import type { Ticket } from '../shared/constants.js';
@@ -93,7 +93,7 @@ describe('allowedRootsFor', () => {
 
 describe('buildDetachedRunArgs', () => {
   const base = {
-    roots: [KANBAN], sessionId: SID, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
+    roots: [KANBAN], sessionId: SID, rootLabel: KANBAN, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
   it('mounts each allowed root', () => {
@@ -131,7 +131,8 @@ describe('buildDetachedRunArgs', () => {
     expect(args).not.toContain('-it');
     expect(args).not.toContain('--rm'); // must persist independent of the `docker run` client
     expect(args[args.indexOf('--name') + 1]).toBe('kanban-term-1');
-    expect(args[args.indexOf('--label') + 1]).toBe(`kanban.session=${SID}`); // discoverable after a restart
+    expect(args.join(' ')).toContain(`--label kanban.session=${SID}`); // discoverable after a restart
+    expect(args.join(' ')).toContain(`--label kanban.root=${KANBAN}`); // scopes adoption to this checkout
     expect(args[args.indexOf('-w') + 1]).toBe(KANBAN);
     const imgIdx = args.indexOf('kanban-terminal');
     expect(args.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
@@ -149,6 +150,23 @@ describe('buildAttachArgs / dtachSocket', () => {
   });
   it('dtachSocket is a per-session path under /tmp', () => {
     expect(dtachSocket(SID)).toBe(`/tmp/kanban-term-${SID}.dtach`);
+  });
+});
+
+describe('filterAdoptable', () => {
+  const KNOWN = '11111111-2222-4333-8444-555566667777';
+  const isKnown = (id: string) => id === KNOWN;
+  it('keeps only OUR containers with a valid, not-already-known session id', () => {
+    const rows = [
+      { name: 'kanban-term-aaa', session: SID },                 // valid + unknown → keep
+      { name: 'kanban-term-bbb', session: KNOWN },               // already tracked → drop
+      { name: 'other-thing', session: SID },                     // not our name prefix → drop
+      { name: 'kanban-term-ccc', session: 'not-a-uuid' },        // invalid id label → drop
+    ];
+    expect(filterAdoptable(rows, isKnown)).toEqual([{ name: 'kanban-term-aaa', session: SID }]);
+  });
+  it('empty in → empty out', () => {
+    expect(filterAdoptable([], isKnown)).toEqual([]);
   });
 });
 
