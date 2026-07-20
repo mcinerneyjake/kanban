@@ -154,6 +154,24 @@ export function parseTicketParam(rawUrl: string): string | null {
   return new URL(rawUrl, 'http://localhost').searchParams.get('ticket');
 }
 
+// ── Reattach session identity (detach/reattach across browser reloads, tkt-dd308ec91efc) ─────
+
+// The reattach session id is a client-minted crypto.randomUUID() (v4). It's a non-secret NAME,
+// not a capability — reattach is still gated by origin + the per-boot token, so this only needs
+// a shape guard (mirrors TICKET_ID_RE), never a secret comparison. v4: version nibble 4, variant
+// nibble 8/9/a/b.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function isValidSessionId(id: string | null | undefined): id is string {
+  return typeof id === 'string' && SESSION_ID_RE.test(id);
+}
+
+// Parse the ?session= param the widget puts on the WS URL, mirroring parseTicketParam so the
+// client→server identity hop is covered by the same seam test.
+export function parseSessionParam(rawUrl: string): string | null {
+  return new URL(rawUrl, 'http://localhost').searchParams.get('session');
+}
+
 // ── WS upgrade authorization (pure decision, so the gate is testable) ─────────
 
 export type UpgradeDecision = { ok: true } | { ok: false; status: number; reason: string };
@@ -177,9 +195,39 @@ export function authorizeUpgrade(opts: {
   return { ok: true };
 }
 
+// Reattach authorization for a browser reload rejoining a still-running session. The registry
+// Map/timer stay in terminal.ts; only the *result* of the lookup is passed in as data, keeping
+// this a pure decision. Same origin + token gate as authorizeUpgrade — reattach grants no new
+// privilege (see the plan's security pass). The MAX_SESSIONS cap is NOT applied here: a reattach
+// rejoins an existing entry and must never consume a second slot.
+//
+// lookup semantics:
+//   'found'             — a detached entry waiting in its grace window → reattach.
+//   'attached-elsewhere'— an entry whose socket is still bound (a reload race: the new WS beat the
+//                         old close). Still authorized; terminal.ts resolves it last-writer-wins
+//                         (per-tab sessionStorage + token gate mean this can only be the same tab
+//                         reloading, not a hijack).
+//   'not-found'         — no such live session (grace already expired). Defensive reject; the
+//                         caller normally routes an unknown id to the new-session path instead.
+export type ReattachLookup = 'found' | 'attached-elsewhere' | 'not-found';
+
+export function authorizeReattach(opts: {
+  origin: string | undefined;
+  token: string | null;
+  expected: string;
+  lookup: ReattachLookup;
+}): UpgradeDecision {
+  if (!isAllowedOrigin(opts.origin)) return { ok: false, status: 403, reason: 'origin not allowed' };
+  if (!isValidToken(opts.token, opts.expected)) return { ok: false, status: 403, reason: 'invalid token' };
+  if (opts.lookup === 'not-found') return { ok: false, status: 404, reason: 'no such session' };
+  return { ok: true };
+}
+
 // ── Client → server framing ──────────────────────────────────────────────────
 
-export type ClientFrame = { t: 'i'; d: string } | { t: 'r'; cols: number; rows: number };
+// 'e' = an explicit terminate: the client is going away deliberately (✕ or a session swap), so
+// the server disposes NOW, bypassing the reload grace window (a bare socket drop = a reload).
+export type ClientFrame = { t: 'i'; d: string } | { t: 'r'; cols: number; rows: number } | { t: 'e' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -202,6 +250,7 @@ export function parseClientFrame(raw: string): ClientFrame | null {
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;
     return { t: 'r', cols: Math.min(cols, MAX_DIM), rows: Math.min(rows, MAX_DIM) };
   }
+  if (data.t === 'e') return { t: 'e' };
   return null;
 }
 

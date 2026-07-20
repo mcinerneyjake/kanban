@@ -6,9 +6,37 @@ import '@xterm/xterm/css/xterm.css';
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
 // socket (and container) alive; close unmounts → the server tears the container down.
+//
+// Detach/reattach across reloads (tkt-dd308ec91efc): a Vite full reload (Claude edits a file
+// from inside the container) drops the WS. Rather than kill the session, we carry a per-tab
+// session id in sessionStorage and REATTACH on the reload — the server holds the container in a
+// grace window and repaints the current screen. An explicit close (✕ / session swap) sends a
+// terminate frame so the server disposes at once. Limitation: a `server/**` edit restarts Express
+// and kills every container (not covered in v1).
 
 export type TerminalSession = { ticket?: string };
 type Status = 'connecting' | 'open' | 'closed' | 'error';
+
+// Per-tab reattach identity. sessionStorage survives a reload but dies on tab close — matching
+// "close tears the container down". Keyed per mount-key so a shell and a ticket session don't
+// collide. Defensive read (storage may be blocked/full) per useDashboardConfig.
+type SessionId = { id: string; canPersist: boolean };
+function readOrMintSessionId(mountKey: string): SessionId {
+  const storageKey = `terminal:session:${mountKey}`;
+  try {
+    const existing = sessionStorage.getItem(storageKey);
+    if (existing) return { id: existing, canPersist: true };
+    const id = crypto.randomUUID();
+    sessionStorage.setItem(storageKey, id);
+    return { id, canPersist: true };
+  } catch {
+    // Storage unavailable → an ephemeral id we can't reattach to; we terminate on cleanup instead.
+    return { id: crypto.randomUUID(), canPersist: false };
+  }
+}
+function clearSessionId(mountKey: string): void {
+  try { sessionStorage.removeItem(`terminal:session:${mountKey}`); } catch { /* storage gone */ }
+}
 
 // Map xterm's palette from the app's CSS theme tokens so light/dark follows the board.
 function xtermTheme(): ITheme {
@@ -42,6 +70,24 @@ export default function TerminalWidget({ session, theme, onClose }: {
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; });
 
+  // Distinguishes a reload/tab-close (keep the session alive for reattach) from a deliberate
+  // unmount (✕ / session swap → terminate the session). Set on `pagehide`, which fires for both
+  // reload and tab close but NOT for a React unmount.
+  const isUnloadingRef = useRef(false);
+  useEffect(() => {
+    const onPageHide = () => { isUnloadingRef.current = true; };
+    // Reset if the page is shown again from the bfcache (pageshow) rather than fully reloaded —
+    // otherwise the flag stays stuck true and a later deliberate ✕ would skip the terminate frame
+    // (review #6), stranding the container in grace + a stale session id.
+    const onPageShow = () => { isUnloadingRef.current = false; };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, []);
+
   // One terminal + socket per session (keyed by App, so a new ticket remounts).
   useEffect(() => {
     const container = containerRef.current;
@@ -74,14 +120,19 @@ export default function TerminalWidget({ session, theme, onClose }: {
     const ro = new ResizeObserver(() => { if (container.offsetParent !== null) { fit.fit(); sendResize(); } });
     ro.observe(container);
 
+    const mountKey = session.ticket ?? 'shell';
+    const { id: sessionId, canPersist } = readOrMintSessionId(mountKey);
+
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     fetch('/api/terminal/token')
       .then((r) => r.json())
       .then((body: { token: string }) => {
         if (disposed) return;
-        const query = session.ticket ? `?ticket=${encodeURIComponent(session.ticket)}` : '';
-        // Token travels as the WS subprotocol, not the URL, so it can't land in access logs.
-        ws = new WebSocket(`${scheme}://${location.host}/terminal-ws${query}`, [body.token]);
+        const params = new URLSearchParams({ session: sessionId });
+        if (session.ticket) params.set('ticket', session.ticket);
+        // Token travels as the WS subprotocol, not the URL, so it can't land in access logs. The
+        // session id is a non-secret name (useless without the token), so the query is fine for it.
+        ws = new WebSocket(`${scheme}://${location.host}/terminal-ws?${params.toString()}`, [body.token]);
         wsRef.current = ws;
         let wasOpen = false;
         let revealed = false;
@@ -100,7 +151,11 @@ export default function TerminalWidget({ session, theme, onClose }: {
           wasOpen = true;
           setStatus('open');
           fit.fit(); sendResize(); term.focus();
-          // Bound the reveal from OPEN (not first byte) so a session that emits no output still reveals.
+          // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
+          // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
+          // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
+          // server restart), so keying the reveal on `reattaching` would flash a blank boot screen
+          // (review #4). The cap from OPEN covers a session that emits nothing at all.
           bootCapTimer = setTimeout(reveal, 2500);
         };
         ws.onmessage = (e) => {
@@ -115,6 +170,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
         };
         ws.onclose = () => {
           if (disposed) return;
+          // A reload/tab-close drops the socket too, but the session lives on for reattach — keep
+          // the widget state so the reloaded page (App restores it from sessionStorage) rejoins it.
+          if (isUnloadingRef.current) return;
           // Connected-then-ended → dismiss (deterministic, off the authoritative close). A
           // never-opened socket = a connect/auth failure → surface the error, rather than let
           // 'closed' fall through to a perpetual "Loading…" overlay.
@@ -131,7 +189,18 @@ export default function TerminalWidget({ session, theme, onClose }: {
       if (bootCapTimer) clearTimeout(bootCapTimer);
       ro.disconnect();
       dataSub.dispose();
-      if (ws) ws.close();
+      if (ws) {
+        // Terminate the server session UNLESS this is a reload (then the socket drop → grace →
+        // reattach). Also terminate when we can't persist an id — a reload couldn't reattach
+        // anyway, so don't strand a grace-held container. Terminating clears the id so we never
+        // try to rejoin a session we just told the server to dispose.
+        const terminate = !canPersist || !isUnloadingRef.current;
+        if (terminate) {
+          if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ t: 'e' })); } catch { /* closing */ } }
+          clearSessionId(mountKey);
+        }
+        ws.close();
+      }
       term.dispose();
       termRef.current = null; fitRef.current = null; wsRef.current = null;
     };

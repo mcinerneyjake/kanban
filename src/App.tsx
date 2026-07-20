@@ -23,6 +23,24 @@ import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
 import type { Ticket } from '../shared/constants.js';
 
+// The embedded terminal must survive a Vite full reload so it can REATTACH (tkt-dd308ec91efc):
+// React state resets on reload, so persist "a terminal is open (for which ticket)" in
+// sessionStorage and restore it, re-mounting the widget — which then rejoins its running session
+// via its own stored session id. Dev-only (the widget itself is DEV-gated). Defensive read.
+const TERMINAL_OPEN_KEY = 'terminal:open';
+function isTerminalSession(v: unknown): v is TerminalSession {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  if (!('ticket' in v)) return true; // {} = shell session
+  return typeof v.ticket === 'string';
+}
+function loadTerminalSession(): TerminalSession | null {
+  if (!import.meta.env.DEV) return null;
+  try {
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(TERMINAL_OPEN_KEY) ?? 'null');
+    return isTerminalSession(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -39,10 +57,20 @@ export default function App() {
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<View>('board');
   // Dev-only embedded terminal (tkt-be809dd2b7fb). null = closed; {} = shell; {ticket} = seeded.
-  const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(null);
+  // Restored from sessionStorage so a reload re-mounts the widget and reattaches (tkt-dd308ec91efc).
+  const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(loadTerminalSession);
   const dash = useDashboardConfig();
   // Bumped on every ticket reload so the dashboard re-fetches its aggregates.
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Persist the open-terminal state so a reload restores it (see loadTerminalSession).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    try {
+      if (terminalSession) sessionStorage.setItem(TERMINAL_OPEN_KEY, JSON.stringify(terminalSession));
+      else sessionStorage.removeItem(TERMINAL_OPEN_KEY);
+    } catch { /* storage unavailable → reload just won't reattach */ }
+  }, [terminalSession]);
 
   useEffect(() => {
     const params = encode(filter);
