@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame,
-  parseTicketParam, rootMountArgs, type CredMount,
+  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, authorizeReattach, parseClientFrame,
+  parseTicketParam, parseSessionParam, isValidSessionId, rootMountArgs, type CredMount,
 } from './terminalAuth.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -266,10 +266,61 @@ describe('authorizeUpgrade', () => {
   });
 });
 
+describe('isValidSessionId', () => {
+  it('accepts a crypto.randomUUID()-shaped v4 id', () => {
+    expect(isValidSessionId('3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c')).toBe(true);
+  });
+  it('rejects malformed, wrong-version, null, and non-string ids', () => {
+    expect(isValidSessionId('not-a-uuid')).toBe(false);
+    expect(isValidSessionId('3f8a1c2d-4b5e-1f6a-8b9c-0d1e2f3a4b5c')).toBe(false); // version nibble not 4
+    expect(isValidSessionId('3f8a1c2d-4b5e-4f6a-7b9c-0d1e2f3a4b5c')).toBe(false); // variant nibble not 8/9/a/b
+    expect(isValidSessionId('tkt-0123456789ab')).toBe(false);
+    expect(isValidSessionId(null)).toBe(false);
+    expect(isValidSessionId(undefined)).toBe(false);
+  });
+});
+
+describe('parseSessionParam', () => {
+  it('reads the ?session= id the widget puts on the WS URL, null when absent', () => {
+    const id = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
+    expect(parseSessionParam(`/terminal-ws?session=${id}`)).toBe(id);
+    expect(parseSessionParam(`/terminal-ws?ticket=tkt-0123456789ab&session=${id}`)).toBe(id);
+    expect(parseSessionParam('/terminal-ws')).toBeNull();
+    expect(parseSessionParam('')).toBeNull();
+  });
+});
+
+describe('authorizeReattach', () => {
+  const base = {
+    origin: 'http://localhost:5173', token: 'secret', expected: 'secret',
+    lookup: 'found' as const,
+  };
+  it('accepts a detached session on a valid origin + token', () => {
+    expect(authorizeReattach(base)).toEqual({ ok: true });
+  });
+  it('accepts an attached-elsewhere lookup (reload race → last-writer-wins takeover)', () => {
+    expect(authorizeReattach({ ...base, lookup: 'attached-elsewhere' })).toEqual({ ok: true });
+  });
+  it('rejects a bad origin (403)', () => {
+    expect(authorizeReattach({ ...base, origin: 'https://evil.example' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeReattach({ ...base, origin: undefined })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects a bad/missing token (403) — id is not a capability without the token', () => {
+    expect(authorizeReattach({ ...base, token: 'wrong' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeReattach({ ...base, token: null })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects a not-found lookup (404, defensive — caller routes unknown ids to new sessions)', () => {
+    expect(authorizeReattach({ ...base, lookup: 'not-found' })).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
 describe('parseClientFrame', () => {
   it('parses input and resize frames', () => {
     expect(parseClientFrame('{"t":"i","d":"ls\\n"}')).toEqual({ t: 'i', d: 'ls\n' });
     expect(parseClientFrame('{"t":"r","cols":120,"rows":40}')).toEqual({ t: 'r', cols: 120, rows: 40 });
+  });
+  it('parses the terminate frame', () => {
+    expect(parseClientFrame('{"t":"e"}')).toEqual({ t: 'e' });
   });
   it('drops malformed, mistyped, or unknown frames', () => {
     expect(parseClientFrame('not json')).toBeNull();
