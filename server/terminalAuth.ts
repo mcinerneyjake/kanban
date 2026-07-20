@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Ticket } from '../shared/constants.js';
 
 // Pure core for the embedded terminal (tkt-be809dd2b7fb): WS-upgrade guards, the
@@ -74,6 +75,26 @@ export interface CredMount {
   containerHome: string; // mount point inside the container (its HOME)
 }
 
+// Docker volume name for a project root's node_modules. Hash the full path (not a lossy
+// char-substitution, which could collide two distinct roots onto one volume → wrong deps).
+function nodeModulesVolume(root: string): string {
+  return `kanbanterm-nm-${createHash('sha1').update(root).digest('hex').slice(0, 16)}`;
+}
+
+// Shared mount set for a session OR install container: each allowed root (everything else on
+// the host is unreachable) + its node_modules shadowed by a per-root NAMED volume (the host's
+// is the wrong platform → the kanban MCP server would crash), + the install-dirs env the image
+// entrypoint reads to populate those volumes. (tkt-76fcbfb608a4)
+export function rootMountArgs(roots: string[]): string[] {
+  const args: string[] = [];
+  for (const root of roots) {
+    args.push('-v', `${root}:${root}`);
+    args.push('-v', `${nodeModulesVolume(root)}:${root}/node_modules`);
+  }
+  args.push('-e', `KANBAN_INSTALL_DIRS=${roots.join(':')}`);
+  return args;
+}
+
 export function buildContainerArgs(opts: {
   roots: string[];
   credMount: CredMount;
@@ -85,9 +106,7 @@ export function buildContainerArgs(opts: {
   const [primaryRoot] = opts.roots;
   if (primaryRoot === undefined) throw new Error('buildContainerArgs: roots must be non-empty');
 
-  const args = ['run', '-it', '--rm', '--name', opts.containerName];
-  // Only the allowed roots are mounted → everything else on the host is unreachable.
-  for (const root of opts.roots) args.push('-v', `${root}:${root}`);
+  const args = ['run', '-it', '--rm', '--name', opts.containerName, ...rootMountArgs(opts.roots)];
   // Persistent HOME so ALL of claude's state survives the --rm container — not just ~/.claude
   // but also ~/.claude.json (onboarding/account/trust), which lives in home. One whole-dir
   // mount (vs a single-file mount) survives claude's atomic-rename writes. Outside every
@@ -125,7 +144,9 @@ export function buildSeedPrompt(ticket: Ticket): string {
 
 // prefill: the ticket seed the transport types into claude's input box once it's ready (no
 // trailing newline → editable, not auto-submitted). Absent for a bare (no-ticket) session.
-export interface SessionCommand { cmd: string; args: string[]; prefill?: string }
+// roots: the confinement roots — the transport pre-installs their node_modules before the
+// interactive session (so the install never delays claude / mistimes the prefill).
+export interface SessionCommand { cmd: string; args: string[]; prefill?: string; roots: string[] }
 
 // Parse the ?ticket= param the widget puts on the WS URL (it encodeURIComponent's the board
 // id). Shared with the server and the seam test so the client→server hop can't silently drift.
@@ -213,5 +234,5 @@ export async function resolveSessionCommand(opts: {
     innerCmd: ['claude'],
     gitIdentity: opts.gitIdentity,
   });
-  return { cmd: 'docker', args, prefill: ticket ? buildSeedPrompt(ticket) : undefined };
+  return { cmd: 'docker', args, prefill: ticket ? buildSeedPrompt(ticket) : undefined, roots };
 }

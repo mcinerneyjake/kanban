@@ -11,7 +11,8 @@ import { getTicket } from './tickets.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
-  authorizeUpgrade, buildSessionEnv, parseClientFrame, parseTicketParam, resolveSessionCommand, type CredMount,
+  authorizeUpgrade, buildSessionEnv, parseClientFrame, parseTicketParam, resolveSessionCommand,
+  rootMountArgs, type CredMount,
 } from './terminalAuth.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes
@@ -23,6 +24,28 @@ import {
 const WS_PATH = '/terminal-ws';
 const MAX_SESSIONS = 2;
 const IMAGE = process.env.KANBAN_TERMINAL_IMAGE ?? 'kanban-terminal';
+
+// Populate each root's node_modules volume with Linux deps in a one-shot container BEFORE the
+// interactive session, so the install never runs inside the PTY (which would delay claude and
+// mistime the ticket prefill). Serialized per root-set via an in-flight promise so concurrent
+// sessions can't race the same volume into corruption (tkt-76fcbfb608a4). The image entrypoint
+// no-ops when the lockfile is unchanged, so steady-state this is a fast stamp check.
+const depsInFlight = new Map<string, Promise<void>>();
+function ensureDeps(roots: string[]): Promise<void> {
+  const key = roots.join(':');
+  let inFlight = depsInFlight.get(key);
+  if (!inFlight) {
+    inFlight = new Promise<void>((resolve) => {
+      const args = ['run', '--rm', ...rootMountArgs(roots), IMAGE, 'true'];
+      const proc = spawnChild('docker', args, { stdio: 'ignore', env: buildSessionEnv(process.env) });
+      // Best-effort: on failure the interactive session still starts (degraded MCP, logged in-container).
+      proc.on('exit', () => resolve());
+      proc.on('error', () => resolve());
+    }).finally(() => depsInFlight.delete(key));
+    depsInFlight.set(key, inFlight);
+  }
+  return inFlight;
+}
 
 // Containers still running, so an abrupt process exit doesn't orphan them (+ their
 // in-container claude/MCP children). Normal close is handled per-socket below.
@@ -121,7 +144,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<We
   // Attach BEFORE the await: a disconnect during async setup must still free the slot.
   ws.on('close', dispose);
 
-  let command: { cmd: string; args: string[]; prefill?: string };
+  let command: { cmd: string; args: string[]; prefill?: string; roots: string[] };
   try {
     command = await resolveSessionCommand({
       ticket, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
@@ -135,7 +158,11 @@ async function openSession(ws: WebSocket, req: IncomingMessage, sessions: Set<We
     return;
   }
 
-  // Client vanished during the await → don't start a container for a dead socket.
+  // Install Linux deps (once, serialized) before the interactive session so it never runs in
+  // the PTY. The client sees the "Loading…" overlay meanwhile.
+  await ensureDeps(command.roots);
+
+  // Client vanished during setup → don't start a container for a dead socket.
   if (ws.readyState !== WebSocket.OPEN) { dispose(); return; }
 
   try {

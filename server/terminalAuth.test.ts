@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
   buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame,
-  parseTicketParam, type CredMount,
+  parseTicketParam, rootMountArgs, type CredMount,
 } from './terminalAuth.js';
 import type { Ticket } from '../shared/constants.js';
 
@@ -104,13 +104,22 @@ describe('buildContainerArgs', () => {
     expect(args.some((a) => a.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
     expect(args.some((a) => a.includes('ANTHROPIC'))).toBe(false);
   });
-  it('does not mount any non-allowed host path', () => {
+  it('does not mount any non-allowed host path (roots, HOME, or named node_modules volumes only)', () => {
     const args = buildContainerArgs(base);
     const mounts = args.filter((_, i) => args[i - 1] === '-v');
     for (const mount of mounts) {
-      const host = mount.split(':')[0];
-      expect(host === KANBAN || host === CRED.hostHome).toBe(true);
+      const src = mount.split(':')[0];
+      // A host path must be an allowed root or the HOME dir; node_modules sources are named
+      // volumes (no host path), so a wrong-platform host node_modules can't leak in.
+      const ok = src === KANBAN || src === CRED.hostHome || src.startsWith('kanbanterm-nm-');
+      expect(ok).toBe(true);
     }
+  });
+  it('shadows each root node_modules with a named volume and passes the install dirs', () => {
+    const joined = buildContainerArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
+    expect(joined).toContain(`:${PORTFOLIO}/node_modules`);
+    expect(joined).toContain(`:${KANBAN}/node_modules`);
+    expect(joined).toContain(`KANBAN_INSTALL_DIRS=${PORTFOLIO}:${KANBAN}`);
   });
   it('sets run/-it/--rm, name, workdir, image, then the inner command', () => {
     const args = buildContainerArgs(base);
@@ -125,6 +134,23 @@ describe('buildContainerArgs', () => {
   });
 });
 
+describe('rootMountArgs', () => {
+  it('mounts each root, shadows its node_modules with a volume, and passes the install dirs', () => {
+    const joined = rootMountArgs([PORTFOLIO, KANBAN]).join(' ');
+    expect(joined).toContain(`${PORTFOLIO}:${PORTFOLIO}`);
+    expect(joined).toContain(`:${PORTFOLIO}/node_modules`);
+    expect(joined).toContain(`:${KANBAN}/node_modules`);
+    expect(joined).toContain(`KANBAN_INSTALL_DIRS=${PORTFOLIO}:${KANBAN}`);
+  });
+  it('gives paths that differ only by a separator DISTINCT volumes (no lossy collision)', () => {
+    const volA = rootMountArgs(['/repo/a/b']).find((a) => a.includes(':/repo/a/b/node_modules'))?.split(':')[0];
+    const volB = rootMountArgs(['/repo/a-b']).find((a) => a.includes(':/repo/a-b/node_modules'))?.split(':')[0];
+    expect(volA).toBeDefined();
+    expect(volB).toBeDefined();
+    expect(volA).not.toBe(volB); // a lossy /↔- substitution would have collided these
+  });
+});
+
 describe('resolveSessionCommand', () => {
   const common = {
     getTicket: async (id: string) => ticket({ id }),
@@ -133,13 +159,14 @@ describe('resolveSessionCommand', () => {
   };
 
   it('no ticket → bare claude, no prefill (never a raw shell)', async () => {
-    const { cmd, args, prefill } = await resolveSessionCommand({ ...common });
+    const { cmd, args, prefill, roots } = await resolveSessionCommand({ ...common });
     expect(cmd).toBe('docker');
     const imgIdx = args.indexOf('kanban-terminal');
     expect(args.slice(imgIdx + 1)).toEqual(['claude']);
     expect(args).not.toContain('bash');
     expect(args).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
     expect(prefill).toBeUndefined();
+    expect(roots).toEqual([KANBAN]); // the transport pre-installs deps for these
   });
   it('rejects a malformed ticket id and never calls getTicket', async () => {
     let called = false;

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Session image for the in-app terminal widget (tkt-be809dd2b7fb).
 # Self-contained: no COPY, so the build context is irrelevant — the board project(s)
 # are bind-mounted read-write at runtime and the subscription credential is mounted
@@ -26,4 +27,34 @@ ENV PATH="/root/.local/bin:${PATH}"
 # interactive session can't find `claude`.
 RUN printf 'export PATH="/root/.local/bin:$PATH"\n' > /etc/profile.d/claude-path.sh
 
+# Entrypoint: give each mounted project root Linux-correct node_modules before running the
+# session. The host's node_modules is the wrong platform (esbuild/tsx/native binaries), so
+# `npx tsx mcp/server.ts` — and thus the kanban MCP server — would crash. node_modules is
+# shadowed by a per-root named volume (see buildContainerArgs); we `npm ci` into it only when
+# the lockfile content changed, so it's a one-time cost per repo state. tkt-76fcbfb608a4.
+COPY <<'SH' /usr/local/bin/kanban-entrypoint.sh
+#!/bin/sh
+# `cmp` (diffutils) and `npm` are provided by the node:20-bookworm base — don't switch to a
+# -slim base without re-adding them, or the stamp check would always miss and reinstall.
+set -f                          # no globbing of the unquoted $KANBAN_INSTALL_DIRS split
+IFS=:
+for dir in $KANBAN_INSTALL_DIRS; do
+  [ -n "$dir" ] || continue
+  [ -f "$dir/package.json" ] && [ -f "$dir/package-lock.json" ] || continue
+  stamp="$dir/node_modules/.kanban-deps-stamp"
+  if ! cmp -s "$dir/package-lock.json" "$stamp" 2>/dev/null; then
+    echo "[terminal] installing Linux deps in $dir (first run or lockfile changed)…" >&2
+    if ( cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund ); then
+      cp "$dir/package-lock.json" "$stamp"
+    else
+      echo "[terminal] npm ci failed in $dir — MCP tools may be unavailable" >&2
+    fi
+  fi
+done
+unset IFS
+exec "$@"
+SH
+RUN chmod +x /usr/local/bin/kanban-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/kanban-entrypoint.sh"]
 CMD ["bash", "-l"]
