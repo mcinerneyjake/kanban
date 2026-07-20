@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, authorizeReattach, parseClientFrame,
-  parseTicketParam, parseSessionParam, isValidSessionId, rootMountArgs, type CredMount,
+  buildDetachedRunArgs, buildAttachArgs, dtachSocket, resolveSessionCommand, authorizeUpgrade,
+  authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam, isValidSessionId,
+  rootMountArgs, type CredMount,
 } from './terminalAuth.js';
+
 import type { Ticket } from '../shared/constants.js';
+
+// A valid crypto.randomUUID()-shaped session id, used for the detached run label + dtach socket.
+const SID = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
 
 const KANBAN = '/repo/kanban';
 const PORTFOLIO = '/repo/portfolio-site';
@@ -86,27 +91,26 @@ describe('allowedRootsFor', () => {
   });
 });
 
-describe('buildContainerArgs', () => {
+describe('buildDetachedRunArgs', () => {
   const base = {
-    roots: [KANBAN], credMount: CRED, image: 'kanban-terminal',
-    containerName: 'kanban-term-1', innerCmd: ['bash', '-l'],
+    roots: [KANBAN], sessionId: SID, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
   it('mounts each allowed root', () => {
-    const joined = buildContainerArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
+    const joined = buildDetachedRunArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
     expect(joined).toContain(`${PORTFOLIO}:${PORTFOLIO}`);
     expect(joined).toContain(`${KANBAN}:${KANBAN}`);
   });
   it('mounts the persistent HOME + sets HOME, and never passes the token as an -e var', () => {
-    const args = buildContainerArgs(base);
+    const args = buildDetachedRunArgs(base);
     expect(args.join(' ')).toContain(`${CRED.hostHome}:${CRED.containerHome}`);
     expect(args.join(' ')).toContain(`HOME=${CRED.containerHome}`);
-    expect(args.some((a) => a.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
-    expect(args.some((a) => a.includes('ANTHROPIC'))).toBe(false);
+    expect(args.some((a: string) => a.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
+    expect(args.some((a: string) => a.includes('ANTHROPIC'))).toBe(false);
   });
   it('does not mount any non-allowed host path (roots, HOME, or named node_modules volumes only)', () => {
-    const args = buildContainerArgs(base);
-    const mounts = args.filter((_, i) => args[i - 1] === '-v');
+    const args = buildDetachedRunArgs(base);
+    const mounts = args.filter((_: string, i: number) => args[i - 1] === '-v');
     for (const mount of mounts) {
       const src = mount.split(':')[0];
       // A host path must be an allowed root or the HOME dir; node_modules sources are named
@@ -116,21 +120,35 @@ describe('buildContainerArgs', () => {
     }
   });
   it('shadows each root node_modules with a named volume and passes the install dirs', () => {
-    const joined = buildContainerArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
+    const joined = buildDetachedRunArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
     expect(joined).toContain(`:${PORTFOLIO}/node_modules`);
     expect(joined).toContain(`:${KANBAN}/node_modules`);
     expect(joined).toContain(`KANBAN_INSTALL_DIRS=${PORTFOLIO}:${KANBAN}`);
   });
-  it('sets run/-it/--rm, name, workdir, image, then the inner command', () => {
-    const args = buildContainerArgs(base);
-    expect(args.slice(0, 3)).toEqual(['run', '-it', '--rm']);
+  it('runs DETACHED (-d, no --rm/-it), names + labels the container, and runs claude under dtach', () => {
+    const args = buildDetachedRunArgs(base);
+    expect(args.slice(0, 2)).toEqual(['run', '-d']);
+    expect(args).not.toContain('-it');
+    expect(args).not.toContain('--rm'); // must persist independent of the `docker run` client
     expect(args[args.indexOf('--name') + 1]).toBe('kanban-term-1');
+    expect(args[args.indexOf('--label') + 1]).toBe(`kanban.session=${SID}`); // discoverable after a restart
     expect(args[args.indexOf('-w') + 1]).toBe(KANBAN);
     const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['bash', '-l']);
+    expect(args.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
   });
   it('throws loudly on empty roots rather than mounting nothing', () => {
-    expect(() => buildContainerArgs({ ...base, roots: [] })).toThrow(/non-empty/);
+    expect(() => buildDetachedRunArgs({ ...base, roots: [] })).toThrow(/non-empty/);
+  });
+});
+
+describe('buildAttachArgs / dtachSocket', () => {
+  it('execs an interactive dtach attach on the session socket (winch redraw)', () => {
+    expect(buildAttachArgs('kanban-term-1', SID)).toEqual(
+      ['exec', '-it', 'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch'],
+    );
+  });
+  it('dtachSocket is a per-session path under /tmp', () => {
+    expect(dtachSocket(SID)).toBe(`/tmp/kanban-term-${SID}.dtach`);
   });
 });
 
@@ -153,18 +171,20 @@ describe('rootMountArgs', () => {
 
 describe('resolveSessionCommand', () => {
   const common = {
+    sessionId: SID,
     getTicket: async (id: string) => ticket({ id }),
     projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
     image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
-  it('no ticket → bare claude, no prefill (never a raw shell)', async () => {
-    const { cmd, args, prefill, roots } = await resolveSessionCommand({ ...common });
-    expect(cmd).toBe('docker');
-    const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
-    expect(args).not.toContain('bash');
-    expect(args).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
+  it('no ticket → detached claude under dtach + a matching attach, no prefill (never a raw shell)', async () => {
+    const { runArgs, attachArgs, socket, prefill, roots } = await resolveSessionCommand({ ...common });
+    const imgIdx = runArgs.indexOf('kanban-terminal');
+    expect(runArgs.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
+    expect(runArgs).not.toContain('bash');
+    expect(runArgs).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
+    expect(attachArgs).toEqual(['exec', '-it', 'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch']);
+    expect(socket).toBe(dtachSocket(SID));
     expect(prefill).toBeUndefined();
     expect(roots).toEqual([KANBAN]); // the transport pre-installs deps for these
   });
@@ -187,12 +207,12 @@ describe('resolveSessionCommand', () => {
   // lookup into the prefill — no field dropped/mangled at the boundary. The command stays
   // bare claude (the prefill is typed in by the transport, not passed as an arg).
   it('carries the real ticket id and title into the prefill (fidelity invariant)', async () => {
-    const { args, prefill } = await resolveSessionCommand({
+    const { runArgs, prefill } = await resolveSessionCommand({
       ...common, ticket: 'tkt-0123456789ab',
       getTicket: async (id) => ticket({ id, title: 'Fix the CSV export crash' }),
     });
-    const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    const imgIdx = runArgs.indexOf('kanban-terminal');
+    expect(runArgs.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
     expect(prefill).toContain('tkt-0123456789ab');
     expect(prefill).toContain('Fix the CSV export crash');
   });
@@ -224,14 +244,14 @@ describe('ticket-param round trip (widget URL → server parse → seeded comman
     const parsed = parseTicketParam(rawUrl);
     expect(parsed).toBe(id);
 
-    const { args, prefill } = await resolveSessionCommand({
-      ticket: parsed, getTicket: async (tid) => ticket({ id: tid, title }),
+    const { runArgs, prefill } = await resolveSessionCommand({
+      ticket: parsed, sessionId: SID, getTicket: async (tid) => ticket({ id: tid, title }),
       projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
       image: 'kanban-terminal', containerName: 'kanban-term-1',
     });
-    // The command stays bare; the id + title thread through to the prefill the transport types in.
-    const imgIdx = args.indexOf('kanban-terminal');
-    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    // The command stays bare claude-under-dtach; the id + title thread through to the prefill.
+    const imgIdx = runArgs.indexOf('kanban-terminal');
+    expect(runArgs.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
     expect(prefill).toContain(id);
     expect(prefill).toContain(title);
   });

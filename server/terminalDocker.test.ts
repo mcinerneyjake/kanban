@@ -8,31 +8,31 @@ function fakeChild() {
 }
 
 describe('spawnDockerCli', () => {
-  it('kill passes the container name as a discrete argv entry (no shell)', () => {
+  it('remove force-removes the container, name as a discrete argv entry (no shell)', () => {
     const spawn = vi.fn(() => fakeChild());
-    spawnDockerCli(spawn).kill('kanban-term-abc');
+    spawnDockerCli(spawn).remove('kanban-term-abc');
     expect(spawn).toHaveBeenCalledTimes(1);
-    expect(spawn).toHaveBeenCalledWith('docker', ['kill', 'kanban-term-abc'], { stdio: 'ignore' });
+    expect(spawn).toHaveBeenCalledWith('docker', ['rm', '-f', 'kanban-term-abc'], { stdio: 'ignore' });
   });
 
   it('a hostile container name stays ONE literal arg — never interpolated into a shell', () => {
     const spawn = vi.fn(() => fakeChild());
     const hostile = 'x; rm -rf ~ #';
-    spawnDockerCli(spawn).kill(hostile);
+    spawnDockerCli(spawn).remove(hostile);
     // The whole string is ONE argv entry, never parsed by a shell.
-    expect(spawn).toHaveBeenCalledWith('docker', ['kill', hostile], { stdio: 'ignore' });
+    expect(spawn).toHaveBeenCalledWith('docker', ['rm', '-f', hostile], { stdio: 'ignore' });
   });
 
-  it('kill swallows a spawn error (a missing container is not fatal)', () => {
+  it('remove swallows a spawn error (a missing container is not fatal)', () => {
     const child = fakeChild();
-    spawnDockerCli(() => child).kill('gone');
+    spawnDockerCli(() => child).remove('gone');
     expect(() => child.emit('error', new Error('no such container'))).not.toThrow();
   });
 
-  it('killSync uses spawnSync with an argv array (for the exit hook)', () => {
+  it('removeSync uses spawnSync with an argv array (for the exit hook)', () => {
     const spawnSync = vi.fn(() => ({ status: 0 }));
-    spawnDockerCli(undefined, spawnSync).killSync('kanban-term-xyz');
-    expect(spawnSync).toHaveBeenCalledWith('docker', ['kill', 'kanban-term-xyz'], { stdio: 'ignore' });
+    spawnDockerCli(undefined, spawnSync).removeSync('kanban-term-xyz');
+    expect(spawnSync).toHaveBeenCalledWith('docker', ['rm', '-f', 'kanban-term-xyz'], { stdio: 'ignore' });
   });
 
   it('run spawns docker with the given args + env and resolves the exit code', async () => {
