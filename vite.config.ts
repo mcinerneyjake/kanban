@@ -9,6 +9,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://localhost:3001',
+      // Dedicated WS path for the embedded terminal — kept off '/api' so SSE + HMR are unaffected.
+      '/terminal-ws': { target: 'ws://localhost:3001', ws: true },
     },
   },
 });

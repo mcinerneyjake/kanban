@@ -1,0 +1,262 @@
+import { describe, it, expect } from 'vitest';
+import {
+  isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
+  buildContainerArgs, resolveSessionCommand, authorizeUpgrade, parseClientFrame,
+  parseTicketParam, type CredMount,
+} from './terminalAuth.js';
+import type { Ticket } from '../shared/constants.js';
+
+const KANBAN = '/repo/kanban';
+const PORTFOLIO = '/repo/portfolio-site';
+const PROJECT_ROOTS = { kanban: KANBAN, 'portfolio-site': PORTFOLIO };
+const CRED: CredMount = { hostHome: '/host/home', containerHome: '/kanban-home' };
+
+function ticket(overrides: Partial<Ticket> = {}): Ticket {
+  return {
+    id: 'tkt-0123456789ab', title: 'Do the thing', type: 'feature', priority: 'high',
+    status: 'in-progress', order: 1, created: 'x', updated: 'x', body: '',
+    project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null,
+    ...overrides,
+  };
+}
+
+describe('isAllowedOrigin', () => {
+  it('allows localhost dev origins', () => {
+    expect(isAllowedOrigin('http://localhost:5173')).toBe(true);
+    expect(isAllowedOrigin('http://127.0.0.1:3001')).toBe(true);
+  });
+  it('rejects a foreign origin, a wrong port, and undefined', () => {
+    expect(isAllowedOrigin('https://evil.example')).toBe(false);
+    expect(isAllowedOrigin('http://localhost:8080')).toBe(false);
+    expect(isAllowedOrigin(undefined)).toBe(false);
+  });
+});
+
+describe('isValidToken', () => {
+  it('accepts an exact match', () => {
+    expect(isValidToken('abc', 'abc')).toBe(true);
+  });
+  it('rejects wrong, empty, or null — and never authorizes on an empty expected', () => {
+    expect(isValidToken('nope', 'abc')).toBe(false);
+    expect(isValidToken(null, 'abc')).toBe(false);
+    expect(isValidToken(undefined, 'abc')).toBe(false);
+    expect(isValidToken('', '')).toBe(false); // misconfig must not authorize
+    expect(isValidToken('x', '')).toBe(false);
+  });
+});
+
+describe('buildSessionEnv', () => {
+  it('keeps allowlisted keys and forces TERM', () => {
+    const env = buildSessionEnv({ PATH: '/usr/bin', HOME: '/home/j', TERM: 'dumb' });
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/home/j');
+    expect(env.TERM).toBe('xterm-256color');
+  });
+  it('drops secret-shaped keys not on the allowlist', () => {
+    const env = buildSessionEnv({
+      PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant', GITHUB_TOKEN: 'ghp_x', AWS_SECRET_ACCESS_KEY: 'z',
+    });
+    expect(env.PATH).toBe('/usr/bin');
+    expect('ANTHROPIC_API_KEY' in env).toBe(false);
+    expect('GITHUB_TOKEN' in env).toBe(false);
+    expect('AWS_SECRET_ACCESS_KEY' in env).toBe(false);
+  });
+  it('keeps DOCKER_ daemon-selection vars (not secrets, needed to reach the daemon)', () => {
+    const env = buildSessionEnv({ PATH: '/usr/bin', DOCKER_HOST: 'tcp://x', DOCKER_CONTEXT: 'colima' });
+    expect(env.DOCKER_HOST).toBe('tcp://x');
+    expect(env.DOCKER_CONTEXT).toBe('colima');
+  });
+});
+
+describe('allowedRootsFor', () => {
+  it('shell mode (no ticket) → kanban only', () => {
+    expect(allowedRootsFor({ ticket: null, projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN })).toEqual([KANBAN]);
+  });
+  it('kanban ticket → kanban only', () => {
+    expect(allowedRootsFor({ ticket: ticket({ project: 'kanban' }), projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN }))
+      .toEqual([KANBAN]);
+  });
+  it('cross-project ticket → project root first, then kanban', () => {
+    expect(allowedRootsFor({ ticket: ticket({ project: 'portfolio-site' }), projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN }))
+      .toEqual([PORTFOLIO, KANBAN]);
+  });
+  it('unmapped project → kanban-only fallback, never the whole disk', () => {
+    expect(allowedRootsFor({ ticket: ticket({ project: 'mystery' }), projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN }))
+      .toEqual([KANBAN]);
+  });
+});
+
+describe('buildContainerArgs', () => {
+  const base = {
+    roots: [KANBAN], credMount: CRED, image: 'kanban-terminal',
+    containerName: 'kanban-term-1', innerCmd: ['bash', '-l'],
+  };
+
+  it('mounts each allowed root', () => {
+    const joined = buildContainerArgs({ ...base, roots: [PORTFOLIO, KANBAN] }).join(' ');
+    expect(joined).toContain(`${PORTFOLIO}:${PORTFOLIO}`);
+    expect(joined).toContain(`${KANBAN}:${KANBAN}`);
+  });
+  it('mounts the persistent HOME + sets HOME, and never passes the token as an -e var', () => {
+    const args = buildContainerArgs(base);
+    expect(args.join(' ')).toContain(`${CRED.hostHome}:${CRED.containerHome}`);
+    expect(args.join(' ')).toContain(`HOME=${CRED.containerHome}`);
+    expect(args.some((a) => a.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
+    expect(args.some((a) => a.includes('ANTHROPIC'))).toBe(false);
+  });
+  it('does not mount any non-allowed host path', () => {
+    const args = buildContainerArgs(base);
+    const mounts = args.filter((_, i) => args[i - 1] === '-v');
+    for (const mount of mounts) {
+      const host = mount.split(':')[0];
+      expect(host === KANBAN || host === CRED.hostHome).toBe(true);
+    }
+  });
+  it('sets run/-it/--rm, name, workdir, image, then the inner command', () => {
+    const args = buildContainerArgs(base);
+    expect(args.slice(0, 3)).toEqual(['run', '-it', '--rm']);
+    expect(args[args.indexOf('--name') + 1]).toBe('kanban-term-1');
+    expect(args[args.indexOf('-w') + 1]).toBe(KANBAN);
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['bash', '-l']);
+  });
+  it('throws loudly on empty roots rather than mounting nothing', () => {
+    expect(() => buildContainerArgs({ ...base, roots: [] })).toThrow(/non-empty/);
+  });
+});
+
+describe('resolveSessionCommand', () => {
+  const common = {
+    getTicket: async (id: string) => ticket({ id }),
+    projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
+    image: 'kanban-terminal', containerName: 'kanban-term-1',
+  };
+
+  it('no ticket → bare claude, no prefill (never a raw shell)', async () => {
+    const { cmd, args, prefill } = await resolveSessionCommand({ ...common });
+    expect(cmd).toBe('docker');
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    expect(args).not.toContain('bash');
+    expect(args).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
+    expect(prefill).toBeUndefined();
+  });
+  it('rejects a malformed ticket id and never calls getTicket', async () => {
+    let called = false;
+    await expect(resolveSessionCommand({
+      ...common, ticket: 'tkt-BADID',
+      getTicket: async (id) => { called = true; return ticket({ id }); },
+    })).rejects.toThrow(/Invalid ticket id/);
+    expect(called).toBe(false);
+  });
+  it('propagates an unknown-ticket rejection from getTicket', async () => {
+    await expect(resolveSessionCommand({
+      ...common, ticket: 'tkt-0123456789ab',
+      getTicket: async () => { throw new Error('Ticket not found: tkt-0123456789ab'); },
+    })).rejects.toThrow(/not found/);
+  });
+
+  // Integration seam (id → getTicket → seed prefill): the real id + title must survive the
+  // lookup into the prefill — no field dropped/mangled at the boundary. The command stays
+  // bare claude (the prefill is typed in by the transport, not passed as an arg).
+  it('carries the real ticket id and title into the prefill (fidelity invariant)', async () => {
+    const { args, prefill } = await resolveSessionCommand({
+      ...common, ticket: 'tkt-0123456789ab',
+      getTicket: async (id) => ticket({ id, title: 'Fix the CSV export crash' }),
+    });
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    expect(prefill).toContain('tkt-0123456789ab');
+    expect(prefill).toContain('Fix the CSV export crash');
+  });
+
+  // The prefill is TYPED into the pty, so a title with a CR/LF would auto-submit and ESC could
+  // inject a control sequence. A board-controlled title must never carry a control byte through.
+  it('strips control chars from the title so the prefill cannot auto-submit or inject', async () => {
+    const CR = String.fromCharCode(13), LF = String.fromCharCode(10), ESC = String.fromCharCode(27);
+    const title = `evil"${CR}${LF}rm -rf${ESC}[2J then more`;
+    const { prefill } = await resolveSessionCommand({
+      ...common, ticket: 'tkt-0123456789ab',
+      getTicket: async (id) => ticket({ id, title }),
+    });
+    expect(prefill).toBeDefined();
+    // No CR/LF (would submit) or ESC/C0 controls (would inject a sequence) survive into the prefill.
+    const controls = [...(prefill ?? '')].filter((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+    expect(controls).toEqual([]);
+  });
+});
+
+// End-to-end seam: the ticket id the widget puts on the WS URL (encodeURIComponent) must
+// survive parse → lookup → seed into the spawned command. Drives the REAL chain, stubbing
+// only getTicket — so a drop/mangle anywhere from URL to argv fails here (per CLAUDE.md).
+describe('ticket-param round trip (widget URL → server parse → seeded command)', () => {
+  it('threads the id from the ?ticket= query all the way into the seed', async () => {
+    const id = 'tkt-0123456789ab';
+    const title = 'Fix the CSV export crash';
+    const rawUrl = `/terminal-ws?ticket=${encodeURIComponent(id)}`; // what TerminalWidget builds
+    const parsed = parseTicketParam(rawUrl);
+    expect(parsed).toBe(id);
+
+    const { args, prefill } = await resolveSessionCommand({
+      ticket: parsed, getTicket: async (tid) => ticket({ id: tid, title }),
+      projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
+      image: 'kanban-terminal', containerName: 'kanban-term-1',
+    });
+    // The command stays bare; the id + title thread through to the prefill the transport types in.
+    const imgIdx = args.indexOf('kanban-terminal');
+    expect(args.slice(imgIdx + 1)).toEqual(['claude']);
+    expect(prefill).toContain(id);
+    expect(prefill).toContain(title);
+  });
+  it('no ?ticket= → shell/bare session (null, not a crash)', () => {
+    expect(parseTicketParam('/terminal-ws')).toBeNull();
+    expect(parseTicketParam('')).toBeNull();
+  });
+});
+
+describe('authorizeUpgrade', () => {
+  const base = {
+    path: '/terminal-ws', wsPath: '/terminal-ws', origin: 'http://localhost:5173',
+    token: 'secret', expected: 'secret', activeSessions: 0, maxSessions: 2,
+  };
+  it('accepts a fully valid upgrade', () => {
+    expect(authorizeUpgrade(base)).toEqual({ ok: true });
+  });
+  it('ignores a non-terminal path (404 so HMR/others pass through)', () => {
+    const d = authorizeUpgrade({ ...base, path: '/other' });
+    expect(d).toEqual({ ok: false, status: 404, reason: 'not the terminal path' });
+  });
+  it('rejects a bad origin (403)', () => {
+    expect(authorizeUpgrade({ ...base, origin: 'https://evil.example' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeUpgrade({ ...base, origin: undefined })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects a bad/missing token (403)', () => {
+    expect(authorizeUpgrade({ ...base, token: 'wrong' })).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeUpgrade({ ...base, token: null })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('rejects once the session cap is reached (503)', () => {
+    expect(authorizeUpgrade({ ...base, activeSessions: 2 })).toMatchObject({ ok: false, status: 503 });
+  });
+});
+
+describe('parseClientFrame', () => {
+  it('parses input and resize frames', () => {
+    expect(parseClientFrame('{"t":"i","d":"ls\\n"}')).toEqual({ t: 'i', d: 'ls\n' });
+    expect(parseClientFrame('{"t":"r","cols":120,"rows":40}')).toEqual({ t: 'r', cols: 120, rows: 40 });
+  });
+  it('drops malformed, mistyped, or unknown frames', () => {
+    expect(parseClientFrame('not json')).toBeNull();
+    expect(parseClientFrame('null')).toBeNull();
+    expect(parseClientFrame('{"t":"i"}')).toBeNull();          // missing d
+    expect(parseClientFrame('{"t":"r","cols":"80","rows":24}')).toBeNull(); // cols not a number
+    expect(parseClientFrame('{"t":"x"}')).toBeNull();          // unknown type
+  });
+  it('rejects non-positive / non-integer resize dims (node-pty would throw → server crash)', () => {
+    expect(parseClientFrame('{"t":"r","cols":0,"rows":0}')).toBeNull();     // FitAddon on a hidden pane
+    expect(parseClientFrame('{"t":"r","cols":-5,"rows":10}')).toBeNull();
+    expect(parseClientFrame('{"t":"r","cols":80.5,"rows":24}')).toBeNull(); // non-integer
+  });
+  it('clamps oversized resize dims to the max', () => {
+    expect(parseClientFrame('{"t":"r","cols":99999,"rows":99999}')).toEqual({ t: 'r', cols: 1000, rows: 1000 });
+  });
+});

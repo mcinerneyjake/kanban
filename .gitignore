@@ -6,6 +6,8 @@ dist
 .env
 .env.*
 !.env.example
+# Embedded terminal's subscription credential (built by scripts/terminal-setup-cred.mjs).
+.terminal/
 .DS_Store
 tickets/
 events/

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm run server\" \"vite\"",
-    "server": "tsx watch server/index.ts",
+    "server": "KANBAN_TERMINAL=1 tsx watch server/index.ts",
     "agent": "tsx agent/index.ts",
     "agent:search": "tsx agent/searchDemo.ts",
     "agent:record": "tsx agent/recordRun.ts",
@@ -23,17 +23,22 @@
     "build": "vite build",
     "test:e2e": "playwright test",
     "preview": "vite preview",
-    "prepare": "husky"
+    "prepare": "husky",
+    "postinstall": "node scripts/fix-node-pty-perms.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "chokidar": "^4.0.3",
     "dompurify": "^3.4.11",
     "express": "^4.19.2",
     "gray-matter": "^4.0.3",
     "marked": "^12.0.2",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -43,6 +48,7 @@
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@types/supertest": "^7.2.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.1",
     "@vitest/coverage-v8": "^4.1.9",
     "concurrently": "^8.2.2",

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { api } from './api.js';
 import Board from './components/Board.jsx';
 import Dashboard from './components/Dashboard.jsx';
@@ -9,6 +9,9 @@ import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
 import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
+import { type TerminalSession } from './components/TerminalWidget.jsx';
+// Lazy + DEV-gated so the xterm payload lands in its own chunk (loaded only in dev), never the prod main bundle.
+const TerminalWidget = lazy(() => import('./components/TerminalWidget.jsx'));
 import ErrorBanner from './components/ui/ErrorBanner.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
@@ -35,6 +38,8 @@ export default function App() {
   // Ephemeral peek from the ticket editor — no URL coupling; reload won't reopen it.
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<View>('board');
+  // Dev-only embedded terminal (tkt-be809dd2b7fb). null = closed; {} = shell; {ticket} = seeded.
+  const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(null);
   const dash = useDashboardConfig();
   // Bumped on every ticket reload so the dashboard re-fetches its aggregates.
   const [refreshKey, setRefreshKey] = useState(0);
@@ -300,6 +305,8 @@ export default function App() {
             onOpen={openTicket}
             onOpenRun={openRun}
             onClose={closeTicket}
+            // Close the editor first so the seeded terminal isn't hidden behind the modal.
+            onRunInTerminal={(id) => { closeTicket(); setTerminalSession({ ticket: id }); }}
           />
         )}
 
@@ -313,6 +320,24 @@ export default function App() {
           />
         )}
       </div>
+
+      {/* Dev-only embedded terminal — mounted at .layout so it survives view changes; DEV-gated
+          so a production build never ships a launcher pointing at a non-existent endpoint. */}
+      {import.meta.env.DEV && terminalSession === null && (
+        <button className="terminal-fab" onClick={() => setTerminalSession({})} title="Open terminal">
+          ⌨ Terminal
+        </button>
+      )}
+      {import.meta.env.DEV && terminalSession && (
+        <Suspense fallback={null}>
+          <TerminalWidget
+            key={terminalSession.ticket ?? 'shell'}
+            session={terminalSession}
+            theme={theme}
+            onClose={() => setTerminalSession(null)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
