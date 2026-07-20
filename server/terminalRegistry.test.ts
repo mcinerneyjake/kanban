@@ -74,6 +74,22 @@ describe('TerminalRegistry lifecycle', () => {
     expect(killContainer).toHaveBeenCalledWith('cont-1');
   });
 
+  it('detach after the container started but BEFORE the pty attaches → grace, not dispose (review)', () => {
+    const { registry, killContainer } = makeRegistry();
+    const ws = makeWs();
+    const entry = registry.create(ID, 'cont-1', ws);
+    entry.containerStarted = true; // container is up; pty not yet attached (the dtach-wait window)
+
+    registry.detach(ID, ws);
+    expect(registry.lookup(ID)).toBe('found'); // detached + gracing, NOT disposed
+    expect(registry.size()).toBe(1);
+    expect(killContainer).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(GRACE_MS); // no reattach → grace expiry disposes
+    expect(registry.size()).toBe(0);
+    expect(killContainer).toHaveBeenCalledWith('cont-1');
+  });
+
   it('reattach within grace reuses the same pty + container, cancels grace, and never takes a 2nd slot', () => {
     const { registry, killContainer } = makeRegistry();
     const { ws: wsA, pty } = boot(registry, ID, 'cont-1');

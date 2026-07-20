@@ -66,13 +66,18 @@ function ensureDeps(roots: string[]): Promise<void> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-// Poll until dtach has created its session socket inside the container (it does so at startup),
-// so the first `dtach -a` attach can't race container boot. Bounded; resolves false on timeout.
-async function waitForDtachSocket(containerName: string, socket: string, timeoutMs = 15_000): Promise<boolean> {
+// Poll until dtach has created its session socket inside the container (it does so at startup), so
+// the first `dtach -a` attach can't race container boot. The window is generous because a COLD
+// node_modules install (if ensureDeps silently failed) runs in the entrypoint before dtach starts;
+// but if the container has EXITED (claude/dtach crashed immediately — `docker run -d` returns 0
+// regardless), we fail fast instead of hanging the whole window (review of tkt-00dd79b261d7).
+async function waitForDtachSocket(containerName: string, socket: string, timeoutMs = 120_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await docker.run(['exec', containerName, 'test', '-S', socket]) === 0) return true;
-    await sleep(250);
+    // `exec` into a stopped container fails → the container died during startup; stop waiting.
+    if (await docker.run(['exec', containerName, 'true']) !== 0) return false;
+    await sleep(1000);
   }
   return false;
 }
@@ -221,14 +226,18 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   // claude then runs independent of any browser connection so it survives a reload (and, once S3a
   // lands, an Express restart).
   const runCode = await docker.run(command.runArgs, { env: buildSessionEnv(process.env) });
-  if (entry.disposed) return;
+  // Disposed mid-run → the container may have been created AFTER dispose's rm -f no-op'd against a
+  // not-yet-existing name; force-remove it by name now so it can't leak (review of tkt-00dd79b261d7).
+  if (entry.disposed) { docker.remove(containerName); return; }
   if (runCode !== 0) { fail('failed to start session container'); return; }
+  // A live container now exists — a reload from here on must reattach, not dispose it.
+  entry.containerStarted = true;
 
   // Wait for dtach to create its socket before attaching (a fresh container needs a moment even
   // with deps pre-installed). Then a browser connection is a `docker exec … dtach -a` pty.
   const ready = await waitForDtachSocket(containerName, command.socket);
-  if (entry.disposed) return;
-  if (!ready) { fail('session did not become ready'); return; }
+  if (entry.disposed) { docker.remove(containerName); return; }
+  if (!ready) { fail(`session container did not become ready (see: docker logs ${containerName})`); return; }
 
   let term: pty.IPty;
   try {
