@@ -122,6 +122,17 @@ describe('reapOnce', () => {
     expect(removed).toEqual([]);
     expect(decisions).toEqual([]);
   });
+
+  it('invokes onReaped(session) for each reaped orphan so its isolated HOME is cleaned (S4)', async () => {
+    const rows = [row('c-old', 's-old', 120 * MIN), row('c-live', 's-live', 200 * MIN), row('c-new', 's-new', 5_000)];
+    const { docker } = fakeDocker(rows);
+    const cleaned: string[] = [];
+    await reapOnce({
+      docker, isTracked: (s) => s === 's-live', rootLabel: '/r', config: CFG, now: () => NOW,
+      onReaped: (session) => cleaned.push(session),
+    });
+    expect(cleaned).toEqual(['s-old']); // only the reaped orphan; live is protected, new is within grace
+  });
 });
 
 // Mandatory integration-seam round-trip (CLAUDE.md): the createdAt epoch threads

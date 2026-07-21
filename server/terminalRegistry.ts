@@ -46,6 +46,9 @@ export interface RegistryDeps {
   graceMs: number;              // how long a detached session survives awaiting a reattach
   nudgeMs: number;              // delay between the two-step SIGWINCH resize halves
   killContainer: (name: string) => void;
+  // Extra per-session teardown keyed by id, run on dispose AFTER the container is killed — used to
+  // remove the session's isolated HOME dir (S4, tkt-db09c3a52655). Optional so tests need not wire it.
+  cleanupSession?: (id: string) => void;
 }
 
 export class TerminalRegistry {
@@ -180,6 +183,7 @@ export class TerminalRegistry {
     if (entry.cleanup) { try { entry.cleanup(); } catch { /* best effort */ } }
     if (entry.pty) { try { entry.pty.kill(); } catch { /* already exited */ } }
     this.deps.killContainer(entry.containerName);
+    if (this.deps.cleanupSession) { try { this.deps.cleanupSession(id); } catch { /* best effort */ } }
     this.entries.delete(id);
   }
 }

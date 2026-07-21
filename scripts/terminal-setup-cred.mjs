@@ -8,11 +8,12 @@
 //   node scripts/terminal-setup-cred.mjs   # paste when prompted (input is hidden)
 // or pipe it:  printf '%s' "$TOKEN" | node scripts/terminal-setup-cred.mjs
 //
-// Seeds ~/.kanban-terminal/home/.claude/.credentials.json (mode 0600, dir 0700). That home
-// dir is mounted as the session's persistent HOME, so login/onboarding also persist (incl.
-// ~/.claude.json) and you don't sign in every time. Kept OUTSIDE the repo so the in-container
-// session can't read the raw token via a project mount. Re-run to rotate. (You can also just
-// `/login` once inside a session — it now persists too.)
+// Seeds ~/.kanban-terminal/home/.claude/.credentials.json (mode 0600, dir 0700). That home dir is
+// the read-only SEED/template: each session gets its own COPY of it as HOME (S4, tkt-db09c3a52655),
+// so concurrent sessions can't corrupt a shared ~/.claude.json and one session can't tamper another's
+// auth. Kept OUTSIDE the repo so the in-container session can't read the raw token via a project
+// mount. Re-run to rotate. NOTE: because sessions copy the seed, a `/login` INSIDE a session is
+// ephemeral (that copy only) — to persist auth, run this script (or /login into the seed home once).
 import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
