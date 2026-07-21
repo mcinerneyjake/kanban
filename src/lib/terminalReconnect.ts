@@ -6,7 +6,7 @@
 // alone, and is a pure function so it's unit-tested without a real socket. The component owns the
 // timers and side effects.
 
-import { TERMINAL_STARTUP_FAILURE_CODE } from '../../shared/constants.js';
+import { TERMINAL_STARTUP_FAILURE_CODE, TERMINAL_REATTACH_FAILED_CODE } from '../../shared/constants.js';
 
 export interface CloseContext {
   code: number;           // WS close code (see classifyClose)
@@ -18,10 +18,12 @@ export interface CloseContext {
 export type CloseAction = 'dismiss' | 'reconnect' | 'error';
 
 // Decide the fate of a dropped terminal socket from its close code:
-//   • TERMINAL_STARTUP_FAILURE_CODE (4500) — the server's explicit signal that the container/session
-//     failed to start. The WS handshake completes before `docker run` fails, so we CANNOT infer this
-//     from a bare-close 1005 by client-side timing (that heuristic silently self-dismissed on slow
-//     startup failures — tkt-171759eb29f6). Surface an error and KEEP the widget so the failure shows.
+//   • A server-signalled UNAVAILABLE code — the container never started (TERMINAL_STARTUP_FAILURE_CODE,
+//     4500) or an existing session couldn't be rejoined (TERMINAL_REATTACH_FAILED_CODE, 4501). We
+//     CANNOT infer these from a bare-close 1005 by client-side timing (that heuristic silently
+//     self-dismissed — tkt-171759eb29f6 / tkt-42a6d95a92d1). Surface an error and KEEP the widget so
+//     the failure shows; the user reopens for a fresh session. NOT reconnect: the server already waited
+//     for the container, so retrying would spin without recovering.
 //   • 1005 ("no status received", the browser's report of a codeless `ws.close()`) or 1000 — an
 //     INTENTIONAL close of a session that actually ran (claude exited / the client sent a terminate
 //     frame). Dismiss the widget.
@@ -30,7 +32,7 @@ export type CloseAction = 'dismiss' | 'reconnect' | 'error';
 //     live (S3a): reconnect while attempts remain. A never-opened death is an initial-connect failure
 //     and an exhausted retry budget is a real outage — both surface an error.
 export function classifyClose(ctx: CloseContext): CloseAction {
-  if (ctx.code === TERMINAL_STARTUP_FAILURE_CODE) return 'error';
+  if (ctx.code === TERMINAL_STARTUP_FAILURE_CODE || ctx.code === TERMINAL_REATTACH_FAILED_CODE) return 'error';
   const intentional = ctx.code === 1000 || ctx.code === 1005;
   if (intentional) return 'dismiss';
   if (ctx.hasEverOpened && ctx.attempts < ctx.maxAttempts) return 'reconnect';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor } from './terminalReconnect';
-import { TERMINAL_STARTUP_FAILURE_CODE } from '../../shared/constants';
+import { TERMINAL_STARTUP_FAILURE_CODE, TERMINAL_REATTACH_FAILED_CODE } from '../../shared/constants';
 
 describe('classifyClose', () => {
   const base = { hasEverOpened: true, attempts: 0, maxAttempts: 8 };
@@ -12,6 +12,15 @@ describe('classifyClose', () => {
     expect(classifyClose({ ...base, code: TERMINAL_STARTUP_FAILURE_CODE })).toBe('error');
     // Even with a full retry budget and a long-lived prior connection, a startup failure never retries.
     expect(classifyClose({ ...base, code: TERMINAL_STARTUP_FAILURE_CODE, hasEverOpened: true, attempts: 0 })).toBe('error');
+  });
+
+  it('the reattach-failed code keeps the widget as an error, and never retries (tkt-42a6d95a92d1)', () => {
+    // The server signals TERMINAL_REATTACH_FAILED_CODE when it can't rejoin an existing session (dead
+    // adopted container / spawn failure / disposed mid-reattach). Show an error, not a silent dismiss —
+    // and not a reconnect: it must be 'error' even with a full retry budget, since the server already
+    // waited for the container and retrying would only spin.
+    expect(classifyClose({ ...base, code: TERMINAL_REATTACH_FAILED_CODE })).toBe('error');
+    expect(classifyClose({ ...base, code: TERMINAL_REATTACH_FAILED_CODE, attempts: 0, maxAttempts: 8 })).toBe('error');
   });
 
   it('an intentional server close (1000 or 1005) dismisses the widget', () => {
