@@ -13,7 +13,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo } from './preflight-lib.mjs';
+import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness } from './preflight-lib.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(`preflight: ${m}`);
@@ -30,6 +30,30 @@ async function ask(question, dflt = true) {
 
 function dockerUp() {
   return isDaemonUp(spawnSync('docker', ['info'], { stdio: 'ignore' }).status);
+}
+
+function git(args, opts = {}) {
+  return spawnSync('git', args, { encoding: 'utf8', ...opts });
+}
+
+// Warn when the checkout is stale/parked — the app + embedded terminal serve whatever is checked out,
+// so running behind main (or on a detached HEAD) silently ships pre-fix code (tkt-1f9c3ae13a50).
+// Best-effort + never fatal: skips silently outside a git tree or with no origin/main to compare.
+function checkCheckout() {
+  if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) return; // not a git work tree → skip
+  // Refresh origin/main so "behind" isn't measured against a stale local ref (the guard matters most
+  // right after someone else pushes to main). Short, offline-tolerant; a failed fetch falls back to
+  // the last-known ref. stdio ignored so it can't prompt for creds and hang the preflight.
+  git(['fetch', 'origin', 'main', '--quiet'], { timeout: 4000, stdio: 'ignore' });
+  if (git(['rev-parse', '--verify', '--quiet', 'origin/main']).status !== 0) return; // no ref → skip
+  const behindRes = git(['rev-list', '--count', 'HEAD..origin/main']);
+  if (behindRes.status !== 0) return; // couldn't compute → skip rather than mislead
+  const branchRes = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = branchRes.status === 0 ? branchRes.stdout.trim() : 'HEAD';
+  const t = Number.parseInt(process.env.KANBAN_STALE_WARN_COMMITS ?? '', 10);
+  const threshold = Number.isInteger(t) && t >= 0 ? t : 3;
+  const { level, message } = describeCheckoutFreshness({ branch, behind: Number(behindRes.stdout.trim()), threshold });
+  if (level === 'warn') warn(message); else log(message);
 }
 
 async function probeModels(base) {
@@ -108,6 +132,9 @@ async function main() {
   // Auto-start needs an interactive macOS shell; otherwise probe-and-report only (never prompt/hang).
   const interactive = Boolean(process.stdin.isTTY) && process.env.KANBAN_NO_PREFLIGHT !== '1' && process.platform === 'darwin';
   if (!interactive) log('non-interactive — checking without prompting');
+  // Freshness first: "am I even running the right code?" is the most fundamental check, and it's the
+  // one that would have caught the stale-checkout bug that made the terminal die on restart.
+  checkCheckout();
   await checkDocker(interactive);
   await checkLmStudio(interactive, base);
 }
