@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { classifyClose, reconnectDelayMs, RECONNECT } from '../lib/terminalReconnect';
+import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
@@ -16,7 +16,7 @@ import { classifyClose, reconnectDelayMs, RECONNECT } from '../lib/terminalRecon
 // and kills every container (not covered in v1).
 
 export type TerminalSession = { ticket?: string };
-type Status = 'connecting' | 'open' | 'closed' | 'error';
+type Status = TerminalStatus;
 
 // Per-tab reattach identity. sessionStorage survives a reload but dies on tab close — matching
 // "close tears the container down". Keyed per mount-key so a shell and a ticket session don't
@@ -134,7 +134,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
 
     const scheduleReconnect = () => {
-      setStatus('connecting'); // booted ⇒ the overlay reads "Reconnecting…", keeping the last screen
+      // booted ⇒ NO overlay: the last frame stays visible and the amber-pulsing header dot is the
+      // only signal, so an Express-restart reconnect looks like Claude simply kept thinking.
+      setStatus('connecting');
       const delay = reconnectDelayMs(reconnectAttempts, { baseMs: RECONNECT.baseMs, capMs: RECONNECT.capMs });
       reconnectAttempts += 1;
       reconnectTimer = setTimeout(() => { if (!disposed) connect(); }, delay);
@@ -169,6 +171,7 @@ export default function TerminalWidget({ session, theme, onClose }: {
           wsRef.current = socket;
           let wasOpen = false;
           let revealed = false;
+          let pendingSizeResend = false; // a reattach must re-deliver the size once the fresh pty is live
           // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet gap
           // after output) — revealing on the first byte would flash the freshly-cleared screen before
           // the UI paints. A hard cap covers sessions that stream continuously.
@@ -181,11 +184,21 @@ export default function TerminalWidget({ session, theme, onClose }: {
           };
           socket.onopen = () => {
             if (disposed) return;
+            const isReattach = hasEverOpened; // a prior socket opened ⇒ this is an in-place reconnect
             wasOpen = true;
             hasEverOpened = true;
             reconnectAttempts = 0; // a successful (re)connect resets the backoff budget
             setStatus('open');
             fit.fit(); sendResize(); term.focus();
+            // A reattach gets a FRESH server-side exec pty (default 80×24). Unlike the initial connect
+            // — where the ResizeObserver re-sends our size once the pane lays out — a reattach doesn't
+            // change the widget size, so nothing re-delivers our fit size after the pty is live (the
+            // sendResize above races the pty's async creation and is dropped). Result: Claude renders a
+            // wrong-sized, half-redrawn frame (missing input box). Re-send the size on the first byte,
+            // which proves the pty is live; the pty is at the WRONG size, so that one resize is itself
+            // the change that makes Claude/Ink fully re-lay-out (no artificial nudge/timer needed —
+            // that's only for the reload path, whose pty is already at the right size).
+            if (isReattach) pendingSizeResend = true;
             // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
             // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
             // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
@@ -194,6 +207,14 @@ export default function TerminalWidget({ session, theme, onClose }: {
           };
           socket.onmessage = (e) => {
             if (disposed) return;
+            // First byte after a reattach ⇒ the fresh exec pty is live and accepting resizes now.
+            // Re-deliver our fit size (the onopen sendResize raced pty creation and was dropped). The
+            // pty is at its 80×24 spawn default, so this single resize is a real change → Claude/Ink
+            // fully re-lays-out at the correct size. One deterministic message; no timer.
+            if (pendingSizeResend) {
+              pendingSizeResend = false;
+              sendResize();
+            }
             if (!revealed) {
               if (settleTimer) clearTimeout(settleTimer);
               settleTimer = setTimeout(reveal, 150);
@@ -269,18 +290,17 @@ export default function TerminalWidget({ session, theme, onClose }: {
   }, [minimized]);
 
   const title = session.ticket ? `Terminal · ${session.ticket}` : 'Terminal';
-  const overlay = status === 'error' ? 'Terminal unavailable'
-    : !booted ? 'Loading terminal…'
-    // Once booted, a drop back to 'connecting' means the reconnect loop is running (e.g. Express
-    // restarted) — say so over the last screen rather than tearing the widget down.
-    : status === 'connecting' ? 'Reconnecting…'
-    : null;
+  // Once booted, a reconnect shows NO overlay — the frozen frame stays and the dot carries the signal.
+  const overlay = overlayFor(status, booted);
+  const liveMsg = liveMessageFor(status, booted);
+  // A booted reconnect reads better as "reconnecting" than the raw "connecting" state name.
+  const statusLabel = booted && status === 'connecting' ? 'reconnecting' : status;
 
   return (
     <div className={`terminal-widget${minimized ? ' minimized' : ''}`} role="dialog" aria-label="Embedded terminal">
       <div className="tw-header">
         <span className="tw-title">{title}</span>
-        <span className={`tw-status tw-status-${status}`} title={status} aria-label={`status: ${status}`}>●</span>
+        <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
         <button className="tw-btn" onClick={() => setMinimized((m) => !m)} aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}>
           {minimized ? '▢' : '—'}
         </button>
@@ -290,6 +310,8 @@ export default function TerminalWidget({ session, theme, onClose }: {
         <div className="tw-body" ref={containerRef} />
         {overlay && <div className="tw-overlay">{overlay}</div>}
       </div>
+      {/* Screen readers get the reconnect/recovery cue that used to live in the (now removed) overlay. */}
+      <span className="sr-only" role="status" aria-live="polite">{liveMsg}</span>
     </div>
   );
 }
