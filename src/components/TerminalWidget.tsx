@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { classifyClose, reconnectDelayMs, RECONNECT } from '../lib/terminalReconnect';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
@@ -88,7 +89,12 @@ export default function TerminalWidget({ session, theme, onClose }: {
     };
   }, []);
 
-  // One terminal + socket per session (keyed by App, so a new ticket remounts).
+  // One terminal per session (keyed by App, so a new ticket remounts); the SOCKET may be rebuilt in
+  // place by the reconnect loop below. Auto-reconnect (tkt-af8e94856264): an Express restart drops
+  // the WS as a socket DEATH (no close frame ⇒ code 1006) while the container survives server-side
+  // (S3a) — so instead of dismissing the widget, we re-fetch the (per-boot, now-rotated) token and
+  // reattach with bounded exponential backoff, keyed on the same sessionStorage id. An INTENTIONAL
+  // server close (session ended → the server bare-closes ⇒ code 1005) still dismisses; see classifyClose.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -107,6 +113,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
 
     let ws: WebSocket | null = null;
     let disposed = false;
+    let hasEverOpened = false;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
     let bootCapTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -122,83 +131,114 @@ export default function TerminalWidget({ session, theme, onClose }: {
 
     const mountKey = session.ticket ?? 'shell';
     const { id: sessionId, canPersist } = readOrMintSessionId(mountKey);
-
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    fetch('/api/terminal/token')
-      .then((r) => r.json())
-      .then((body: { token: string }) => {
-        if (disposed) return;
-        const params = new URLSearchParams({ session: sessionId });
-        if (session.ticket) params.set('ticket', session.ticket);
-        // Token travels as the WS subprotocol, not the URL, so it can't land in access logs. The
-        // session id is a non-secret name (useless without the token), so the query is fine for it.
-        ws = new WebSocket(`${scheme}://${location.host}/terminal-ws?${params.toString()}`, [body.token]);
-        wsRef.current = ws;
-        let wasOpen = false;
-        let revealed = false;
-        // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet
-        // gap after output) — revealing on the first byte would flash the freshly-cleared
-        // screen before the UI paints. A hard cap covers sessions that stream continuously.
-        const reveal = () => {
-          if (revealed) return;
-          revealed = true;
-          setBooted(true);
-          if (settleTimer) clearTimeout(settleTimer);
-          if (bootCapTimer) clearTimeout(bootCapTimer);
-        };
-        ws.onopen = () => {
+
+    const scheduleReconnect = () => {
+      setStatus('connecting'); // booted ⇒ the overlay reads "Reconnecting…", keeping the last screen
+      const delay = reconnectDelayMs(reconnectAttempts, { baseMs: RECONNECT.baseMs, capMs: RECONNECT.capMs });
+      reconnectAttempts += 1;
+      reconnectTimer = setTimeout(() => { if (!disposed) connect(); }, delay);
+    };
+
+    // Failure with no live socket (the token fetch itself failed — server likely mid-restart): retry
+    // if this session had opened before, else it's an initial-connect failure.
+    const onConnectFailure = () => {
+      if (disposed) return;
+      if (classifyClose({ code: 1006, wasOpen: false, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts }) === 'reconnect') {
+        scheduleReconnect();
+      } else {
+        setStatus('error');
+      }
+    };
+
+    const connect = () => {
+      if (settleTimer) clearTimeout(settleTimer);
+      if (bootCapTimer) clearTimeout(bootCapTimer);
+      const params = new URLSearchParams({ session: sessionId });
+      if (session.ticket) params.set('ticket', session.ticket);
+      // Re-fetch the token every attempt: it is minted per Express boot, so after a restart the old
+      // one is invalid — reusing it would 403 the reattach. The session id is stable (sessionStorage).
+      fetch('/api/terminal/token')
+        .then((r) => r.json())
+        .then((body: { token: string }) => {
           if (disposed) return;
-          wasOpen = true;
-          setStatus('open');
-          fit.fit(); sendResize(); term.focus();
-          // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
-          // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
-          // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
-          // server restart), so keying the reveal on `reattaching` would flash a blank boot screen
-          // (review #4). The cap from OPEN covers a session that emits nothing at all.
-          bootCapTimer = setTimeout(reveal, 2500);
-        };
-        ws.onmessage = (e) => {
-          if (disposed) return;
-          if (!revealed) {
+          // Token travels as the WS subprotocol, not the URL, so it can't land in access logs. The
+          // session id is a non-secret name (useless without the token), so the query is fine for it.
+          const socket = new WebSocket(`${scheme}://${location.host}/terminal-ws?${params.toString()}`, [body.token]);
+          ws = socket;
+          wsRef.current = socket;
+          let wasOpen = false;
+          let revealed = false;
+          // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet gap
+          // after output) — revealing on the first byte would flash the freshly-cleared screen before
+          // the UI paints. A hard cap covers sessions that stream continuously.
+          const reveal = () => {
+            if (revealed) return;
+            revealed = true;
+            setBooted(true);
             if (settleTimer) clearTimeout(settleTimer);
-            settleTimer = setTimeout(reveal, 150);
-          }
-          const data: unknown = e.data;
-          if (typeof data === 'string') term.write(data);
-          else if (data instanceof ArrayBuffer) term.write(new Uint8Array(data));
-        };
-        ws.onclose = () => {
-          if (disposed) return;
-          // A reload/tab-close drops the socket too, but the session lives on for reattach — keep
-          // the widget state so the reloaded page (App restores it from sessionStorage) rejoins it.
-          if (isUnloadingRef.current) return;
-          // Connected-then-ended → dismiss (deterministic, off the authoritative close). A
-          // never-opened socket = a connect/auth failure → surface the error, rather than let
-          // 'closed' fall through to a perpetual "Loading…" overlay.
-          if (wasOpen) onCloseRef.current();
-          else setStatus('error');
-        };
-        ws.onerror = () => { if (!disposed) setStatus('error'); };
-      })
-      .catch(() => { if (!disposed) setStatus('error'); });
+            if (bootCapTimer) clearTimeout(bootCapTimer);
+          };
+          socket.onopen = () => {
+            if (disposed) return;
+            wasOpen = true;
+            hasEverOpened = true;
+            reconnectAttempts = 0; // a successful (re)connect resets the backoff budget
+            setStatus('open');
+            fit.fit(); sendResize(); term.focus();
+            // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
+            // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
+            // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
+            // server restart). The cap from OPEN covers a session that emits nothing at all.
+            bootCapTimer = setTimeout(reveal, 2500);
+          };
+          socket.onmessage = (e) => {
+            if (disposed) return;
+            if (!revealed) {
+              if (settleTimer) clearTimeout(settleTimer);
+              settleTimer = setTimeout(reveal, 150);
+            }
+            const data: unknown = e.data;
+            if (typeof data === 'string') term.write(data);
+            else if (data instanceof ArrayBuffer) term.write(new Uint8Array(data));
+          };
+          socket.onclose = (event) => {
+            if (disposed) return;
+            // A reload/tab-close drops the socket too, but the session lives on for reattach — keep
+            // the widget so the reloaded page (App restores it from sessionStorage) rejoins it.
+            if (isUnloadingRef.current) return;
+            const action = classifyClose({
+              code: event.code, wasOpen, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts,
+            });
+            // 'reconnect' → socket death (Express restarted) but the container survives (S3a): retry
+            // with backoff. 'dismiss' → intentional server close (session ended, 1005/1000).
+            // 'error' → outage / retries exhausted.
+            if (action === 'reconnect') scheduleReconnect();
+            else if (action === 'dismiss') onCloseRef.current();
+            else setStatus('error');
+          };
+          socket.onerror = () => { /* the onclose that always follows decides: reconnect / dismiss / error */ };
+        })
+        .catch(onConnectFailure);
+    };
+
+    connect();
 
     return () => {
       disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (settleTimer) clearTimeout(settleTimer);
       if (bootCapTimer) clearTimeout(bootCapTimer);
       ro.disconnect();
       dataSub.dispose();
+      // Terminate the server session UNLESS this is a reload (then the socket drop → grace →
+      // reattach). Also terminate when we can't persist an id — a reload couldn't reattach anyway, so
+      // don't strand a grace-held container. Terminating clears the id so we never try to rejoin a
+      // session we just told the server to dispose. Runs even mid-reconnect (ws may be null then).
+      const terminate = !canPersist || !isUnloadingRef.current;
+      if (terminate) clearSessionId(mountKey);
       if (ws) {
-        // Terminate the server session UNLESS this is a reload (then the socket drop → grace →
-        // reattach). Also terminate when we can't persist an id — a reload couldn't reattach
-        // anyway, so don't strand a grace-held container. Terminating clears the id so we never
-        // try to rejoin a session we just told the server to dispose.
-        const terminate = !canPersist || !isUnloadingRef.current;
-        if (terminate) {
-          if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ t: 'e' })); } catch { /* closing */ } }
-          clearSessionId(mountKey);
-        }
+        if (terminate && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ t: 'e' })); } catch { /* closing */ } }
         ws.close();
       }
       term.dispose();
@@ -231,6 +271,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
   const title = session.ticket ? `Terminal · ${session.ticket}` : 'Terminal';
   const overlay = status === 'error' ? 'Terminal unavailable'
     : !booted ? 'Loading terminal…'
+    // Once booted, a drop back to 'connecting' means the reconnect loop is running (e.g. Express
+    // restarted) — say so over the last screen rather than tearing the widget down.
+    : status === 'connecting' ? 'Reconnecting…'
     : null;
 
   return (
