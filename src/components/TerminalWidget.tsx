@@ -18,6 +18,17 @@ import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor,
 export type TerminalSession = { ticket?: string };
 type Status = TerminalStatus;
 
+// Dev-only (HMR): true once Vite is about to replace THIS module — i.e. an edit to the terminal's own
+// source (this file or terminalReconnect) is about to remount the widget. The connection-effect
+// cleanup then treats the remount like a reload — preserve the session for reattach — instead of a
+// deliberate ✕ that terminates the container, so editing the terminal's own source no longer
+// self-terminates the running session. dispose is scoped to THIS module (unlike the global
+// vite:beforeUpdate event), so an unrelated hot-update can neither trip it nor race it, and it never
+// gates onclose, so a real WS close arriving mid-refresh is still classified normally. Production has
+// no import.meta.hot, so this is inert there.
+let hmrDisposing = false;
+if (import.meta.hot) import.meta.hot.dispose(() => { hmrDisposing = true; });
+
 // Per-tab reattach identity. sessionStorage survives a reload but dies on tab close — matching
 // "close tears the container down". Keyed per mount-key so a shell and a ticket session don't
 // collide. Defensive read (storage may be blocked/full) per useDashboardConfig.
@@ -146,7 +157,7 @@ export default function TerminalWidget({ session, theme, onClose }: {
     // if this session had opened before, else it's an initial-connect failure.
     const onConnectFailure = () => {
       if (disposed) return;
-      if (classifyClose({ code: 1006, wasOpen: false, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts }) === 'reconnect') {
+      if (classifyClose({ code: 1006, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts }) === 'reconnect') {
         scheduleReconnect();
       } else {
         setStatus('error');
@@ -169,7 +180,6 @@ export default function TerminalWidget({ session, theme, onClose }: {
           const socket = new WebSocket(`${scheme}://${location.host}/terminal-ws?${params.toString()}`, [body.token]);
           ws = socket;
           wsRef.current = socket;
-          let wasOpen = false;
           let revealed = false;
           let pendingSizeResend = false; // a reattach must re-deliver the size once the fresh pty is live
           // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet gap
@@ -185,7 +195,6 @@ export default function TerminalWidget({ session, theme, onClose }: {
           socket.onopen = () => {
             if (disposed) return;
             const isReattach = hasEverOpened; // a prior socket opened ⇒ this is an in-place reconnect
-            wasOpen = true;
             hasEverOpened = true;
             reconnectAttempts = 0; // a successful (re)connect resets the backoff budget
             setStatus('open');
@@ -229,7 +238,7 @@ export default function TerminalWidget({ session, theme, onClose }: {
             // the widget so the reloaded page (App restores it from sessionStorage) rejoins it.
             if (isUnloadingRef.current) return;
             const action = classifyClose({
-              code: event.code, wasOpen, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts,
+              code: event.code, hasEverOpened, attempts: reconnectAttempts, maxAttempts: RECONNECT.maxAttempts,
             });
             // 'reconnect' → socket death (Express restarted) but the container survives (S3a): retry
             // with backoff. 'dismiss' → intentional server close (session ended, 1005/1000).
@@ -252,11 +261,12 @@ export default function TerminalWidget({ session, theme, onClose }: {
       if (bootCapTimer) clearTimeout(bootCapTimer);
       ro.disconnect();
       dataSub.dispose();
-      // Terminate the server session UNLESS this is a reload (then the socket drop → grace →
-      // reattach). Also terminate when we can't persist an id — a reload couldn't reattach anyway, so
-      // don't strand a grace-held container. Terminating clears the id so we never try to rejoin a
-      // session we just told the server to dispose. Runs even mid-reconnect (ws may be null then).
-      const terminate = !canPersist || !isUnloadingRef.current;
+      // Terminate the server session UNLESS this is a reload OR a dev HMR remount (both drop the socket
+      // but the session must survive for reattach — pagehide covers the reload, hmrDisposing the edit).
+      // Also terminate when we can't persist an id — a reload couldn't reattach anyway, so don't strand
+      // a grace-held container. Terminating clears the id so we never try to rejoin a session we just
+      // told the server to dispose. Runs even mid-reconnect (ws may be null then).
+      const terminate = !canPersist || (!isUnloadingRef.current && !hmrDisposing);
       if (terminate) clearSessionId(mountKey);
       if (ws) {
         if (terminate && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ t: 'e' })); } catch { /* closing */ } }

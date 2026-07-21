@@ -2,13 +2,14 @@
 //
 // When the terminal WebSocket drops we must tell three cases apart: the session genuinely ended
 // (claude exited / the user terminated), the server restarted but the container survives (S3a — so a
-// reconnect will reattach), or an initial connect never succeeded. The decision keys off the WS close
-// code + whether the socket had ever opened, and is a pure function so it's unit-tested without a
-// real socket. The component owns the timers and side effects.
+// reconnect will reattach), or the container failed to START. The decision keys off the WS close code
+// alone, and is a pure function so it's unit-tested without a real socket. The component owns the
+// timers and side effects.
+
+import { TERMINAL_STARTUP_FAILURE_CODE } from '../../shared/constants.js';
 
 export interface CloseContext {
-  code: number;           // WS close code — 1000 = a clean server-initiated close
-  wasOpen: boolean;       // did THIS socket reach onopen before closing
+  code: number;           // WS close code (see classifyClose)
   hasEverOpened: boolean; // has ANY socket for this mount opened (⇒ a container exists to reattach to)
   attempts: number;       // reconnect attempts already spent
   maxAttempts: number;
@@ -16,20 +17,22 @@ export interface CloseContext {
 
 export type CloseAction = 'dismiss' | 'reconnect' | 'error';
 
-// Distinguish an INTENTIONAL server close from a socket DEATH by the close code:
-//   • 1005 ("no status received") is what the browser reports when the server bare-closes with
-//     `ws.close()` and no code — which is exactly how this server ends a session (claude exited /
-//     the client sent a terminate frame). A close FRAME arrived, so the server meant it.
-//   • 1000 is the explicit-normal equivalent (belt-and-suspenders if the server ever sets a code).
-//   • Anything else — notably 1006 (NO close frame at all ⇒ the Express process died on a restart),
-//     or a proxy-translated abnormal code (1001/1011/…) — means the socket dropped while the
-//     server-side container may still live (S3a). That is the reconnect trigger.
-// Intentional → dismiss the widget (or error if it never opened). Death → reconnect while attempts
-// remain (the container survives a restart); a never-opened death is an initial connect failure, and
-// an exhausted retry budget is a real outage — both surface an error.
+// Decide the fate of a dropped terminal socket from its close code:
+//   • TERMINAL_STARTUP_FAILURE_CODE (4500) — the server's explicit signal that the container/session
+//     failed to start. The WS handshake completes before `docker run` fails, so we CANNOT infer this
+//     from a bare-close 1005 by client-side timing (that heuristic silently self-dismissed on slow
+//     startup failures — tkt-171759eb29f6). Surface an error and KEEP the widget so the failure shows.
+//   • 1005 ("no status received", the browser's report of a codeless `ws.close()`) or 1000 — an
+//     INTENTIONAL close of a session that actually ran (claude exited / the client sent a terminate
+//     frame). Dismiss the widget.
+//   • Anything else — notably 1006 (NO close frame ⇒ the Express process died on a restart), or a
+//     proxy-translated abnormal code (1001/1011/…) — is a socket DEATH while the container may still
+//     live (S3a): reconnect while attempts remain. A never-opened death is an initial-connect failure
+//     and an exhausted retry budget is a real outage — both surface an error.
 export function classifyClose(ctx: CloseContext): CloseAction {
+  if (ctx.code === TERMINAL_STARTUP_FAILURE_CODE) return 'error';
   const intentional = ctx.code === 1000 || ctx.code === 1005;
-  if (intentional) return ctx.wasOpen ? 'dismiss' : 'error';
+  if (intentional) return 'dismiss';
   if (ctx.hasEverOpened && ctx.attempts < ctx.maxAttempts) return 'reconnect';
   return 'error';
 }
