@@ -104,6 +104,12 @@ export const SESSION_LABEL_KEY = 'kanban.session';
 // versa. A restart of the same checkout has the same root, so it still re-adopts its own (review F3).
 export const ROOT_LABEL_KEY = 'kanban.root';
 
+// Third label carrying the container's creation time (epoch ms), so the reaper can compute an
+// absolute age from `docker ps` alone — no locale/timezone parsing of docker's own timestamp
+// string (S3b, tkt-b4412f11b790). The value is stamped by the caller (Date.now()) to keep
+// buildDetachedRunArgs pure/testable.
+export const SESSION_CREATED_LABEL_KEY = 'kanban.created';
+
 // Prefix for every session container name — the marker adoption uses to recognize OUR containers.
 export const CONTAINER_NAME_PREFIX = 'kanban-term-';
 
@@ -157,6 +163,7 @@ export function buildDetachedRunArgs(opts: {
   roots: string[];
   sessionId: string;
   rootLabel: string; // the kanban repo root — scopes adoption to this checkout (kanban.root label)
+  createdAt: number; // epoch ms stamped into the kanban.created label (reaper age); Date.now() at call site
   credMount: CredMount;
   image: string;
   containerName: string;
@@ -167,6 +174,7 @@ export function buildDetachedRunArgs(opts: {
   return [
     'run', '-d', '--name', opts.containerName,
     '--label', `${SESSION_LABEL_KEY}=${opts.sessionId}`, '--label', `${ROOT_LABEL_KEY}=${opts.rootLabel}`,
+    '--label', `${SESSION_CREATED_LABEL_KEY}=${opts.createdAt}`,
     ...containerBaseArgs(opts),
     '-w', primaryRoot, opts.image,
     'dtach', '-N', dtachSocket(opts.sessionId), 'claude',
@@ -321,6 +329,7 @@ export async function resolveSessionCommand(opts: {
   getTicket: (id: string) => Promise<Ticket>;
   projectRoots: Record<string, string>;
   kanbanRoot: string;
+  createdAt: number;
   credMount: CredMount;
   image: string;
   containerName: string;
@@ -337,6 +346,7 @@ export async function resolveSessionCommand(opts: {
     roots,
     sessionId: opts.sessionId,
     rootLabel: opts.kanbanRoot,
+    createdAt: opts.createdAt,
     credMount: opts.credMount,
     image: opts.image,
     containerName: opts.containerName,

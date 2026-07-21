@@ -60,4 +60,21 @@ describe('parsePsLines', () => {
     expect(parsePsLines(null)).toEqual([]);
     expect(parsePsLines(undefined)).toEqual([]);
   });
+  it('parses the optional created-epoch third field for the reaper', () => {
+    const out = 'kanban-term-aaa\t11111111-2222-4333-8444-555566667777\t1700000000000\n';
+    expect(parsePsLines(out)).toEqual([
+      { name: 'kanban-term-aaa', session: '11111111-2222-4333-8444-555566667777', createdAtMs: 1700000000000 },
+    ]);
+  });
+  it('omits createdAtMs when the created field is absent, blank, non-numeric, or non-positive', () => {
+    // No third column (a container predating S3b) → session still adopts, age unknown.
+    expect(parsePsLines('n\t11111111-2222-4333-8444-555566667777\n')).toEqual([
+      { name: 'n', session: '11111111-2222-4333-8444-555566667777' },
+    ]);
+    for (const bad of ['', 'notanumber', '0', '-5']) {
+      expect(parsePsLines(`n\t11111111-2222-4333-8444-555566667777\t${bad}\n`)).toEqual([
+        { name: 'n', session: '11111111-2222-4333-8444-555566667777' },
+      ]);
+    }
+  });
 });
