@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { api } from '../api.js';
 import ErrorBanner from './ui/ErrorBanner.jsx';
 import { StatTile, CostGroup } from './EconomicsParts.jsx';
+import { EconomicsBuildSection } from './EconomicsBuildSection.jsx';
 import { usePolledSummary } from '../usePolledSummary.js';
 import { linePoints, toLinePath, toAreaPath } from '../lib/linePath.js';
 import { fmtInt, headlineTile } from '../lib/econFormat.js';
@@ -74,6 +75,9 @@ export default function EconomicsDashboard({ refreshKey }: Props) {
           </div>
         </>
       )}
+
+      {/* Build economics is static (committed snapshot), independent of run data — always shown. */}
+      <EconomicsBuildSection />
     </div>
   );
 }

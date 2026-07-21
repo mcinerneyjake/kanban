@@ -1164,6 +1164,10 @@ body {
 .econ-group--assumed { border-left: 3px solid var(--econ-assumed); }
 .econ-group--externality { border-left: 3px solid var(--econ-externality); }
 
+/* Build economics: a committed-snapshot section, visually delineated from the run economics above. */
+.econ-build { display: flex; flex-direction: column; gap: 16px; padding-top: 20px; border-top: 1px solid var(--border); }
+.econ-build-subtitle { margin: 4px 0 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+
 .econ-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .econ-table td { padding: 5px 0; border-bottom: 1px solid var(--border); }
 .econ-table tr:last-child td { border-bottom: none; }
