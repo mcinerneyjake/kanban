@@ -41,6 +41,14 @@ export type TicketType = (typeof TYPES)[number]
 export type Priority = (typeof PRIORITIES)[number]
 export type TicketSource = (typeof SOURCES)[number]
 
+// Embedded-terminal WS close code (server → client signal), in the WS application range 3000–4999.
+// 4500 = the container/session failed to START (docker down, image missing, dtach never ready). The
+// WS handshake completes before `docker run` fails, so a bare-close 1005 can't be told from a clean
+// session end — this distinct code lets the client KEEP the widget and surface the failure instead of
+// silently self-dismissing (tkt-171759eb29f6). A clean end stays a bare close (browser reports 1005).
+// Shared so the server emitter and the client classifier can't drift on the number.
+export const TERMINAL_STARTUP_FAILURE_CODE = 4500;
+
 // Type predicates — find() narrows to the literal union without a cast.
 export function isStatusId(val: string): val is StatusId {
   return STATUS_IDS.find((s) => s === val) !== undefined;

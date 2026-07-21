@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import * as pty from 'node-pty';
 import { getTicket } from './tickets.js';
+import { TERMINAL_STARTUP_FAILURE_CODE } from '../shared/constants.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
@@ -244,9 +245,12 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   ws.on('close', () => registry.detach(id, ws));
 
   const fail = (message: string) => {
-    // Errors go to the CURRENT socket (a reload may have reattached during the await).
+    // Errors go to the CURRENT socket (a reload may have reattached during the await). Close with the
+    // startup-failure code (not a bare close) so the client can tell a container that never started
+    // from a clean session end and KEEP the widget with an error, rather than self-dismissing
+    // (tkt-171759eb29f6). The message is written first so `docker logs` hints are visible server-side.
     const w = entry.currentWs;
-    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(); }
+    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(TERMINAL_STARTUP_FAILURE_CODE, 'startup failure'); }
     registry.disposeIfCurrent(id, entry);
   };
 
@@ -315,12 +319,18 @@ function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], con
     if (w && w.readyState === WebSocket.OPEN) w.send(data);
   });
   term.onExit(({ exitCode, signal }) => {
-    // The container/claude ended for real → dispose immediately (bypass grace). Log a non-zero exit
-    // so a crash/misconfig is diagnosable. Guarded by identity: don't tear down a reused-id successor.
+    // The container/claude ended → dispose immediately (bypass grace). Guarded by identity: don't tear
+    // down a reused-id successor. A NON-ZERO exit is a crash/misconfig (claude died on launch, OOM):
+    // log it AND close with the startup-failure code so the client surfaces an error and KEEPS the
+    // widget, rather than a bare close (1005 → dismiss) that silently vanishes the failure
+    // (tkt-171759eb29f6). A clean exit (code 0 — user typed exit / claude finished) stays a bare close.
     if (exitCode) console.error(`[terminal] session ${id} (${containerName}) exited: code=${exitCode}${signal ? ` signal=${signal}` : ''}`);
     if (registry.get(id) === entry) {
       const w = entry.currentWs;
-      if (w && w.readyState === WebSocket.OPEN) w.close();
+      if (w && w.readyState === WebSocket.OPEN) {
+        if (exitCode) w.close(TERMINAL_STARTUP_FAILURE_CODE, 'session crashed');
+        else w.close();
+      }
     }
     registry.disposeIfCurrent(id, entry);
   });

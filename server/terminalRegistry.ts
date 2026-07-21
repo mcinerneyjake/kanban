@@ -21,7 +21,7 @@ export interface PtyHandle {
 export interface ClientSocket {
   readonly readyState: number;
   send(data: string): void;
-  close(): void;
+  close(code?: number, reason?: string): void; // code/reason let callers signal a startup failure
 }
 
 export interface TerminalEntry {

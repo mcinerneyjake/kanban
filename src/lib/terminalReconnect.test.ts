@@ -1,24 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor } from './terminalReconnect';
+import { TERMINAL_STARTUP_FAILURE_CODE } from '../../shared/constants';
 
 describe('classifyClose', () => {
-  const base = { wasOpen: true, hasEverOpened: true, attempts: 0, maxAttempts: 8 };
+  const base = { hasEverOpened: true, attempts: 0, maxAttempts: 8 };
 
-  it('an intentional server close (1000 or 1005) on an opened socket dismisses the widget', () => {
-    // 1005 is the real-world code: the server bare-closes (ws.close() with no code) on session end.
-    expect(classifyClose({ ...base, code: 1000 })).toBe('dismiss');
-    expect(classifyClose({ ...base, code: 1005 })).toBe('dismiss');
+  it('the server startup-failure code keeps the widget as an error, not a silent dismiss (tkt-171759eb29f6)', () => {
+    // The server closes with TERMINAL_STARTUP_FAILURE_CODE when the container never started (docker
+    // down / image missing / dtach never ready). This is decided by the CODE, not by client timing —
+    // so a slow startup failure (>2.5s) surfaces an error instead of silently self-dismissing.
+    expect(classifyClose({ ...base, code: TERMINAL_STARTUP_FAILURE_CODE })).toBe('error');
+    // Even with a full retry budget and a long-lived prior connection, a startup failure never retries.
+    expect(classifyClose({ ...base, code: TERMINAL_STARTUP_FAILURE_CODE, hasEverOpened: true, attempts: 0 })).toBe('error');
   });
 
-  it('an intentional close that never opened is an error, not a silent dismiss', () => {
-    expect(classifyClose({ ...base, code: 1000, wasOpen: false })).toBe('error');
-    expect(classifyClose({ ...base, code: 1005, wasOpen: false })).toBe('error');
+  it('an intentional server close (1000 or 1005) dismisses the widget', () => {
+    // 1005 is the real-world code: the server bare-closes (ws.close() with no code) on a clean end.
+    expect(classifyClose({ ...base, code: 1000 })).toBe('dismiss');
+    expect(classifyClose({ ...base, code: 1005 })).toBe('dismiss');
   });
 
   it('a genuine claude exit (server bare-close ⇒ 1005) does NOT reconnect/respawn a container', () => {
     // Regression guard: treating 1005 as abnormal would reconnect to a disposed session, which the
     // server routes to the NEW-session path — silently spawning a fresh container on every exit.
-    expect(classifyClose({ ...base, code: 1005, wasOpen: true, hasEverOpened: true, attempts: 0 })).toBe('dismiss');
+    expect(classifyClose({ ...base, code: 1005, hasEverOpened: true, attempts: 0 })).toBe('dismiss');
   });
 
   it('an abnormal drop (1006) after the session opened reconnects while attempts remain', () => {
@@ -26,10 +31,10 @@ describe('classifyClose', () => {
     expect(classifyClose({ ...base, code: 1006, attempts: 7, maxAttempts: 8 })).toBe('reconnect');
   });
 
-  it('reconnects on an abnormal drop even when THIS socket never opened, as long as one did before', () => {
+  it('reconnects on an abnormal drop as long as a socket opened before', () => {
     // The Express-restart case: the container survives, but a retry can fail to open while the
     // server is still down — that must keep retrying, not error out immediately.
-    expect(classifyClose({ ...base, code: 1006, wasOpen: false, hasEverOpened: true, attempts: 2 })).toBe('reconnect');
+    expect(classifyClose({ ...base, code: 1006, hasEverOpened: true, attempts: 2 })).toBe('reconnect');
   });
 
   it('errors once the retry budget is exhausted', () => {
@@ -38,7 +43,7 @@ describe('classifyClose', () => {
   });
 
   it('an abnormal drop on an initial connect that never opened is an error (no retry storm)', () => {
-    expect(classifyClose({ ...base, code: 1006, wasOpen: false, hasEverOpened: false, attempts: 0 })).toBe('error');
+    expect(classifyClose({ ...base, code: 1006, hasEverOpened: false, attempts: 0 })).toBe('error');
   });
 
   it('treats a proxy-translated abnormal code (1001/1011) as a death → reconnect', () => {
