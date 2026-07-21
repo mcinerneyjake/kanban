@@ -2,9 +2,6 @@ import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import path from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import * as pty from 'node-pty';
 import { getTicket } from './tickets.js';
@@ -14,11 +11,11 @@ import {
   authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, CONTAINER_NAME_PREFIX,
   dtachSocket, filterAdoptable, isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam,
   resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
-  type CredMount,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
 import { spawnDockerCli } from './terminalDocker.js';
 import { startReaper } from './terminalReaper.js';
+import { seedSessionHome, removeSessionHome } from './terminalHome.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes are piped,
 // verbatim, to a node-pty that wraps `docker run -it` for a confined Claude Code session. Dev-only
@@ -55,6 +52,8 @@ const registry = new TerminalRegistry({
   graceMs: GRACE_MS,
   nudgeMs: NUDGE_MS,
   killContainer: (name) => docker.remove(name),
+  // Remove the session's isolated HOME when it disposes, so per-session copies don't accumulate (S4).
+  cleanupSession: (id) => removeSessionHome(id),
 });
 
 // Populate each root's node_modules volume with Linux deps in a one-shot container BEFORE the
@@ -114,18 +113,10 @@ async function adoptRunningSessions(): Promise<void> {
   // Cap adoption at MAX_SESSIONS (docker ps is newest-first): adopt the most recent, force-remove any
   // excess — with cap 2, extras for THIS root are crash-orphans, never live user sessions (review F6).
   adoptable.slice(0, MAX_SESSIONS).forEach(({ name, session }) => registry.adopt(session, name));
-  adoptable.slice(MAX_SESSIONS).forEach(({ name }) => docker.remove(name));
-}
-
-// Persistent HOME for the session, so login/onboarding survive between the --rm containers
-// (no re-sign-in each time) — this captures ~/.claude AND ~/.claude.json, both of which
-// hold sign-in state. Seeded by scripts/terminal-setup-cred.mjs and stored OUTSIDE any
-// mounted project root, so the session can't read the token back through a project mount.
-// Ensured to exist (incl. .claude/) so docker doesn't create it root-owned.
-function credMount(): CredMount {
-  const hostHome = process.env.KANBAN_TERMINAL_HOME ?? path.join(homedir(), '.kanban-terminal', 'home');
-  mkdirSync(path.join(hostHome, '.claude'), { recursive: true, mode: 0o700 });
-  return { hostHome, containerHome: '/kanban-home' };
+  // Force-remove the excess crash-orphans AND drop their isolated HOME dirs — once the container is
+  // gone, neither the reaper nor `terminal:clean` (both docker-ps-driven) would ever revisit them, so
+  // the token-bearing HOME would leak forever otherwise (S4 review F2). `session` is a valid UUID here.
+  adoptable.slice(MAX_SESSIONS).forEach(({ name, session }) => { docker.remove(name); removeSessionHome(session); });
 }
 
 // Host git identity so in-container commits are attributed correctly.
@@ -147,14 +138,17 @@ export function attachTerminal(server: Server): void {
   // Re-adopt containers that survived a previous process (S3a), THEN arm the reaper (S3b). Ordering
   // matters: the reaper reaps orphans the registry doesn't track, so it must not run until adoption
   // has populated the registry — else a still-unadopted survivor would look like a reapable orphan.
-  // adoptRunningSessions never rejects (docker.ps resolves [] on failure), so `.finally` always arms.
-  void adoptRunningSessions().finally(() => {
+  // adoptRunningSessions never rejects (docker.ps resolves [] on failure), so `.finally` always runs.
+  let adoptionSettled = false;
+  const adoptionDone = adoptRunningSessions().finally(() => {
+    adoptionSettled = true;
     startReaper({
       docker,
       isTracked: (session) => registry.has(session),
       rootLabel: kanbanRoot(),
       config: { graceMs: REAPER_GRACE_MS, maxAgeMs: REAPER_MAX_AGE_MS, cap: REAPER_CAP },
       intervalMs: REAPER_INTERVAL_MS,
+      onReaped: (session) => removeSessionHome(session), // drop the orphan's isolated HOME too (S4)
     });
   });
   // Echo the offered subprotocol (the token) so the browser completes the handshake.
@@ -163,7 +157,9 @@ export function attachTerminal(server: Server): void {
     handleProtocols: (protocols) => { const [first] = protocols; return first ?? false; },
   });
 
-  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  // Route a terminal-path upgrade to reattach-or-new. Split out so the boot handler can DEFER it until
+  // adoption has populated the registry (see the `upgrade` listener).
+  const routeUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     const requestPath = (req.url ?? '').split('?')[0];
     const protocol = req.headers['sec-websocket-protocol'];
     const token = typeof protocol === 'string' ? protocol : null;
@@ -199,6 +195,20 @@ export function attachTerminal(server: Server): void {
       const id = isValidSessionId(sessionId) ? sessionId : randomUUID();
       openSession(ws, req, id).catch(() => { try { ws.close(); } catch { /* noop */ } });
     });
+  };
+
+  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    // Only terminal-path upgrades are ours — everything else (Vite HMR) must pass untouched to its
+    // own listener, so filter FIRST and never defer a non-terminal socket.
+    if ((req.url ?? '').split('?')[0] !== WS_PATH) return;
+    // During the boot adoption window the registry isn't populated yet, so a reopened survivor would
+    // wrongly route to the NEW-session path — spawning a duplicate container AND (S4) clobbering the
+    // live survivor's per-session HOME, which seedSessionHome rm's before re-seeding. Defer terminal
+    // upgrades until adoption settles so a reopen reattaches instead (also closes the S3a
+    // reopen-during-boot gap). The window is short (one `docker ps`, ≤5s); a settled server routes
+    // synchronously. Skip a socket the client already abandoned during the wait.
+    if (adoptionSettled) { routeUpgrade(req, socket, head); return; }
+    void adoptionDone.finally(() => { if (!socket.destroyed) routeUpgrade(req, socket, head); });
   });
 }
 
@@ -244,7 +254,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   try {
     command = await resolveSessionCommand({
       ticket, sessionId: id, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
-      createdAt: Date.now(), credMount: credMount(), image: IMAGE, containerName, gitIdentity: gitIdentity(),
+      createdAt: Date.now(), credMount: seedSessionHome(id), image: IMAGE, containerName, gitIdentity: gitIdentity(),
     });
   } catch (err) {
     // Bad/unknown ticket → tell the terminal and close, rather than spawn a shell silently.

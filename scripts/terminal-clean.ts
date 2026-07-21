@@ -13,6 +13,7 @@
 import { spawnDockerCli } from '../server/terminalDocker.js';
 import { kanbanRoot } from '../server/terminalProjects.js';
 import { SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY, ROOT_LABEL_KEY } from '../server/terminalAuth.js';
+import { removeSessionHome } from '../server/terminalHome.js';
 
 async function main(): Promise<void> {
   const docker = spawnDockerCli();
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
   for (const row of rows) {
     console.log(`  - ${row.name} (session ${row.session})`);
     docker.remove(row.name);
+    removeSessionHome(row.session); // also drop the session's isolated HOME dir (S4)
   }
 }
 

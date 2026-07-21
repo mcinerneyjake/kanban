@@ -25,8 +25,9 @@ const ID = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
 
 function makeRegistry() {
   const killContainer = vi.fn();
-  const registry = new TerminalRegistry({ graceMs: GRACE_MS, nudgeMs: NUDGE_MS, killContainer });
-  return { registry, killContainer };
+  const cleanupSession = vi.fn();
+  const registry = new TerminalRegistry({ graceMs: GRACE_MS, nudgeMs: NUDGE_MS, killContainer, cleanupSession });
+  return { registry, killContainer, cleanupSession };
 }
 
 // Create a session and finish its (synchronous, in-test) boot: reserve the slot, attach the pty.
@@ -57,6 +58,23 @@ describe('TerminalRegistry lifecycle', () => {
     registry.detach(ID, ws); // client vanished mid-setup
     expect(registry.size()).toBe(0);
     expect(killContainer).toHaveBeenCalledWith('cont-1');
+  });
+
+  it('dispose runs cleanupSession(id) after killing the container (S4: remove the per-session HOME)', () => {
+    const { registry, killContainer, cleanupSession } = makeRegistry();
+    const { ws } = boot(registry, ID, 'cont-1');
+    registry.detach(ID, ws);
+    vi.advanceTimersByTime(GRACE_MS); // grace expires → dispose
+    expect(killContainer).toHaveBeenCalledWith('cont-1');
+    expect(cleanupSession).toHaveBeenCalledWith(ID);
+  });
+
+  it('dispose is idempotent for cleanupSession — a second terminate does not re-clean', () => {
+    const { registry, cleanupSession } = makeRegistry();
+    boot(registry, ID, 'cont-1');
+    registry.terminate(ID);
+    registry.terminate(ID); // already disposed → no-op
+    expect(cleanupSession).toHaveBeenCalledTimes(1);
   });
 
   it('detach holds the container for the grace window, then disposes if no reattach', () => {

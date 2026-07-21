@@ -98,12 +98,13 @@ export interface ReaperDeps {
   intervalMs: number;
   now?: () => number;        // injectable clock for tests
   scheduler?: Scheduler;     // injectable timer seam for tests (defaults to unref'd setInterval)
+  onReaped?: (session: string) => void; // per-reaped-session cleanup (remove its isolated HOME, S4)
 }
 
 // Run one reconciliation pass. Exported so tests can drive a single sweep without arming an interval
 // (the `terminal:clean` CLI deliberately does NOT use this — it sweeps unconditionally, server-down,
 // with no registry to consult). Returns the decisions acted on (for logging/assertions).
-export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | 'rootLabel' | 'config' | 'now'>): Promise<ReapDecision[]> {
+export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | 'rootLabel' | 'config' | 'now' | 'onReaped'>): Promise<ReapDecision[]> {
   const now = (deps.now ?? Date.now)();
   const rows = await deps.docker.ps(
     SESSION_LABEL_KEY,
@@ -115,6 +116,8 @@ export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | '
   for (const d of decisions) {
     console.error(`[terminal] reaping orphan container ${d.name} (session ${d.session}, ${d.reason}, age ${Math.round(d.ageMs / 1000)}s)`);
     deps.docker.remove(d.name);
+    // Also drop the orphan's isolated HOME dir so repeated reaps can't slowly leak disk (S4).
+    if (deps.onReaped) { try { deps.onReaped(d.session); } catch { /* best effort */ } }
   }
   return decisions;
 }
