@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { classifyClose, reconnectDelayMs, RECONNECT } from '../lib/terminalReconnect';
+import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
@@ -16,7 +16,7 @@ import { classifyClose, reconnectDelayMs, RECONNECT } from '../lib/terminalRecon
 // and kills every container (not covered in v1).
 
 export type TerminalSession = { ticket?: string };
-type Status = 'connecting' | 'open' | 'closed' | 'error';
+type Status = TerminalStatus;
 
 // Per-tab reattach identity. sessionStorage survives a reload but dies on tab close — matching
 // "close tears the container down". Keyed per mount-key so a shell and a ticket session don't
@@ -134,7 +134,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
 
     const scheduleReconnect = () => {
-      setStatus('connecting'); // booted ⇒ the overlay reads "Reconnecting…", keeping the last screen
+      // booted ⇒ NO overlay: the last frame stays visible and the amber-pulsing header dot is the
+      // only signal, so an Express-restart reconnect looks like Claude simply kept thinking.
+      setStatus('connecting');
       const delay = reconnectDelayMs(reconnectAttempts, { baseMs: RECONNECT.baseMs, capMs: RECONNECT.capMs });
       reconnectAttempts += 1;
       reconnectTimer = setTimeout(() => { if (!disposed) connect(); }, delay);
@@ -269,18 +271,17 @@ export default function TerminalWidget({ session, theme, onClose }: {
   }, [minimized]);
 
   const title = session.ticket ? `Terminal · ${session.ticket}` : 'Terminal';
-  const overlay = status === 'error' ? 'Terminal unavailable'
-    : !booted ? 'Loading terminal…'
-    // Once booted, a drop back to 'connecting' means the reconnect loop is running (e.g. Express
-    // restarted) — say so over the last screen rather than tearing the widget down.
-    : status === 'connecting' ? 'Reconnecting…'
-    : null;
+  // Once booted, a reconnect shows NO overlay — the frozen frame stays and the dot carries the signal.
+  const overlay = overlayFor(status, booted);
+  const liveMsg = liveMessageFor(status, booted);
+  // A booted reconnect reads better as "reconnecting" than the raw "connecting" state name.
+  const statusLabel = booted && status === 'connecting' ? 'reconnecting' : status;
 
   return (
     <div className={`terminal-widget${minimized ? ' minimized' : ''}`} role="dialog" aria-label="Embedded terminal">
       <div className="tw-header">
         <span className="tw-title">{title}</span>
-        <span className={`tw-status tw-status-${status}`} title={status} aria-label={`status: ${status}`}>●</span>
+        <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
         <button className="tw-btn" onClick={() => setMinimized((m) => !m)} aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}>
           {minimized ? '▢' : '—'}
         </button>
@@ -290,6 +291,8 @@ export default function TerminalWidget({ session, theme, onClose }: {
         <div className="tw-body" ref={containerRef} />
         {overlay && <div className="tw-overlay">{overlay}</div>}
       </div>
+      {/* Screen readers get the reconnect/recovery cue that used to live in the (now removed) overlay. */}
+      <span className="sr-only" role="status" aria-live="polite">{liveMsg}</span>
     </div>
   );
 }

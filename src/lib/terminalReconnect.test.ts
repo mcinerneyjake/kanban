@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyClose, reconnectDelayMs, RECONNECT } from './terminalReconnect';
+import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor } from './terminalReconnect';
 
 describe('classifyClose', () => {
   const base = { wasOpen: true, hasEverOpened: true, attempts: 0, maxAttempts: 8 };
@@ -68,5 +68,47 @@ describe('reconnectDelayMs', () => {
     const total = Array.from({ length: RECONNECT.maxAttempts }, (_, i) => reconnectDelayMs(i, RECONNECT))
       .reduce((a, b) => a + b, 0);
     expect(total).toBeGreaterThan(20_000); // comfortably longer than a tsx-watch Express restart
+  });
+});
+
+describe('overlayFor', () => {
+  it('keeps the initial pre-boot connect showing "Loading terminal…"', () => {
+    expect(overlayFor('connecting', false)).toBe('Loading terminal…');
+    expect(overlayFor('open', false)).toBe('Loading terminal…'); // opened but no frame settled yet
+  });
+
+  it('shows NO overlay for a booted reconnect — the whole point (frozen frame stays visible)', () => {
+    expect(overlayFor('connecting', true)).toBeNull();
+  });
+
+  it('shows no overlay for a booted, connected session', () => {
+    expect(overlayFor('open', true)).toBeNull();
+    expect(overlayFor('closed', true)).toBeNull();
+  });
+
+  it('shows "Terminal unavailable" on error regardless of booted (failure wins over a stale frame)', () => {
+    expect(overlayFor('error', true)).toBe('Terminal unavailable');
+    expect(overlayFor('error', false)).toBe('Terminal unavailable');
+  });
+});
+
+describe('liveMessageFor', () => {
+  it('stays silent for the initial pre-boot connect (the Loading overlay already conveys it)', () => {
+    expect(liveMessageFor('connecting', false)).toBe('');
+    expect(liveMessageFor('open', false)).toBe('');
+  });
+
+  it('announces a booted drop and recovery so SR users learn of the now-silent reconnect', () => {
+    expect(liveMessageFor('connecting', true)).toBe('Reconnecting to terminal');
+    expect(liveMessageFor('open', true)).toBe('Terminal connected');
+  });
+
+  it('announces failure', () => {
+    expect(liveMessageFor('error', true)).toBe('Terminal unavailable');
+    expect(liveMessageFor('error', false)).toBe('Terminal unavailable');
+  });
+
+  it('says nothing for a booted "closed" (no such transition is set, but must not throw/announce)', () => {
+    expect(liveMessageFor('closed', true)).toBe('');
   });
 });
