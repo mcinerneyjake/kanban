@@ -1,0 +1,161 @@
+{
+  "asOf": "2026-07-21",
+  "generatedFor": "kanban repo (app + agent/agentic-rag-demo) + ticket-workflow",
+  "headline": {
+    "publiclyVerifiable": {
+      "mergedPRs": 155,
+      "loc": 26693,
+      "supervisedHours": 109.8,
+      "calendarDays": 29.1,
+      "prsPerDay": 5.3
+    },
+    "selfReported": {
+      "claudeCostUsd": {
+        "completedOnly": 2485.3,
+        "allSessions": 2559.38
+      },
+      "tokens": 3200124279,
+      "billedResponses": 17628
+    },
+    "estimatedSavings": {
+      "anchor": {
+        "mergedPRs": 155,
+        "hoursPerPr": [
+          2,
+          3
+        ],
+        "ratePerHour": 100,
+        "note": "deliberately-low; the by-hand side is an estimate, adjust hours/PR to taste"
+      },
+      "timeSavedHrs": [
+        200,
+        355
+      ],
+      "valueUsdSaved": [
+        28515,
+        44015
+      ],
+      "roi": [
+        12.5,
+        18.7
+      ]
+    }
+  },
+  "measured": {
+    "transcriptFiles": 1386,
+    "billedResponses": 17628,
+    "topLevelMessages": 10135,
+    "subagentMessages": 6714,
+    "calendarSpan": {
+      "first": "2026-06-22T16:00:15.036Z",
+      "last": "2026-07-21T19:33:16.158Z",
+      "days": 29.1
+    },
+    "supervisedHoursUnion": 109.8,
+    "idleCapSeconds": 300,
+    "totals": {
+      "input": 1604096,
+      "output": 18119791,
+      "cacheWrite5m": 41481481,
+      "cacheWrite1h": 27954797,
+      "cacheRead": 3110964114,
+      "cost": 2559.380802799993,
+      "allTokens": 3200124279
+    },
+    "byModel": {
+      "claude-sonnet-4-6": {
+        "input": 21117,
+        "output": 1015994,
+        "cacheWrite5m": 2386748,
+        "cacheWrite1h": 2282105,
+        "cacheRead": 177897427,
+        "cost": 91.31542410000014,
+        "messages": 2568
+      },
+      "claude-opus-4-8": {
+        "input": 1509095,
+        "output": 16479373,
+        "cacheWrite5m": 38085897,
+        "cacheWrite1h": 24321902,
+        "cacheRead": 2852870286,
+        "cost": 2327.220819249993,
+        "messages": 13795
+      },
+      "claude-haiku-4-5-20251001": {
+        "input": 18561,
+        "output": 45785,
+        "cacheWrite5m": 518763,
+        "cacheWrite1h": 0,
+        "cacheRead": 3194082,
+        "cost": 1.2153479500000002,
+        "messages": 122
+      },
+      "<synthetic>": {
+        "input": 0,
+        "output": 0,
+        "cacheWrite5m": 0,
+        "cacheWrite1h": 0,
+        "cacheRead": 0,
+        "cost": 0,
+        "messages": 14
+      },
+      "claude-fable-5": {
+        "input": 55323,
+        "output": 578639,
+        "cacheWrite5m": 490073,
+        "cacheWrite1h": 1350790,
+        "cacheRead": 77002319,
+        "cost": 139.62921149999994,
+        "messages": 350
+      }
+    }
+  },
+  "dedup": {
+    "rawAssistantRecords": 40850,
+    "uniqueBilledResponses": 17628,
+    "method": "one record per message.id (max-output); streaming partials collapsed"
+  },
+  "scope": {
+    "inScope": "kanban repo + ticket-workflow (incl. agent/agentic-rag-demo)",
+    "excludedProjects": [
+      "portfolio-site",
+      "job-networking-tracker"
+    ],
+    "excludedLeak": {
+      "cost": 161.9,
+      "responses": 779,
+      "byProject": {
+        "portfolio-site": 161.9
+      }
+    },
+    "unattributedNote": "~45% of cost is unattributed main-branch work (planning/board/reviews) — kept as in-repo, not splittable by project"
+  },
+  "costBasis": {
+    "allSessions": 2559.38,
+    "completedOnly": 2485.3,
+    "unfinished": {
+      "cost": 74.08,
+      "branches": 4,
+      "note": "branches still open in backlog (no ship milestone and ticket not done/archived)"
+    }
+  },
+  "counterfactual": {
+    "anchor": "merged PRs (git-verifiable), NOT ticket counts",
+    "mergedPRs": 155,
+    "prByRepo": {
+      "kanban": 154,
+      "ticketWorkflow": 1
+    },
+    "loc": {
+      "total": 26693,
+      "kanban": 22856,
+      "ticketWorkflow": 3837
+    }
+  },
+  "disclosures": [
+    "Dollar cost is SELF-REPORTED from private local session transcripts — not independently reproducible. Only mergedPRs / loc / supervisedHours / velocity are publicly verifiable (git).",
+    "Claude cost is a FLOOR: CI code-review API usage runs on GitHub Actions, not in local transcripts, and is not counted.",
+    "Priced at standard list rates assuming no >200K 1M-context premium.",
+    "Tokens are measured; the dollar figure is the assumed cloud-equivalent (list price). The by-hand side is an estimate anchored on PRs x 2-3h."
+  ]
+}
