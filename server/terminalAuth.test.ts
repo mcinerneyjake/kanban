@@ -93,7 +93,8 @@ describe('allowedRootsFor', () => {
 
 describe('buildDetachedRunArgs', () => {
   const base = {
-    roots: [KANBAN], sessionId: SID, rootLabel: KANBAN, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
+    roots: [KANBAN], sessionId: SID, rootLabel: KANBAN, createdAt: 1_700_000_000_000,
+    credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
   it('mounts each allowed root', () => {
@@ -133,6 +134,7 @@ describe('buildDetachedRunArgs', () => {
     expect(args[args.indexOf('--name') + 1]).toBe('kanban-term-1');
     expect(args.join(' ')).toContain(`--label kanban.session=${SID}`); // discoverable after a restart
     expect(args.join(' ')).toContain(`--label kanban.root=${KANBAN}`); // scopes adoption to this checkout
+    expect(args.join(' ')).toContain('--label kanban.created=1700000000000'); // reaper age (S3b)
     expect(args[args.indexOf('-w') + 1]).toBe(KANBAN);
     const imgIdx = args.indexOf('kanban-terminal');
     expect(args.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
@@ -191,7 +193,7 @@ describe('resolveSessionCommand', () => {
   const common = {
     sessionId: SID,
     getTicket: async (id: string) => ticket({ id }),
-    projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
+    projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, createdAt: 1_700_000_000_000, credMount: CRED,
     image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
@@ -264,7 +266,7 @@ describe('ticket-param round trip (widget URL → server parse → seeded comman
 
     const { runArgs, prefill } = await resolveSessionCommand({
       ticket: parsed, sessionId: SID, getTicket: async (tid) => ticket({ id: tid, title }),
-      projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, credMount: CRED,
+      projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN, createdAt: 1_700_000_000_000, credMount: CRED,
       image: 'kanban-terminal', containerName: 'kanban-term-1',
     });
     // The command stays bare claude-under-dtach; the id + title thread through to the prefill.

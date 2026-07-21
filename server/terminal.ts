@@ -13,10 +13,12 @@ import { terminalToken } from './terminalToken.js';
 import {
   authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, CONTAINER_NAME_PREFIX,
   dtachSocket, filterAdoptable, isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam,
-  resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, type CredMount,
+  resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
+  type CredMount,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
 import { spawnDockerCli } from './terminalDocker.js';
+import { startReaper } from './terminalReaper.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes are piped,
 // verbatim, to a node-pty that wraps `docker run -it` for a confined Claude Code session. Dev-only
@@ -37,6 +39,14 @@ const MAX_SESSIONS = 2;
 const GRACE_MS = 60_000;   // how long a detached (reloading) session waits to be reattached
 const NUDGE_MS = 50;       // gap between the two-step SIGWINCH resize halves on reattach
 const IMAGE = process.env.KANBAN_TERMINAL_IMAGE ?? 'kanban-terminal';
+
+// Reaper (S3b, tkt-b4412f11b790): reconcile docker state against the registry to clean up orphaned
+// session containers (a failed dispose-rm, or a prior process's containers a boot adoption didn't
+// claim). Only orphans the registry doesn't track are ever removed — see terminalReaper.ts.
+const REAPER_INTERVAL_MS = 5 * 60_000;
+const REAPER_GRACE_MS = GRACE_MS;                 // spare an orphan younger than the reattach grace
+const REAPER_MAX_AGE_MS = 12 * 60 * 60_000;       // 12h absolute cap — a session this old is a runaway
+const REAPER_CAP = MAX_SESSIONS * 2;              // orphans beyond this (oldest-first) are reclaimed
 
 // All `docker` CLI access goes through this seam — never a shell string (tkt-e1144d4ef7f5).
 const docker = spawnDockerCli();
@@ -96,7 +106,10 @@ async function adoptRunningSessions(): Promise<void> {
   // Scope to THIS checkout's containers (kanban.root label) so a second dev server on the same
   // daemon isn't adopted (and later reaped) by us (review F3). Async so a hung daemon can't block
   // the event loop at boot (review G6).
-  const rows = await docker.ps(SESSION_LABEL_KEY, [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`]);
+  const rows = await docker.ps(
+    SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
+    [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`], 'adoption',
+  );
   const adoptable = filterAdoptable(rows, (id) => registry.has(id));
   // Cap adoption at MAX_SESSIONS (docker ps is newest-first): adopt the most recent, force-remove any
   // excess — with cap 2, extras for THIS root are crash-orphans, never live user sessions (review F6).
@@ -131,9 +144,19 @@ function rejectSocket(socket: Duplex, status: number, reason: string): void {
 }
 
 export function attachTerminal(server: Server): void {
-  // Re-adopt containers that survived a previous process (S3a). Fire-and-forget: it never rejects
-  // (docker.ps resolves [] on failure), and running it off the boot path keeps startup non-blocking.
-  void adoptRunningSessions();
+  // Re-adopt containers that survived a previous process (S3a), THEN arm the reaper (S3b). Ordering
+  // matters: the reaper reaps orphans the registry doesn't track, so it must not run until adoption
+  // has populated the registry — else a still-unadopted survivor would look like a reapable orphan.
+  // adoptRunningSessions never rejects (docker.ps resolves [] on failure), so `.finally` always arms.
+  void adoptRunningSessions().finally(() => {
+    startReaper({
+      docker,
+      isTracked: (session) => registry.has(session),
+      rootLabel: kanbanRoot(),
+      config: { graceMs: REAPER_GRACE_MS, maxAgeMs: REAPER_MAX_AGE_MS, cap: REAPER_CAP },
+      intervalMs: REAPER_INTERVAL_MS,
+    });
+  });
   // Echo the offered subprotocol (the token) so the browser completes the handshake.
   const wss = new WebSocketServer({
     noServer: true,
@@ -221,7 +244,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   try {
     command = await resolveSessionCommand({
       ticket, sessionId: id, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
-      credMount: credMount(), image: IMAGE, containerName, gitIdentity: gitIdentity(),
+      createdAt: Date.now(), credMount: credMount(), image: IMAGE, containerName, gitIdentity: gitIdentity(),
     });
   } catch (err) {
     // Bad/unknown ticket → tell the terminal and close, rather than spawn a shell silently.

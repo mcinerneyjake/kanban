@@ -14,6 +14,7 @@
     "agent": "tsx agent/index.ts",
     "agent:search": "tsx agent/searchDemo.ts",
     "agent:record": "tsx agent/recordRun.ts",
+    "terminal:clean": "tsx scripts/terminal-clean.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
