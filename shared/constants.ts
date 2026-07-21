@@ -49,6 +49,13 @@ export type TicketSource = (typeof SOURCES)[number]
 // Shared so the server emitter and the client classifier can't drift on the number.
 export const TERMINAL_STARTUP_FAILURE_CODE = 4500;
 
+// 4501 = a REATTACH failed — the session existed but the server couldn't rejoin it (the adopted
+// container isn't ready after the grace window, a transient exec-spawn failure, or the entry was
+// disposed mid-reattach). Like 4500 the client keeps the widget and shows an error rather than
+// dismissing (the session didn't cleanly end — it became unreachable). Distinct from 4500 for
+// diagnosis: 4500 = never started, 4501 = couldn't be rejoined (tkt-42a6d95a92d1).
+export const TERMINAL_REATTACH_FAILED_CODE = 4501;
+
 // Type predicates — find() narrows to the literal union without a cast.
 export function isStatusId(val: string): val is StatusId {
   return STATUS_IDS.find((s) => s === val) !== undefined;

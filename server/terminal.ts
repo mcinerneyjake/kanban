@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import * as pty from 'node-pty';
 import { getTicket } from './tickets.js';
-import { TERMINAL_STARTUP_FAILURE_CODE } from '../shared/constants.js';
+import { TERMINAL_STARTUP_FAILURE_CODE, TERMINAL_REATTACH_FAILED_CODE } from '../shared/constants.js';
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
@@ -173,7 +173,9 @@ export function attachTerminal(server: Server): void {
       const decision = authorizeReattach({ origin, token, expected: terminalToken(), lookup: registry.lookup(sessionId) });
       if (!decision.ok) { rejectSocket(socket, decision.status, decision.reason); return; }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        reattachSession(sessionId, ws).catch(() => { try { ws.close(); } catch { /* noop */ } });
+        // An unexpected throw is still a reattach failure: signal 4501 (error, keep the widget), not a
+        // bare 1005 that the client would silently dismiss (tkt-42a6d95a92d1).
+        reattachSession(sessionId, ws).catch(() => { try { ws.close(TERMINAL_REATTACH_FAILED_CODE, 'reattach failed'); } catch { /* noop */ } });
       });
       return;
     }
@@ -345,7 +347,11 @@ function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], con
 // spawn failure (F4). The client ?ticket is IGNORED — confinement was frozen at spawn.
 async function reattachSession(id: string, ws: WebSocket): Promise<void> {
   const entry = registry.reattach(id, ws); // sync: cancel grace, rebind ws, close a stale socket
-  if (!entry) { try { ws.close(); } catch { /* noop */ } return; } // raced with disposal
+  // Raced with disposal — the session was disposed between routeUpgrade's `registry.has` check and here,
+  // which almost always means it ENDED CLEANLY (claude exited / terminate frame) in that window. A bare
+  // close ⇒ 1005 ⇒ the client dismisses, correct for a clean end — so it must NOT signal 4501/error,
+  // which would flash a false "Terminal unavailable" on a normal exit (tkt-42a6d95a92d1).
+  if (!entry) { try { ws.close(); } catch { /* noop */ } return; } // raced with a clean disposal → dismiss
   bindMessages(id, entry, ws);
   ws.on('close', () => registry.detach(id, ws));
 
@@ -353,15 +359,24 @@ async function reattachSession(id: string, ws: WebSocket): Promise<void> {
   entry.attaching = true;
   try {
     // The adopted container may have died during the grace window — confirm it's alive + dtach is
-    // ready before attaching, so we don't flash a docker error and tear it down (review F5).
+    // ready before attaching, so we don't flash a docker error and tear it down (review F5). Keep this
+    // wait SHORT (30s, not the new-session cold-boot budget): a reattach socket already reads as 'open'
+    // to the client while we poll (handshake done, pty not yet attached), so a longer wait would leave
+    // the user staring at a connected-looking terminal that silently drops input. A container still
+    // cold-booting past 30s surfaces an error → the user reopens for a fresh session (tkt-42a6d95a92d1).
     const ready = await waitForDtachSocket(entry.containerName, dtachSocket(id), 30_000);
     if (entry.disposed) return;
     // Close the CURRENT socket (a newer reattach may have swapped it in — review G5) so it re-graces.
-    const closeCurrent = () => { const w = entry.currentWs; if (w && w.readyState === WebSocket.OPEN) w.close(); };
-    // Not ready → the container may be slow-but-alive; do NOT force-remove it (review G3). Re-grace and
-    // let a later reattach retry; a genuinely-dead container is reaped by its grace timer.
+    // Signal a reattach failure (4501): the client keeps the widget and shows an error rather than
+    // dismissing on a bare 1005 — the session existed but we couldn't rejoin it (tkt-42a6d95a92d1). We
+    // do NOT reconnect: the reattach handshake already reached the client's onopen (which RESETS its
+    // retry budget), so a reconnect signal would loop forever on a dead container. Left for the reaper;
+    // a manual reopen starts fresh (or rejoins, if it recovered).
+    const closeCurrent = () => { const w = entry.currentWs; if (w && w.readyState === WebSocket.OPEN) w.close(TERMINAL_REATTACH_FAILED_CODE, 'reattach failed'); };
+    // Not ready within the window ⇒ dead/unreachable/too-slow; do NOT force-remove it (review G3). Leave
+    // it for the reaper's grace timer and surface the failure to the user.
     if (!ready) { closeCurrent(); return; }
-    // Transient spawn failure → same: leave the container, re-grace so another reattach can retry (F4).
+    // Transient spawn failure → same: leave the container for a manual retry, surface the failure (F4).
     if (!spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) closeCurrent();
   } finally {
     entry.attaching = false;
