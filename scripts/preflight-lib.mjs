@@ -47,3 +47,29 @@ export function parseYesNo(answer, dflt = true) {
   if (a === 'n' || a === 'no') return false;
   return dflt;
 }
+
+// Advisory freshness of the current checkout vs origin/<defaultBranch>, from the current branch name
+// and how many commits behind origin the checkout is. The embedded terminal AND the app serve
+// whatever branch is checked out, so a checkout far behind main — or a detached HEAD — silently runs
+// stale code: the exact trap where a shared-worktree branch switch left the terminal on pre-fix code
+// and it appeared to "kill itself" on every restart (tkt-1f9c3ae13a50). Maps inputs → a decision;
+// preflight-dev.mjs runs the git commands and prints ✓ via log() for 'ok' / ⚠ via warn() for 'warn'.
+// A checkout under `threshold` commits behind is normal feature-branch drift → 'ok' (informational).
+export function describeCheckoutFreshness({ branch, behind, threshold = 3, defaultBranch = 'main' } = {}) {
+  if (!branch || branch === 'HEAD') {
+    return { level: 'warn', message: `detached HEAD — not on a branch; the app & embedded terminal serve this snapshot, not origin/${defaultBranch}.` };
+  }
+  const parsed = Number(behind);
+  const behindN = Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+  const commits = behindN === 1 ? 'commit' : 'commits';
+  if (behindN === 0) {
+    return { level: 'ok', message: `✓ on ${branch}, up to date with origin/${defaultBranch}` };
+  }
+  if (behindN >= threshold) {
+    return {
+      level: 'warn',
+      message: `checkout is ${behindN} ${commits} behind origin/${defaultBranch} (on ${branch}) — the app & embedded terminal serve this OLDER code. Update with \`git switch ${defaultBranch} && git pull\` (or rebase your branch).`,
+    };
+  }
+  return { level: 'ok', message: `✓ on ${branch} (${behindN} ${commits} behind origin/${defaultBranch})` };
+}
