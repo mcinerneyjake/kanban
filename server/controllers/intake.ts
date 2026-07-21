@@ -7,7 +7,7 @@ import { type RunRecord } from '../../agent/cost/runLog.js';
 import { meterRun } from '../../agent/cost/meterRun.js';
 import type { RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
-import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../../mcp/handlers.js';
+import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../validation.js';
 import { createTicket, updateTicket, getTicket, HttpError } from '../tickets.js';
 import { BoundedMap } from '../lib/boundedMap.js';
 import type { Ticket, Provenance } from '../../shared/constants.js';

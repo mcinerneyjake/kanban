@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { handleToolCall, TOOLS, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from './handlers.js';
+import { handleToolCall, TOOLS } from './handlers.js';
+import { CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../server/validation.js';
 import { createTicket, updateTicket, listTickets } from '../server/tickets.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
