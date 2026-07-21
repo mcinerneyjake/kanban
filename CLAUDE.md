@@ -30,7 +30,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 
 1. Call `list_tickets` to find it by title match
 2. Call `start_ticket` to set `status: "in-progress"` before starting (preferred over `update_ticket` for this — it marks and loads in one call), then cut the ticket's branch (see **Branch, commit & PR workflow → 1. Branch**)
-3. Implement the work described in the ticket's `body`
+3. Implement the work described in the ticket's `body`. **For feature and bug tickets, first add a `## Done when` acceptance list** to the body via `update_ticket` — a short bullet list of observable, checkable outcomes that define the ticket's exit condition (e.g. "CSV export succeeds on an empty-rows file; no unhandled exception"). Defining it here, once the work is understood, gives an unambiguous target and a per-ticket complement to the global Definition of Done. Chores and docs-only tickets may omit it.
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
 6. **Self-review** — for non-trivial tickets, at the manual-review pause **ask whether the user wants a `/code-review`** (run it only if they opt in — it costs tokens — plus `/verify` when runtime behavior should be confirmed). Address findings before continuing. The ticket **stays `in-progress`** through self-review and commit — it moves to `qa` only when the PR opens (the single `qa` trigger; see **Branch, commit & PR workflow → 3. PR**). This keeps the status flow in-step with the tracker pipeline (`… Review · Commit · PR · QA · Done`). Trivial or docs-only tickets may skip self-review and proceed to step 7.
@@ -40,6 +40,12 @@ The implementation summary **must** include a test line — either:
 - `Tests: N added — <brief description of what they cover>`
 - `Tests: none — <reason, e.g. "pure UI change" or "no new logic">`
 
+It **must** also include a risk line stating blast radius + how to roll back — either:
+- `Risk: <what could break + how to roll back, e.g. "touches the propose→apply seam; revert the squash commit and re-run the round-trip test">`
+- `Risk: low — <why, e.g. "isolated docs edit, no runtime code">`
+
+The risk line rides into the PR body with the rest of the summary (see **Branch, commit & PR workflow → 3. PR**), so a reviewer sees blast radius + rollback inline on every PR — no separate PR template needed.
+
 ### Definition of Done
 
 A ticket is **Done** only when all of these hold (the gate is executable, not advisory):
@@ -48,7 +54,8 @@ A ticket is **Done** only when all of these hold (the gate is executable, not ad
 - [ ] `npm run lint` passes — or N/A (docs-only, no code touched)
 - [ ] `npm test` passes, with tests added per the Testing table below — or an explicit skip reason
 - [ ] Self-review completed for non-trivial tickets (status stays `in-progress`; `qa` is set at PR-open)
-- [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` line
+- [ ] For feature/bug tickets, a `## Done when` acceptance list was defined and every item holds
+- [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` and `Risk:` lines
 - [ ] Status transitioned to `done` via `update_ticket` **after PR merge**
 
 ## Testing
@@ -167,7 +174,7 @@ git push -u origin <prefix>/<id>-<slug>
 gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the ## Implementation summary>"
 ```
 
-The PR body must reference the ticket id and include the `## Implementation summary`. CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`. A fourth workflow (`.github/workflows/e2e.yml`, added 2026-07-02) runs the Playwright suite path-filtered to UI-touching changes (`src/**`, `e2e/**`, `playwright.config.ts`) — it is **advisory** (not in the ruleset) until it earns a stable track record, then gets promoted to required.
+The PR body must reference the ticket id and include the `## Implementation summary` (which now carries both the `Tests:` and `Risk:` lines — so blast radius + rollback are visible inline on the PR). CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`. A fourth workflow (`.github/workflows/e2e.yml`, added 2026-07-02) runs the Playwright suite path-filtered to UI-touching changes (`src/**`, `e2e/**`, `playwright.config.ts`) — it is **advisory** (not in the ruleset) until it earns a stable track record, then gets promoted to required.
 
 **Branch protection:** `main` is protected by a GitHub ruleset that enforces the three **required** CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level. (`e2e` reports on the PR but does not yet block merge.)
 
