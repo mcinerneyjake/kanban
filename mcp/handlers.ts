@@ -4,10 +4,12 @@ import {
 } from '../server/tickets.js';
 import { appendEvent, getTicketEvents } from '../server/events.js';
 import {
-  BOARD_STATUSES, STATUS_IDS, CREATE_STATUS_IDS, TYPES, PRIORITIES,
-  isStatusId, isTicketType, isPriority,
+  STATUS_IDS, TYPES, PRIORITIES,
   type Ticket, type StatusId, type Provenance,
 } from '../shared/constants.js';
+import {
+  extractTicketFields, validatedStatus, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM,
+} from '../server/validation.js';
 
 // MCP tool handlers — the testable core; mcp/server.ts is the thin transport entrypoint.
 
@@ -15,12 +17,6 @@ export type ToolResult = {
   content: { type: 'text'; text: string }[]
   isError?: boolean
 }
-
-// Create/update status enums. Asymmetric: qa is a gate you transition INTO, never
-// create in. Both derive from shared/constants so contract, MCP validator, and
-// HTTP service can't drift on which statuses are creatable.
-export const UPDATE_STATUS_ENUM = BOARD_STATUSES.map((s) => s.id);
-export const CREATE_STATUS_ENUM = CREATE_STATUS_IDS;
 
 // ---------------------------------------------------------------------------
 // Protocol helpers
@@ -36,79 +32,6 @@ function extractId(args: Record<string, unknown> | undefined): string | null {
   return typeof args?.id === 'string' ? args.id : null;
 }
 
-function isStringArray(val: unknown): val is string[] {
-  return Array.isArray(val) && val.every((item) => typeof item === 'string');
-}
-
-// Validate a status against the per-call allowed set → narrowed StatusId. Shared
-// by the field extractor and the list filter so the two paths can't drift.
-function validatedStatus(value: string, allowedStatuses: readonly string[]): StatusId {
-  if (!isStatusId(value) || !allowedStatuses.includes(value)) {
-    throw new HttpError(400, `Invalid status: ${value} (allowed: ${allowedStatuses.join(', ')})`);
-  }
-  return value;
-}
-
-type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
-
-// allowedStatuses is the per-operation set (create vs update), enforcing the
-// advertised schema at runtime. Invalid values are rejected (parity with the HTTP
-// 400), not silently dropped, so an impossible state (qa at create) surfaces.
-export function extractTicketFields(
-  args: Record<string, unknown> | undefined,
-  allowedStatuses: readonly string[],
-): TicketFields {
-  const out: TicketFields = {};
-  if (!args) return out;
-  // Present-but-wrong-typed is REJECTED (400), not silently dropped (parity with
-  // validateWritableTypes, #82) — else update_ticket {title:42} drops title and
-  // reports a no-op success. !== undefined: absent (skip) vs present-malformed (throw).
-  if (args.title !== undefined) {
-    if (typeof args.title !== 'string') throw new HttpError(400, 'title must be a string');
-    out.title = args.title;
-  }
-  if (args.type !== undefined) {
-    if (typeof args.type !== 'string' || !isTicketType(args.type))
-      throw new HttpError(400, `Invalid type: ${String(args.type)}`);
-    out.type = args.type;
-  }
-  if (args.priority !== undefined) {
-    if (typeof args.priority !== 'string' || !isPriority(args.priority))
-      throw new HttpError(400, `Invalid priority: ${String(args.priority)}`);
-    out.priority = args.priority;
-  }
-  if (args.status !== undefined) {
-    if (typeof args.status !== 'string')
-      throw new HttpError(400, `Invalid status: ${String(args.status)} (allowed: ${allowedStatuses.join(', ')})`);
-    out.status = validatedStatus(args.status, allowedStatuses);
-  }
-  if (args.body !== undefined) {
-    if (typeof args.body !== 'string') throw new HttpError(400, 'body must be a string');
-    out.body = args.body;
-  }
-  if (args.project !== undefined) {
-    if (typeof args.project === 'string' || args.project === null) out.project = args.project;
-    else throw new HttpError(400, 'project must be a string or null');
-  }
-  if (args.parent !== undefined) {
-    if (typeof args.parent === 'string' || args.parent === null) out.parent = args.parent;
-    else throw new HttpError(400, 'parent must be a string or null');
-  }
-  if (args.dueDate !== undefined) {
-    if (typeof args.dueDate === 'string' || args.dueDate === null) out.dueDate = args.dueDate;
-    else throw new HttpError(400, 'dueDate must be a string or null');
-  }
-  if (args.assignee !== undefined) {
-    if (typeof args.assignee === 'string' || args.assignee === null) out.assignee = args.assignee;
-    else throw new HttpError(400, 'assignee must be a string or null');
-  }
-  if (args.blockers !== undefined) {
-    if (!isStringArray(args.blockers)) throw new HttpError(400, 'blockers must be an array of strings');
-    out.blockers = args.blockers;
-  }
-  return out;
-}
-
 // list_tickets returns a LIGHTWEIGHT summary, never the full body (belongs to
 // get_ticket) — keeps results under the MCP token limit. The service still
 // returns full Ticket[] for the agent's retrieval path.
@@ -122,7 +45,7 @@ const SUMMARY_MAX = 100;
 // First non-empty body line, stripping only proper leading markdown markers
 // (marker + space, so "#1 priority" is preserved). Capped at SUMMARY_MAX by code
 // point (Array.from) so the cut never splits a surrogate pair.
-function summarize(body: string): string {
+function summarizeBody(body: string): string {
   for (const raw of body.split('\n')) {
     const line = raw.trim().replace(/^(?:#{1,6}\s+|[-*>]\s+)+/, '').trim();
     if (line.length === 0) continue;
@@ -140,7 +63,7 @@ function toSummary(t: Ticket): TicketSummary {
     priority: t.priority,
     type: t.type,
     project: t.project,
-    summary: summarize(t.body),
+    summary: summarizeBody(t.body),
   };
 }
 

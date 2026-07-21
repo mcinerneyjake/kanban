@@ -161,9 +161,9 @@ export default function App() {
   }, [load]);
 
   // Always (re)sets prefill so a normal open doesn't inherit a stale one.
-  const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null, runId: string | null = null) => {
+  const openTicket = useCallback((target: Ticket | 'new', initial: Prefill | null = null, initialRunId: string | null = null) => {
     setPrefill(initial);
-    setDraftRunId(runId);
+    setDraftRunId(initialRunId);
     setEditing(target);
   }, []);
 
@@ -193,14 +193,14 @@ export default function App() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [openTicket]);
 
-  const handleSave = useCallback(async (data: Partial<Ticket>, runId?: string) => {
+  const handleSave = useCallback(async (data: Partial<Ticket>, applyRunId?: string) => {
     const target = editing !== 'new' ? editing : null;
     try {
-      if (runId) {
+      if (applyRunId) {
         // Agent draft: apply via provenance/metering endpoint (🤖 Assisted badge + run link).
         await api.intake.apply({
           action: target ? 'update_ticket' : 'create_ticket',
-          runId,
+          runId: applyRunId,
           args: target ? { ...data, id: target.id } : data,
         });
       } else if (target) await api.update(target.id, data);

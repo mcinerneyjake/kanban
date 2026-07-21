@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import matter from 'gray-matter';
 import { STATUS_IDS, TYPES, PRIORITIES, BOARD_STATUSES, CREATE_STATUS_IDS, STATUS_STEP, isSource, type Ticket, type StatusId, type DashboardSummary, type Provenance } from '../shared/constants.js';
 import { appendEvent } from './events.js';
@@ -149,7 +150,7 @@ function serialize(ticket: Ticket): string {
 async function writeTicket(ticket: Ticket) {
   await ensureDir();
   const file = ticketPath(ticket.id);
-  const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, serialize(ticket), 'utf8');
   try {
     await fs.rename(tmp, file);
@@ -200,7 +201,7 @@ function assertDueDate(dueDate: string | null | undefined) {
 }
 
 function newId(): string {
-  return `tkt-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  return `tkt-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
 // Passing any options object bypasses gray-matter's content cache. Without it,
@@ -373,7 +374,7 @@ export async function archiveStaleTickets(): Promise<number> {
   const stale = tickets.filter((ticket) => {
     if (ticket.status !== 'done') return false;
     const updatedAt = new Date(ticket.updated).getTime();
-    return !isNaN(updatedAt) && now - updatedAt >= ARCHIVE_AGE_MS;
+    return !Number.isNaN(updatedAt) && now - updatedAt >= ARCHIVE_AGE_MS;
   });
   const archived = new Date().toISOString();
   await Promise.all(stale.map((ticket) => writeTicket({ ...ticket, status: 'archived', updated: archived })));
