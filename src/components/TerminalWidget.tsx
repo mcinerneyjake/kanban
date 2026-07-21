@@ -171,6 +171,7 @@ export default function TerminalWidget({ session, theme, onClose }: {
           wsRef.current = socket;
           let wasOpen = false;
           let revealed = false;
+          let pendingSizeResend = false; // a reattach must re-deliver the size once the fresh pty is live
           // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet gap
           // after output) — revealing on the first byte would flash the freshly-cleared screen before
           // the UI paints. A hard cap covers sessions that stream continuously.
@@ -183,11 +184,21 @@ export default function TerminalWidget({ session, theme, onClose }: {
           };
           socket.onopen = () => {
             if (disposed) return;
+            const isReattach = hasEverOpened; // a prior socket opened ⇒ this is an in-place reconnect
             wasOpen = true;
             hasEverOpened = true;
             reconnectAttempts = 0; // a successful (re)connect resets the backoff budget
             setStatus('open');
             fit.fit(); sendResize(); term.focus();
+            // A reattach gets a FRESH server-side exec pty (default 80×24). Unlike the initial connect
+            // — where the ResizeObserver re-sends our size once the pane lays out — a reattach doesn't
+            // change the widget size, so nothing re-delivers our fit size after the pty is live (the
+            // sendResize above races the pty's async creation and is dropped). Result: Claude renders a
+            // wrong-sized, half-redrawn frame (missing input box). Re-send the size on the first byte,
+            // which proves the pty is live; the pty is at the WRONG size, so that one resize is itself
+            // the change that makes Claude/Ink fully re-lay-out (no artificial nudge/timer needed —
+            // that's only for the reload path, whose pty is already at the right size).
+            if (isReattach) pendingSizeResend = true;
             // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
             // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
             // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
@@ -196,6 +207,14 @@ export default function TerminalWidget({ session, theme, onClose }: {
           };
           socket.onmessage = (e) => {
             if (disposed) return;
+            // First byte after a reattach ⇒ the fresh exec pty is live and accepting resizes now.
+            // Re-deliver our fit size (the onopen sendResize raced pty creation and was dropped). The
+            // pty is at its 80×24 spawn default, so this single resize is a real change → Claude/Ink
+            // fully re-lays-out at the correct size. One deterministic message; no timer.
+            if (pendingSizeResend) {
+              pendingSizeResend = false;
+              sendResize();
+            }
             if (!revealed) {
               if (settleTimer) clearTimeout(settleTimer);
               settleTimer = setTimeout(reveal, 150);
