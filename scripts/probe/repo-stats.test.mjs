@@ -9,8 +9,17 @@ import {
 
 // Fixture builder — a throwaway git repo with commits whose Co-authored-by trailers vary in case, so
 // the probe's instruments can be proven against a KNOWN answer (the guard-bash.test.mjs precedent).
+// Git's repo context is exported into hook environments and inherited by `npm test` — absolute in a
+// worktree, so it would silently redirect these temp-repo commands at the REAL repo (tkt-cf1e0c0b3dda).
+const GIT_CONTEXT_VARS = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX'];
+function hermeticEnv(extra) {
+  const env = { ...process.env, ...extra };
+  for (const key of GIT_CONTEXT_VARS) delete env[key];
+  return env;
+}
+
 function git(args, cwd, date) {
-  const env = date ? { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : process.env;
+  const env = hermeticEnv(date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : undefined);
   return execFileSync('git', args, { cwd, encoding: 'utf8', env });
 }
 function initRepo(cwd) {
@@ -49,6 +58,20 @@ describe('countAiCoAuthored (trailer-aware, case-insensitive)', () => {
     // 5 commits total, only 3 carry a real trailer — proves it is not a body-text grep.
     expect(countCommits(tmp)).toBe(5);
     expect(countAiCoAuthored(tmp)).toBe(3);
+  });
+
+  // Without the scrub, an ambient absolute GIT_DIR makes every fixture command drive the REAL repo,
+  // so the known answer collapses and the whole suite fails (tkt-cf1e0c0b3dda).
+  it('ignores an ambient absolute GIT_DIR and measures the fixture repo', () => {
+    seedMixedRepo();
+    const prev = process.env.GIT_DIR;
+    process.env.GIT_DIR = path.join(process.cwd(), '.git'); // decoy: the real kanban repo
+    try {
+      expect(countCommits(tmp)).toBe(5);
+      expect(countAiCoAuthored(tmp)).toBe(3);
+    } finally {
+      if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev;
+    }
   });
 
   // #4 demonstration: the shipped case-sensitive `--grep` probe UNDERCOUNTS the same fixture — it misses

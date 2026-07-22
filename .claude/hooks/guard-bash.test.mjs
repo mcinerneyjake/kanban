@@ -6,6 +6,16 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseGit, cdTarget, decide } from './guard-bash.mjs';
 
+// Git's repo context is exported into hook environments and inherited by `npm test` — absolute in a
+// worktree, so it would silently redirect the temp-repo commands below at the REAL repo, and this
+// suite would grade the wrong branch (tkt-cf1e0c0b3dda).
+const GIT_CONTEXT_VARS = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX'];
+function hermeticEnv() {
+  const env = { ...process.env };
+  for (const key of GIT_CONTEXT_VARS) delete env[key];
+  return env;
+}
+
 // A branch resolver stub — most cases pin the branch explicitly, ignoring dir.
 const onBranch = (name) => () => name;
 const blocked = (cmd, branch) => decide(cmd, onBranch(branch)).blocked;
@@ -280,7 +290,7 @@ describe('the real hook, end to end', () => {
   const repo = (name, branch) => {
     const p = join(tmp, name);
     mkdirSync(p);
-    const run = (c) => execSync(c, { cwd: p, stdio: 'ignore' });
+    const run = (c) => execSync(c, { cwd: p, stdio: 'ignore', env: hermeticEnv() });
     run('git init -q -b main');
     run('git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init');
     if (branch !== 'main') run(`git switch -q -c ${branch}`);
@@ -290,10 +300,13 @@ describe('the real hook, end to end', () => {
   const onFeat = repo('on-feat', 'feat/x');
 
   const hook = fileURLToPath(new URL('./guard-bash.mjs', import.meta.url));
+  // hermeticEnv matters most here: the hook resolves the branch by running git in `cwd`, so a leaked
+  // GIT_DIR would have it judge the REAL repo — quietly inverting these verdicts (tkt-cf1e0c0b3dda).
   const runHook = (command, cwd) => {
     const r = spawnSync('node', [hook], {
       input: JSON.stringify({ cwd, tool_input: { command } }),
       encoding: 'utf8',
+      env: hermeticEnv(),
     });
     return r.status; // 2 = blocked, 0 = allowed
   };
@@ -303,6 +316,19 @@ describe('the real hook, end to end', () => {
   it('blocks a commit on main and allows one on a feature branch', () => {
     expect(runHook('git commit -m x', onMain)).toBe(2);
     expect(runHook('git commit -m x', onFeat)).toBe(0);
+  });
+
+  // Without the scrub the hook resolves the DECOY repo (on main) and blocks the feature-branch
+  // commit — the shape that made every worktree commit fail the gate (tkt-cf1e0c0b3dda).
+  it('ignores an ambient absolute GIT_DIR and judges the real cwd', () => {
+    const prev = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(onMain, '.git');
+    try {
+      expect(runHook('git commit -m x', onFeat)).toBe(0);
+      expect(runHook('git commit -m x', onMain)).toBe(2);
+    } finally {
+      if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev;
+    }
   });
 
   it('judges by the repo the chain cd-ed into — the bug this fixes', () => {
