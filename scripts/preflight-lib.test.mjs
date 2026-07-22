@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness } from './preflight-lib.mjs';
+import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness, describeSeedCredential } from './preflight-lib.mjs';
 
 describe('isDaemonUp', () => {
   it('is up only on a clean exit (0)', () => {
@@ -113,5 +113,85 @@ describe('describeCheckoutFreshness', () => {
     expect(describeCheckoutFreshness({ branch: 'main', behind: NaN }).level).toBe('ok');
     expect(describeCheckoutFreshness({ branch: 'main', behind: -3 }).level).toBe('ok');
     expect(describeCheckoutFreshness({ branch: 'main', behind: 'oops' }).level).toBe('ok');
+  });
+});
+
+describe('describeSeedCredential', () => {
+  const NOW = Date.UTC(2026, 6, 22); // 2026-07-22
+  const day = 86_400_000;
+  // What terminal-setup-cred.mjs writes: non-refreshing, far-future local stamp.
+  const setupToken = (over = {}) => ({
+    claudeAiOauth: { accessToken: 'tok', refreshToken: '', expiresAt: NOW + 3650 * day, scopes: ['user:inference'], ...over },
+  });
+
+  it('passes a setup-token seed', () => {
+    const r = describeSeedCredential({ credential: setupToken(), now: NOW });
+    expect(r.level).toBe('ok');
+  });
+
+  // The shape that actually broke: a /login credential whose access token expired 2026-07-21 while
+  // its refresh token stayed live — refreshed only inside session copies that are then deleted.
+  it('warns on the real 2026-07-21 seed: expired, with a live refresh token (tkt-da1caf5316f7)', () => {
+    const r = describeSeedCredential({
+      credential: {
+        claudeAiOauth: {
+          accessToken: 'x'.repeat(108), refreshToken: 'y'.repeat(108),
+          expiresAt: Date.UTC(2026, 6, 21, 5, 47, 28, 552),
+          refreshTokenExpiresAt: Date.UTC(2026, 7, 19), subscriptionType: 'max',
+          scopes: ['user:file_upload', 'user:inference', 'user:mcp_servers', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      now: NOW,
+    });
+    expect(r.level).toBe('warn');
+    expect(r.message).toContain('EXPIRED on 2026-07-21');
+    expect(r.message).toContain('refresh token'); // names the root cause, not just the symptom
+  });
+
+  it('warns on a refreshable seed even when its expiry looks far off', () => {
+    // A /login credential really lasts ~24h whatever the file claims, so expiry alone would miss it.
+    const r = describeSeedCredential({ credential: setupToken({ refreshToken: 'live' }), now: NOW });
+    expect(r.level).toBe('warn');
+    expect(r.message).toContain('refresh token');
+  });
+
+  it('warns inside the expiry window and passes outside it', () => {
+    expect(describeSeedCredential({ credential: setupToken({ expiresAt: NOW + 3 * day }), now: NOW }).level).toBe('warn');
+    expect(describeSeedCredential({ credential: setupToken({ expiresAt: NOW + 30 * day }), now: NOW }).level).toBe('ok');
+    const custom = describeSeedCredential({ credential: setupToken({ expiresAt: NOW + 30 * day }), now: NOW, warnWithinDays: 60 });
+    expect(custom.level).toBe('warn');
+  });
+
+  it('uses singular "day" at exactly one day left', () => {
+    const r = describeSeedCredential({ credential: setupToken({ expiresAt: NOW + day }), now: NOW });
+    expect(r.message).toContain('expires in 1 day ');
+    expect(r.message).not.toContain('1 days');
+  });
+
+  // Fail-loud: a seed we can't read must never be reported as fine.
+  it('warns when the seed is absent, empty, or unreadable', () => {
+    expect(describeSeedCredential({ credential: null, now: NOW }).level).toBe('warn');
+    expect(describeSeedCredential({ credential: {}, now: NOW }).level).toBe('warn');
+    expect(describeSeedCredential({ credential: { claudeAiOauth: { accessToken: '' } }, now: NOW }).level).toBe('warn');
+    const bad = describeSeedCredential({ credential: null, error: 'Unexpected token }', now: NOW });
+    expect(bad.level).toBe('warn');
+    expect(bad.message).toContain('unreadable');
+  });
+
+  it('accepts a bare credential object (no claudeAiOauth wrapper)', () => {
+    const r = describeSeedCredential({ credential: { accessToken: 'tok', refreshToken: '', expiresAt: NOW + 3650 * day }, now: NOW });
+    expect(r.level).toBe('ok');
+  });
+
+  it('does not invent an expiry when the field is missing or junk', () => {
+    for (const expiresAt of [undefined, null, 'soon', NaN, 0]) {
+      expect(describeSeedCredential({ credential: setupToken({ expiresAt }), now: NOW }).level).toBe('ok');
+    }
+  });
+
+  it('always names the re-seed command, so the warning is actionable', () => {
+    const r = describeSeedCredential({ credential: null, now: NOW });
+    expect(r.message).toContain('claude setup-token');
+    expect(r.message).toContain('terminal-setup-cred.mjs');
   });
 });
