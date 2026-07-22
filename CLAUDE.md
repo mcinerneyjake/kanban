@@ -68,6 +68,7 @@ After every feature or bug-fix ticket, evaluate **each touched file independentl
 | `server/index.ts` (API routes) | `server/index.test.ts` | Vitest |
 | `src/lib/` (shared utilities) | `src/lib/*.test.ts` next to the file | Vitest |
 | `mcp/handlers.ts` (MCP tool handlers) | `mcp/handlers.test.ts` | Vitest |
+| `server/terminal*.ts` (embedded terminal) | co-located `server/terminal*.test.ts` | Vitest |
 | React components / CSS only | skip | — |
 
 > The MCP **logic** lives in `mcp/handlers.ts` (testable); `mcp/server.ts` is a thin transport-wiring entrypoint with no logic, so it needs no test.
@@ -219,6 +220,57 @@ Prefer the MCP tools for all ticket operations — never write a script to mark 
 - `mcp/handlers.ts` — MCP tool definitions + dispatch logic (the testable core)
 - `mcp/server.ts` — thin MCP entrypoint: wires the handlers to a stdio transport
 - `agent/` — local-first agentic-RAG intake agent (retrieval, tools, tool-use loop, CLI); talks to an OpenAI-compatible `/v1` endpoint
+- `server/terminal.ts` + `terminal{Auth,Docker,Home,Projects,Reaper,Registry,Token}.ts` — embedded-terminal backend: session lifecycle, container args + mount allowlist, per-session HOME, project confinement, orphan reaping, per-boot WS token
+- `server/routes/terminal.ts` — the terminal's HTTP surface (token mint); the WS upgrade is wired in `server/index.ts`
+- `src/components/TerminalWidget.tsx` — the dev-only floating widget; `TerminalPipelinePhase.tsx` renders its live pipeline phase
+- `src/lib/terminal{Reconnect,Clipboard,Relay}.ts` — pure client helpers (reconnect classification, copy/paste intent, events-payload guard), each with a co-located test
+- `Dockerfile.terminal` + `scripts/terminal-{setup-cred.mjs,clean.ts}` — session image, credential seeding, orphan cleanup
+
+## Embedded terminal (dev-only)
+
+A floating widget in the board UI that runs a real Claude Code session in a per-session Docker
+container. Gated on `import.meta.env.DEV`, so it never reaches a production build.
+
+**Running it.** `npm run dev` sets `KANBAN_TERMINAL=1` (via `npm run server`) — the feature is off
+without it. Docker must be running; the `predev` preflight checks that, checks LM Studio for the
+intake agent, and warns when the credential seed has rotted (below).
+
+**One-time setup:**
+
+```
+docker build -f Dockerfile.terminal -t kanban-terminal .
+node scripts/terminal-setup-cred.mjs      # seeds the subscription login
+```
+
+**The HOME model — the part that bites.** `~/.kanban-terminal/home` is a read-only **seed/template**,
+not the session's HOME. Each session gets its own *copy* at `~/.kanban-terminal/sessions/<id>/home`,
+mounted at `/kanban-home`, so concurrent sessions can't race writes to `~/.claude.json` or read each
+other's auth state. Two consequences:
+
+- A `/login` performed **inside** a session is ephemeral — it dies with that session's copy.
+- **Never `/login` into the seed.** `scripts/terminal-setup-cred.mjs` is the only sanctioned way to
+  seed it: it writes a static long-lived token, whereas `/login` writes a refreshable ~24h credential
+  whose refresh is discarded with the copy — so the seed rots and every later session prompts for
+  login (`tkt-da1caf5316f7`). The preflight warns when the seed drifts back into that shape.
+
+**Confinement.** A session is mounted read-write only into allowed project roots — the kanban repo
+always, plus anything in `KANBAN_TERMINAL_PROJECTS` (JSON `{name: absolutePath}`; malformed config is
+ignored, never a boot error). Each root's `node_modules` is shadowed by a **named volume** populated
+by a one-shot container before the session starts, so host (macOS) binaries can't leak into a Linux
+container. `terminalAuth.test.ts` asserts no other host path is ever mounted.
+
+**Usage.** The corner **⌨ Terminal** launcher opens a plain shell session; a ticket's **▶ Run in
+terminal** opens one scoped to that ticket. A ticket-scoped session shows its live pipeline phase in
+the header, which becomes a *start fresh* control once the ticket is done — confinement is frozen at
+spawn, so that button really disposes the container rather than relabelling it.
+
+**Overrides:** `KANBAN_TERMINAL_IMAGE`, `KANBAN_TERMINAL_HOME`, `KANBAN_TERMINAL_PROJECTS`.
+
+**Cleanup.** An in-process reaper removes orphaned containers while the dev server is up. Quitting the
+server strands detached containers until the next boot re-adopts them; `npm run terminal:clean` forces
+them out now. **Run it with the dev server DOWN** — it has no view of the session registry and removes
+every matching container unconditionally, so with the server up it kills live attached sessions. It is
+scoped to this checkout (a `kanban.root` label), so a second checkout's sessions are untouched.
 
 ## LLM & agent philosophy (local-first)
 
