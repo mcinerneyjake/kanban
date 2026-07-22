@@ -1246,6 +1246,24 @@ body {
 }
 .tw-phase.is-done { color: var(--st-done); }
 .tw-phase.is-failed { color: var(--danger); }
+
+/* A finished ticket has to read as finished from across the room, not as a small green chip — the
+   whole header takes the accent. :has() keeps this in CSS instead of lifting done-state into the
+   widget just to toggle a class. */
+.tw-header:has(.tw-phase.is-done) {
+  background: color-mix(in srgb, var(--st-done) 14%, var(--col-bg));
+  border-bottom-color: var(--st-done);
+}
+/* The chip becomes the way out of a finished session (tkt-6aabaee89317). Filled, not outlined, so it
+   reads as a control rather than a status word. */
+.tw-phase--action {
+  cursor: pointer;
+  font-family: inherit;
+  background: var(--st-done);
+  border-color: var(--st-done);
+  color: var(--card-bg);
+}
+.tw-phase--action:hover { filter: brightness(1.1); }
 /* Gentler than tw-status-pulse: a text chip flickering to 0.35 opacity reads as broken, not busy. */
 @media (prefers-reduced-motion: no-preference) {
   .tw-phase.is-active { animation: tw-phase-pulse 1.6s ease-in-out infinite; }
