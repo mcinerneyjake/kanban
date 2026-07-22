@@ -7,9 +7,17 @@ import { fileURLToPath } from 'node:url';
 // fails LOUD instead of returning a plausible-but-false value. tkt-ceebed633013 (see `## Probe discipline`
 // in CLAUDE.md): a surprising result is a hypothesis about the instrument, not a finding.
 
+// An inherited git context (GIT_DIR & co — exported into every git hook, absolute in a worktree)
+// overrides `cwd`, so the probe would silently measure a DIFFERENT repo than the one asked for and
+// report the number with full confidence. Scrub it: that is this module's whole reason to exist
+// (tkt-cf1e0c0b3dda).
+const GIT_CONTEXT_VARS = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX'];
+
 function git(args, cwd) {
+  const env = { ...process.env };
+  for (const key of GIT_CONTEXT_VARS) delete env[key];
   // %B over hundreds of commits is large; lift the default 1MB stdout cap.
-  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
 }
 
 export function countCommits(cwd = process.cwd()) {
