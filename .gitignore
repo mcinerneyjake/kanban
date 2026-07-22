@@ -19,3 +19,6 @@ test-results/
 playwright-report/
 coverage/
 .cache/
+
+# Claude Code per-session worktrees live here (tkt-4b74943a319e) — checkouts, never sources.
+.claude/worktrees/

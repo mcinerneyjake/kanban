@@ -113,6 +113,33 @@ In **this repo's sessions**, every **new** ticket is authored by the local intak
 - **Body edits + the mandatory `## Implementation summary`** → `update_ticket`. The agent authors *intake from a report*; it can't summarize the work Claude just did, so summaries and directed body edits remain Claude's.
 - **Delete** → `delete_ticket` (the agent's toolset excludes it; still prompts).
 
+## Concurrent sessions: one worktree each
+
+Two sessions sharing one working tree is not safe — whichever stages a shared file first silently
+absorbs the other's in-flight edits, and any commit lands on whatever branch the checkout happens to
+be on, regardless of which session made it (`tkt-4b74943a319e`). **Give each concurrent session its
+own git worktree.**
+
+Use Claude Code's built-in support — do **not** hand-roll a convention. `EnterWorktree` creates
+`.claude/worktrees/<name>` on a branch cut from a fresh `origin/main`; `ExitWorktree` removes it (and
+auto-removes it if nothing changed). The Agent tool takes `isolation: "worktree"` for the same thing.
+`.claude/worktrees/` is gitignored, so a worktree never shows up as untracked in the main checkout.
+
+- **`node_modules` needs no handling.** Worktrees are nested *inside* the repo, so Node's upward
+  resolution finds the main checkout's `node_modules` — verified: `npm run typecheck`/`lint`/`test`
+  all run in a fresh worktree with no install. Don't symlink, don't install per tree.
+- **Running two dev servers: set `KANBAN_PORT_OFFSET`.** `npm run dev` binds the API and Vite ports
+  from `shared/ports.ts`; the offset shifts **both together** (`KANBAN_PORT_OFFSET=1` → API 3002, web
+  5174), which is what keeps a worktree's UI talking to its *own* API. Vite runs `strictPort`, so a
+  collision fails loudly instead of falling back to the next port and silently proxying to the other
+  checkout's backend. `PORT` still overrides the API port outright.
+- **Commits from a worktree run the full gate**, same as the main checkout — `.husky/pre-commit`
+  scrubs git's exported repo context first, because git exports an *absolute* `GIT_DIR` in a worktree
+  and inheriting it made the test suite drive the real repository (`tkt-cf1e0c0b3dda`).
+- **The embedded terminal is not isolated by this.** Its container mounts the *host* checkout, so an
+  in-container `git switch` still moves the host branch — worktrees isolate Claude sessions, not
+  terminal sessions.
+
 ## Branch, commit & PR workflow
 
 Every ticket lands on its own branch and merges to `main` via a **squash-merged PR** — never a direct push to `main`. There are three human-approval gates: **"Ready to commit?"**, **"Ready to open PR?"**, **"Ready to merge?"**. Never cross a gate without explicit confirmation.

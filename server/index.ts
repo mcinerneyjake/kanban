@@ -5,6 +5,7 @@ import { scheduleWeeklyArchive, stopArchiveScheduler, msUntilNextSundayEvening }
 import { startTicketWatcher, stopTicketWatcher } from './ticketWatcher.js';
 import { closeAllStreamClients } from './stream.js';
 import { getTicketIndex } from '../agent/retrieval/indexCache.js';
+import { apiPort } from '../shared/ports.js';
 
 // Process entrypoint. Assembly in app.ts, scheduler in archiveScheduler.ts; these
 // re-exports keep ./index.js a stable import surface for tests and tooling.
@@ -26,7 +27,7 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-  const PORT = process.env.PORT || 3001;
+  const PORT = apiPort();
   const server = app.listen(PORT, () => {
     console.log(`Kanban API → http://localhost:${PORT}`);
     // Best-effort warm so the first intake search is instant. Free locally; embedder
