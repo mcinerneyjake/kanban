@@ -172,6 +172,25 @@ describe('PATCH /api/tickets/:id', () => {
     expect(res.body).toMatchObject({ error: expect.stringContaining('order') });
   });
 
+  // tkt-81b4d35e95e5 — appendBody appends non-destructively over the raw-HTTP seam
+  it('appends via appendBody without overwriting the existing body', async () => {
+    await seedTicket('abc123456789', 'Original', 'Seed body');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ appendBody: 'Appended' });
+    expect(res.status).toBe(200);
+    expect(res.body.body).toBe('Seed body\n\nAppended');
+  });
+
+  it('returns 400 when body and appendBody are sent together', async () => {
+    await seedTicket('abc123456789', 'Original', 'Seed body');
+    const res = await request(app)
+      .patch('/api/tickets/abc123456789')
+      .send({ body: 'Replace', appendBody: 'Add' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: expect.stringContaining('not both') });
+  });
+
   it('returns 400 (not 500) when title is a non-string', async () => {
     await seedTicket('abc123456789', 'Original');
     const res = await request(app)

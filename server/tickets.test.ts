@@ -184,6 +184,13 @@ describe('createTicket validation', () => {
     expect(err.status).toBe(400);
     expect(err.message).toContain('status');
   });
+
+  // tkt-81b4d35e95e5 — appendBody is update-only; reject on create, don't silently drop
+  it('rejects appendBody on create with 400 (update-only field)', async () => {
+    const err = await httpError(createTicket({ title: 'T', appendBody: 'nope' }));
+    expect(err.status).toBe(400);
+    expect(err.message).toContain('appendBody');
+  });
 });
 
 describe('createTicket defaults', () => {
@@ -303,6 +310,45 @@ describe('updateTicket', () => {
     expect(t.parent).toBe('tkt-parent');
     const cleared = await updateTicket(t.id, { parent: null });
     expect(cleared.parent).toBeNull();
+  });
+
+  // tkt-81b4d35e95e5 — appendBody appends non-destructively, never overwrites
+  it('appendBody appends to an existing body with a blank-line separator', async () => {
+    const t = await createTicket({ title: 'Has body', body: 'Original content' });
+    const updated = await updateTicket(t.id, { appendBody: '## Note\nmore' });
+    expect(updated.body).toBe('Original content\n\n## Note\nmore');
+  });
+
+  it('appendBody onto an empty body sets it without a leading separator', async () => {
+    const t = await createTicket({ title: 'No body' });
+    const updated = await updateTicket(t.id, { appendBody: 'First section' });
+    expect(updated.body).toBe('First section');
+  });
+
+  it('appends accumulate across successive calls', async () => {
+    const t = await createTicket({ title: 'Accumulate', body: 'A' });
+    await updateTicket(t.id, { appendBody: 'B' });
+    const twice = await updateTicket(t.id, { appendBody: 'C' });
+    expect(twice.body).toBe('A\n\nB\n\nC');
+  });
+
+  it('an empty/whitespace appendBody is a no-op', async () => {
+    const t = await createTicket({ title: 'Untouched', body: 'Keep' });
+    const updated = await updateTicket(t.id, { appendBody: '   ' });
+    expect(updated.body).toBe('Keep');
+  });
+
+  it('rejects body and appendBody together with 400, leaving the body untouched', async () => {
+    const t = await createTicket({ title: 'Both', body: 'Original' });
+    const err = await httpError(updateTicket(t.id, { body: 'Replace', appendBody: 'Add' }));
+    expect(err.status).toBe(400);
+    expect((await getTicket(t.id)).body).toBe('Original');
+  });
+
+  it('appendBody does not resurrect as a persisted ticket field', async () => {
+    const t = await createTicket({ title: 'Clean', body: 'X' });
+    const updated = await updateTicket(t.id, { appendBody: 'Y' });
+    expect('appendBody' in updated).toBe(false);
   });
 });
 

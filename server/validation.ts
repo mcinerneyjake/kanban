@@ -27,7 +27,7 @@ export function validatedStatus(value: string, allowedStatuses: readonly string[
   return value;
 }
 
-type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
+type TicketFields = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>> & { appendBody?: string }
 
 // allowedStatuses is the per-operation set (create vs update), enforcing the
 // advertised schema at runtime. Invalid values are rejected (parity with the HTTP
@@ -63,6 +63,10 @@ export function extractTicketFields(
   if (args.body !== undefined) {
     if (typeof args.body !== 'string') throw new HttpError(400, 'body must be a string');
     out.body = args.body;
+  }
+  if (args.appendBody !== undefined) {
+    if (typeof args.appendBody !== 'string') throw new HttpError(400, 'appendBody must be a string');
+    out.appendBody = args.appendBody;
   }
   if (args.project !== undefined) {
     if (typeof args.project === 'string' || args.project === null) out.project = args.project;
