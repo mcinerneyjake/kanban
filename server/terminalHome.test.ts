@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { seedHomeDir, sessionsRoot, sessionHomeDir, seedSessionHome, removeSessionHome } from './terminalHome.js';
@@ -70,7 +70,18 @@ describe('terminalHome (per-session HOME isolation, S4)', () => {
     expect(existsSync(home)).toBe(true);
     removeSessionHome(ID_A, env);
     expect(existsSync(home)).toBe(false);
+    // The PARENT too — asserting only home/ is what let empty session dirs pile up (tkt-ae53ab420a02).
+    expect(existsSync(path.dirname(home))).toBe(false);
+    expect(existsSync(sessionsRoot(env))).toBe(true); // but never the sessions root itself
     expect(() => removeSessionHome(ID_A, env)).not.toThrow(); // idempotent
+  });
+
+  it('leaves no residue behind after a seed/remove cycle, and spares other sessions', () => {
+    seedSessionHome(ID_A, env);
+    const keep = seedSessionHome(ID_B, env).hostHome;
+    removeSessionHome(ID_A, env);
+    expect(readdirSync(sessionsRoot(env))).toEqual([ID_B]);
+    expect(existsSync(keep)).toBe(true);
   });
 
   // Defense-in-depth: the reaper derives a home path from a `docker ps` LABEL (not shape-checked by
