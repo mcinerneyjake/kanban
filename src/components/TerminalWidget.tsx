@@ -3,6 +3,7 @@ import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
+import { clipboardIntent, decidePaste, pastePreview } from '../lib/terminalClipboard';
 import TerminalPipelinePhase from './TerminalPipelinePhase.js';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
@@ -51,6 +52,19 @@ function clearSessionId(mountKey: string): void {
   try { sessionStorage.removeItem(`terminal:session:${mountKey}`); } catch { /* storage gone */ }
 }
 
+// writeText needs a secure context; where it's missing the key handler's `return false` leaves the
+// native copy event intact, so xterm's own handler still lands the copy.
+async function writeClipboard(text: string): Promise<void> {
+  if (!text) return;
+  try { await navigator.clipboard.writeText(text); } catch { /* xterm's native copy covers it */ }
+}
+
+const SHORTCUT_HINT = [
+  'Copy: ⌘C or Ctrl+Shift+C · Paste: ⌘V or Ctrl+Shift+V',
+  'Ctrl+C still interrupts.',
+  'If the app owns the mouse, hold ⌥ or Shift to select.',
+].join('\n');
+
 // Map xterm's palette from the app's CSS theme tokens so light/dark follows the board.
 function xtermTheme(): ITheme {
   const style = getComputedStyle(document.documentElement);
@@ -77,6 +91,10 @@ export default function TerminalWidget({ session, theme, onClose }: {
   // False until the first byte of session output arrives — covers token fetch + handshake +
   // container/claude boot (all blank), not just the WS open.
   const [booted, setBooted] = useState(false);
+  // A multi-line paste held for confirmation (see decidePaste), and the notice for a refused one.
+  const [pendingPaste, setPendingPaste] = useState<{ text: string; lines: number } | null>(null);
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const cancelPasteRef = useRef<HTMLButtonElement | null>(null);
 
   // Keep the latest onClose reachable without listing it as a dep of the connection effect
   // (which would tear the pty down on every parent render).
@@ -115,6 +133,8 @@ export default function TerminalWidget({ session, theme, onClose }: {
       fontSize: 13, cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       theme: xtermTheme(),
+      // An app that grabs the mouse swallows drag-select; ⌥ forces it back (Shift does elsewhere).
+      macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -137,6 +157,29 @@ export default function TerminalWidget({ session, theme, onClose }: {
     const dataSub = term.onData((d) => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'i', d }));
     });
+    // Clipboard (tkt-fe2ead98fd65). Paste never calls navigator.clipboard.readText() — that would
+    // give the page ambient read of the clipboard; the only source is the user-gesture paste event.
+    term.attachCustomKeyEventHandler((event) => {
+      const intent = clipboardIntent(event, { hasSelection: term.hasSelection() });
+      if (!intent) return true;
+      if (intent === 'copy') void writeClipboard(term.getSelection());
+      // Blocks the chord reaching the pty without preventDefault, so the browser still fires its
+      // native copy/paste — the copy fallback, and the paste's only source.
+      return false;
+    });
+    // Capture phase, so xterm's own unsanitized handler on a descendant never also inserts it.
+    const onPaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const decision = decidePaste(event.clipboardData?.getData('text/plain') ?? '', {
+        bracketedPaste: term.modes.bracketedPasteMode,
+      });
+      if (decision.kind === 'send') term.paste(decision.text);
+      else if (decision.kind === 'confirm') setPendingPaste({ text: decision.text, lines: decision.lines });
+      else setPasteNotice(decision.reason);
+    };
+    container.addEventListener('paste', onPaste, true);
+
     // Refit on pane resize — but only while visible (minimized hides it → 0×0, which we must not send).
     const ro = new ResizeObserver(() => { if (container.offsetParent !== null) { fit.fit(); sendResize(); } });
     ro.observe(container);
@@ -262,6 +305,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
       if (bootCapTimer) clearTimeout(bootCapTimer);
       ro.disconnect();
       dataSub.dispose();
+      container.removeEventListener('paste', onPaste, true);
+      // A pending paste belongs to the terminal going away — never carry it into the next one.
+      setPendingPaste(null);
       // Terminate the server session UNLESS this is a reload OR a dev HMR remount (both drop the socket
       // but the session must survive for reattach — pagehide covers the reload, hmrDisposing the edit).
       // Also terminate when we can't persist an id — a reload couldn't reattach anyway, so don't strand
@@ -300,6 +346,23 @@ export default function TerminalWidget({ session, theme, onClose }: {
     return () => cancelAnimationFrame(id);
   }, [minimized]);
 
+  // Focus CANCEL, not Paste: ⌘V-then-Enter is one reflex, and Enter on a focused affirmative button
+  // would confirm the paste the bar exists to question.
+  useEffect(() => { if (pendingPaste) cancelPasteRef.current?.focus(); }, [pendingPaste]);
+
+  useEffect(() => {
+    if (!pasteNotice) return;
+    const id = setTimeout(() => setPasteNotice(null), 5000);
+    return () => clearTimeout(id);
+  }, [pasteNotice]);
+
+  const resolvePaste = (send: boolean) => {
+    const term = termRef.current;
+    if (send && term && pendingPaste) term.paste(pendingPaste.text);
+    setPendingPaste(null);
+    term?.focus();
+  };
+
   const title = session.ticket ? `Terminal · ${session.ticket}` : 'Terminal';
   // Once booted, a reconnect shows NO overlay — the frozen frame stays and the dot carries the signal.
   const overlay = overlayFor(status, booted);
@@ -313,6 +376,8 @@ export default function TerminalWidget({ session, theme, onClose }: {
         <span className="tw-title">{title}</span>
         {session.ticket && <TerminalPipelinePhase ticketId={session.ticket} minimized={minimized} />}
         <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
+        {/* Clipboard shortcuts aren't guessable in an embedded terminal — one hover-discoverable hint. */}
+        <span className="tw-hint" title={SHORTCUT_HINT} aria-label={SHORTCUT_HINT} role="note">?</span>
         <button className="tw-btn" onClick={() => setMinimized((m) => !m)} aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}>
           {minimized ? '▢' : '—'}
         </button>
@@ -321,6 +386,24 @@ export default function TerminalWidget({ session, theme, onClose }: {
       <div className="tw-body-wrap">
         <div className="tw-body" ref={containerRef} />
         {overlay && <div className="tw-overlay">{overlay}</div>}
+        {/* Absolutely positioned: .tw-body-wrap's height is the pty's size, so a bar in the flow
+            would leave the session a row taller than the pane. */}
+        {pendingPaste && (
+          <div
+            className="tw-paste-bar"
+            role="group"
+            aria-label="Confirm paste"
+            onKeyDown={(e) => { if (e.key === 'Escape') resolvePaste(false); }}
+          >
+            <span className="tw-paste-msg">
+              Paste {pendingPaste.lines} lines? Nothing is bracketing this paste, so each line break runs as a command.
+              {' '}<code>{pastePreview(pendingPaste.text)}</code>
+            </span>
+            <button className="tw-paste-btn primary" onClick={() => resolvePaste(true)}>Paste</button>
+            <button className="tw-paste-btn" ref={cancelPasteRef} onClick={() => resolvePaste(false)}>Cancel</button>
+          </div>
+        )}
+        {pasteNotice && <div className="tw-paste-bar" role="status">{pasteNotice}</div>}
       </div>
       {/* Screen readers get the reconnect/recovery cue that used to live in the (now removed) overlay. */}
       <span className="sr-only" role="status" aria-live="polite">{liveMsg}</span>
