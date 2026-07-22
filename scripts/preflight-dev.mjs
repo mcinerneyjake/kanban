@@ -9,11 +9,11 @@
 // KANBAN_NO_PREFLIGHT=1 just probe-and-report so nothing ever hangs. Runs once per `npm run dev`
 // (a `tsx watch` restart does NOT re-trigger a predev hook). Decision logic lives in preflight-lib.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness } from './preflight-lib.mjs';
+import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness, describeSeedCredential } from './preflight-lib.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(`preflight: ${m}`);
@@ -53,6 +53,21 @@ function checkCheckout() {
   const t = Number.parseInt(process.env.KANBAN_STALE_WARN_COMMITS ?? '', 10);
   const threshold = Number.isInteger(t) && t >= 0 ? t : 3;
   const { level, message } = describeCheckoutFreshness({ branch, behind: Number(behindRes.stdout.trim()), threshold });
+  if (level === 'warn') warn(message); else log(message);
+}
+
+// The embedded terminal's credential seed dies silently: it only surfaces as a "login expired" prompt
+// inside a session, long after the seed went bad (tkt-da1caf5316f7). Surface it at dev start instead.
+// Honors KANBAN_TERMINAL_HOME so the guard follows the same seed terminalHome.ts actually mounts.
+function checkTerminalCredential() {
+  const seedHome = process.env.KANBAN_TERMINAL_HOME ?? path.join(homedir(), '.kanban-terminal', 'home');
+  const file = path.join(seedHome, '.claude', '.credentials.json');
+  let credential = null;
+  let error = null;
+  if (existsSync(file)) {
+    try { credential = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { error = e?.message ?? String(e); }
+  }
+  const { level, message } = describeSeedCredential({ credential, error });
   if (level === 'warn') warn(message); else log(message);
 }
 
@@ -135,6 +150,7 @@ async function main() {
   // Freshness first: "am I even running the right code?" is the most fundamental check, and it's the
   // one that would have caught the stale-checkout bug that made the terminal die on restart.
   checkCheckout();
+  checkTerminalCredential();
   await checkDocker(interactive);
   await checkLmStudio(interactive, base);
 }

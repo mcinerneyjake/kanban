@@ -13,8 +13,13 @@ import { isValidSessionId, type CredMount } from './terminalAuth.js';
 // copies never drift — auth works identically in every session with no write-back needed.
 //
 // Trade-off (deliberate, matches the ticket's "separate HOME copy per session"): a `/login` performed
-// INSIDE a session is now ephemeral — it lives in that session's copy only, not the shared seed. Auth
-// is seeded via `terminal-setup-cred` (or a one-time /login into the seed), not per-session /login.
+// INSIDE a session is now ephemeral — it lives in that session's copy only, not the shared seed.
+//
+// `scripts/terminal-setup-cred.mjs` is the ONLY sanctioned way to seed (tkt-ea48dbc56f19). Never
+// `/login` into the seed home: that writes a refreshable ~24h credential whose refresh is discarded
+// with the session copy, so the seed rots and every later session prompts for login — the failure
+// this design already suffered (tkt-da1caf5316f7). The dev preflight warns when the seed drifts back
+// into that shape.
 
 const CONTAINER_HOME = '/kanban-home';
 

@@ -48,6 +48,50 @@ export function parseYesNo(answer, dflt = true) {
   return dflt;
 }
 
+const RESEED_HINT = 'Re-seed: run `claude setup-token` in your own terminal, then `printf \'%s\' <token> | node scripts/terminal-setup-cred.mjs`.';
+
+// Health of the embedded terminal's credential SEED (tkt-ea48dbc56f19). Each session copies the seed
+// and mounts the throwaway copy as HOME (S4), and nothing ever writes back — so a seed holding a
+// refreshable `/login` credential can never be refreshed, and every session inherits it until it dies
+// (tkt-da1caf5316f7). Only a non-refreshing `claude setup-token` is stable here. Takes the PARSED
+// credential (or a read/parse `error`) and maps it to a decision; preflight-dev.mjs does the file I/O.
+// Never fatal — this warns, it doesn't block `npm run dev`.
+export function describeSeedCredential({ credential, error = null, now = Date.now(), warnWithinDays = 14 } = {}) {
+  // A seed we can't read is NOT a passing seed — say so rather than fall through to 'ok'.
+  if (error) {
+    return { level: 'warn', message: `terminal credential seed is unreadable (${error}) — treat it as broken. ${RESEED_HINT}` };
+  }
+  const oauth = credential && typeof credential === 'object' ? (credential.claudeAiOauth ?? credential) : null;
+  const hasToken = Boolean(oauth && typeof oauth.accessToken === 'string' && oauth.accessToken);
+  if (!hasToken) {
+    return { level: 'warn', message: `no terminal credential seed — every embedded-terminal session will prompt for login. ${RESEED_HINT}` };
+  }
+  // The tell for seed drift. A setup-token seed carries refreshToken:'' by construction, so anything
+  // here means a `/login` credential landed in the seed and its rotation is being thrown away.
+  const refreshable = typeof oauth.refreshToken === 'string' && oauth.refreshToken !== '';
+  const drift = refreshable
+    ? ' The seed holds a `/login` credential (it has a refresh token), not a `claude setup-token` — sessions copy the seed and never write back, so each refresh is discarded.'
+    : '';
+  const expiresAt = Number(oauth.expiresAt);
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+  if (Number.isFinite(expiresAt) && expiresAt > 0) {
+    if (expiresAt <= now) {
+      return { level: 'warn', message: `terminal credential seed EXPIRED on ${day(expiresAt)} — every new embedded-terminal session will prompt for login.${drift} ${RESEED_HINT}` };
+    }
+    const daysLeft = Math.ceil((expiresAt - now) / 86_400_000);
+    if (daysLeft <= warnWithinDays) {
+      return { level: 'warn', message: `terminal credential seed expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} (${day(expiresAt)}).${drift} ${RESEED_HINT}` };
+    }
+  }
+  if (refreshable) {
+    // Deliberately warn even when the local expiry looks far off: a /login credential's real lifetime
+    // is ~24h regardless of what the file claims, so the expiry check alone would miss this.
+    return { level: 'warn', message: `terminal credential seed will go stale.${drift} ${RESEED_HINT}` };
+  }
+  return { level: 'ok', message: '✓ terminal credential seed looks stable (setup-token shape, no refresh token)' };
+}
+
 // Advisory freshness of the current checkout vs origin/<defaultBranch>, from the current branch name
 // and how many commits behind origin the checkout is. The embedded terminal AND the app serve
 // whatever branch is checked out, so a checkout far behind main — or a detached HEAD — silently runs

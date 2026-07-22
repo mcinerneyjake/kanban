@@ -12,14 +12,18 @@
 // the read-only SEED/template: each session gets its own COPY of it as HOME (S4, tkt-db09c3a52655),
 // so concurrent sessions can't corrupt a shared ~/.claude.json and one session can't tamper another's
 // auth. Kept OUTSIDE the repo so the in-container session can't read the raw token via a project
-// mount. Re-run to rotate. NOTE: because sessions copy the seed, a `/login` INSIDE a session is
-// ephemeral (that copy only) — to persist auth, run this script (or /login into the seed home once).
-import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+// mount. Re-run to rotate.
+//
+// The ONLY sanctioned way to seed (tkt-ea48dbc56f19). Never `/login` into the seed home: sessions
+// only COPY the seed, so a refreshable credential's refresh lands in a throwaway copy and the seed
+// rots into "login expired" (tkt-da1caf5316f7). Re-seeding resets the home to credentials-only.
+import { mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-const OUT_DIR = path.join(homedir(), '.kanban-terminal', 'home', '.claude');
+const SEED_HOME = path.join(homedir(), '.kanban-terminal', 'home');
+const OUT_DIR = path.join(SEED_HOME, '.claude');
 const OUT_FILE = path.join(OUT_DIR, '.credentials.json');
 
 async function readToken() {
@@ -44,14 +48,21 @@ const token = await readToken();
 if (!token) { console.error('No token provided.'); process.exit(1); }
 
 // Claude Code's OAuth credential shape (verified to authenticate on the subscription).
-// Far-future expiry so a never-refreshed long-lived token isn't treated as stale.
+// refreshToken:'' is load-bearing — it's what survives being copied, and the preflight's "stable" tell.
+// The +10y expiry is a LOCAL stamp only: a setup-token really lasts ~1y server-side, so the seed can
+// die while this still claims a decade — nothing local can detect that, only a live session.
 const expiresAt = (Math.floor(Date.now() / 1000) + 315_360_000) * 1000; // +10y, ms
 const credentials = {
-  claudeAiOauth: { accessToken: token, refreshToken: '', expiresAt, scopes: ['user:inference', 'user:profile'] },
+  claudeAiOauth: { accessToken: token, refreshToken: '', expiresAt, scopes: ['user:inference'] },
 };
 
+// Reset the whole home, not just the credential — accumulated .claude.json/session state is how
+// rotating credentials crept back in. Runs only after the token validates, so a bad paste can't
+// destroy a working seed.
+rmSync(SEED_HOME, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true, mode: 0o700 });
 chmodSync(OUT_DIR, 0o700); // enforce even if the dir pre-existed with looser perms
 writeFileSync(OUT_FILE, JSON.stringify(credentials), { mode: 0o600 });
 chmodSync(OUT_FILE, 0o600);
-console.log(`Wrote ${OUT_FILE} (0600). The terminal will mount it read-only.`);
+console.log(`Reset ${SEED_HOME} and wrote ${OUT_FILE} (0600). The terminal will mount it read-only.`);
+console.log('Open a terminal session to confirm — a setup-token\'s real expiry is only visible in use.');
