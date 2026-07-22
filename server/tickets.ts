@@ -33,7 +33,9 @@ function isENOENT(err: unknown): boolean {
   return err instanceof Error && 'code' in err && err.code === 'ENOENT';
 }
 
-type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>>
+// appendBody is a transient instruction, not a Ticket field: it appends to the
+// existing body (non-destructive) and is never persisted. Mutually exclusive with body.
+type TicketPatch = Partial<Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'order' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>> & { appendBody?: string }
 
 // gray-matter parse output. js-yaml auto-parses unquoted ISO dates → Date objects.
 interface RawFrontmatter {
@@ -174,6 +176,8 @@ function validateWritableTypes(patch: TicketPatch) {
     throw new HttpError(400, 'title must be a string');
   if (patch.body != null && typeof patch.body !== 'string')
     throw new HttpError(400, 'body must be a string');
+  if (patch.appendBody != null && typeof patch.appendBody !== 'string')
+    throw new HttpError(400, 'appendBody must be a string');
   if (patch.order != null && (typeof patch.order !== 'number' || !Number.isFinite(patch.order)))
     // Infinity/NaN pass typeof 'number' but poison ordering (maxOrder+1 = Infinity) — reject non-finite.
     throw new HttpError(400, 'order must be a finite number');
@@ -255,7 +259,11 @@ export async function getTicket(id: string): Promise<Ticket> {
 
 // provenance is a TRUSTED stamp — supplied only by the agent write path, never
 // derived from `input`, so authorship can't be forged by an untrusted caller.
-export async function createTicket(input: Partial<Ticket>, provenance?: Provenance): Promise<Ticket> {
+export async function createTicket(input: Partial<Ticket> & { appendBody?: string }, provenance?: Provenance): Promise<Ticket> {
+  // appendBody is an update-only concept (there's nothing to append to yet); reject
+  // rather than silently drop it, since extractTicketFields feeds both create and update.
+  if (input.appendBody !== undefined)
+    throw new HttpError(400, 'appendBody is only valid on update, not create');
   validateWritableTypes(input);
   assertEnum(TYPES, input.type, 'type');
   assertEnum(PRIORITIES, input.priority, 'priority');
@@ -325,11 +333,28 @@ async function emitStatusStep(id: string, status: StatusId): Promise<void> {
   }
 }
 
+// Non-destructive append vs. full replace. appendBody adds to the existing body
+// with a blank-line separator and never overwrites (the read-modify-write clobber
+// path — tkt-81b4d35e95e5); body still replaces. The two are mutually exclusive so
+// intent is never ambiguous. An empty/whitespace append is a no-op.
+function mergeBody(existingBody: string, patch: TicketPatch): string {
+  if (patch.appendBody === undefined) return patch.body ?? existingBody;
+  if (patch.body !== undefined)
+    throw new HttpError(400, 'Provide either body (replace) or appendBody (append), not both');
+  // trim() doubles as the whitespace-only no-op detector and controls the join —
+  // the blank-line separator is ours to add, not the caller's trailing/leading space.
+  const addition = patch.appendBody.trim();
+  if (!addition) return existingBody;
+  // existingBody is invariantly end-trimmed by normalize() on every read/write.
+  return existingBody ? `${existingBody}\n\n${addition}` : addition;
+}
+
 export async function updateTicket(id: string, patch: TicketPatch, provenance?: Provenance): Promise<Ticket> {
   validateWritableTypes(patch);
   validateEnums(patch);
   assertDueDate(patch.dueDate);
   const existing = await getTicket(id);
+  const nextBody = mergeBody(existing.body, patch);
   if (typeof patch.parent === 'string') {
     if (patch.parent === id) throw new HttpError(400, 'A ticket cannot be its own parent');
     if (collectDescendants(id, await listTickets()).has(patch.parent))
@@ -344,7 +369,7 @@ export async function updateTicket(id: string, patch: TicketPatch, provenance?: 
     priority: patch.priority ?? existing.priority,
     status: patch.status ?? existing.status,
     order: patch.order ?? existing.order,
-    body: patch.body ?? existing.body,
+    body: nextBody,
     // null is a valid patch value (clears the field); undefined means no change
     project: patch.project !== undefined ? patch.project : existing.project,
     blockers: patch.blockers ?? existing.blockers,
