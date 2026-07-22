@@ -305,6 +305,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Largest terminal dimension we'll forward. Guards against absurd values; well above any real pane.
 const MAX_DIM = 1000;
 
+// Largest input payload we'll write to a pty in one frame. Sits well above the client's paste cap,
+// so it only fires for a client that skipped that guard — the client cap is UX, this is the boundary.
+export const MAX_INPUT_CHARS = 200_000;
+
 // Keystroke input ({t:'i',d}) or a resize ({t:'r',cols,rows}); anything else is dropped.
 // Resize dims are clamped to positive integers ≤ MAX_DIM: node-pty's resize THROWS on 0/
 // negative/NaN, and xterm's FitAddon legitimately computes 0×0 for a hidden pane (our
@@ -313,7 +317,9 @@ export function parseClientFrame(raw: string): ClientFrame | null {
   let data: unknown;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!isRecord(data)) return null;
-  if (data.t === 'i' && typeof data.d === 'string') return { t: 'i', d: data.d };
+  if (data.t === 'i' && typeof data.d === 'string') {
+    return data.d.length > MAX_INPUT_CHARS ? null : { t: 'i', d: data.d };
+  }
   if (data.t === 'r' && typeof data.cols === 'number' && typeof data.rows === 'number') {
     const { cols, rows } = data;
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;

@@ -1308,6 +1308,36 @@ body {
 .tw-body-wrap { position: relative; flex: 1; min-height: 0; }
 .tw-body { position: absolute; inset: 0; padding: 4px 6px; background: var(--card-bg); }
 .tw-body .xterm, .tw-body .xterm .xterm-viewport { height: 100%; }
+.tw-hint {
+  flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); color: var(--muted);
+  font-size: 9px; font-weight: 700; line-height: 1; cursor: help;
+}
+.tw-hint:hover, .tw-hint:focus-visible { color: var(--text); border-color: var(--muted); }
+
+/* Paste confirmation / notice. Overlays rather than sits in the flow: .tw-body-wrap's height is the
+   pty's size, and a bar that changed it would desync the two. */
+.tw-paste-bar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 1;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; font-size: 11px; line-height: 1.4;
+  background: var(--col-bg); color: var(--text);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+}
+.tw-paste-msg { flex: 1; min-width: 0; }
+.tw-paste-msg code {
+  display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom; color: var(--muted);
+}
+.tw-paste-btn {
+  flex: 0 0 auto; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); background: none; color: var(--text); font-size: 11px;
+}
+.tw-paste-btn:hover { background: var(--border); }
+.tw-paste-btn.primary { border-color: var(--muted); font-weight: 600; }
+
 .tw-overlay {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   background: var(--card-bg); color: var(--muted); font-size: 13px;

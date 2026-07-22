@@ -3,7 +3,7 @@ import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
-  isValidSessionId, rootMountArgs, type CredMount,
+  isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, type CredMount,
 } from './terminalAuth.js';
 
 import type { Ticket } from '../shared/constants.js';
@@ -376,5 +376,11 @@ describe('parseClientFrame', () => {
   });
   it('clamps oversized resize dims to the max', () => {
     expect(parseClientFrame('{"t":"r","cols":99999,"rows":99999}')).toEqual({ t: 'r', cols: 1000, rows: 1000 });
+  });
+  it('drops an oversized input frame instead of writing it to the pty', () => {
+    const atCap = JSON.stringify({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS) });
+    const overCap = JSON.stringify({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS + 1) });
+    expect(parseClientFrame(atCap)).toEqual({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS) });
+    expect(parseClientFrame(overCap)).toBeNull();
   });
 });
