@@ -56,9 +56,11 @@ export function seedSessionHome(sessionId: string, env: NodeJS.ProcessEnv = proc
 }
 
 // Remove a session's HOME (on dispose or reap). Best-effort; a missing dir is not an error, and an
-// invalid id is a silent no-op (never rm outside the sessions root).
+// invalid id is a silent no-op (never rm outside the sessions root). Removes the session DIR, not just
+// the home/ inside it — otherwise every dispose leaves an empty parent behind to accumulate forever
+// (tkt-ae53ab420a02). Derived from the isValidSessionId-guarded path, so no-traversal still holds.
 export function removeSessionHome(sessionId: string, env: NodeJS.ProcessEnv = process.env): void {
   const home = sessionHomeDir(sessionId, env);
   if (home === null) return;
-  rmSync(home, { recursive: true, force: true });
+  rmSync(path.dirname(home), { recursive: true, force: true });
 }
