@@ -363,6 +363,9 @@ export default function App() {
             session={terminalSession}
             theme={theme}
             onClose={() => setTerminalSession(null)}
+            // {} is the shell session, so the key flips ticket→'shell' and the widget remounts —
+            // really disposing the ticket-confined container rather than renaming it.
+            onStartShell={() => setTerminalSession({})}
           />
         </Suspense>
       )}

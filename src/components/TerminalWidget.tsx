@@ -77,10 +77,11 @@ function xtermTheme(): ITheme {
   };
 }
 
-export default function TerminalWidget({ session, theme, onClose }: {
+export default function TerminalWidget({ session, theme, onClose, onStartShell }: {
   session: TerminalSession;
   theme: 'light' | 'dark';
   onClose: () => void;
+  onStartShell: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -374,7 +375,9 @@ export default function TerminalWidget({ session, theme, onClose }: {
     <div className={`terminal-widget${minimized ? ' minimized' : ''}`} role="dialog" aria-label="Embedded terminal">
       <div className="tw-header">
         <span className="tw-title">{title}</span>
-        {session.ticket && <TerminalPipelinePhase ticketId={session.ticket} minimized={minimized} />}
+        {session.ticket && (
+          <TerminalPipelinePhase ticketId={session.ticket} minimized={minimized} onStartShell={onStartShell} />
+        )}
         <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
         {/* Clipboard shortcuts aren't guessable in an embedded terminal — one hover-discoverable hint. */}
         <span className="tw-hint" title={SHORTCUT_HINT} aria-label={SHORTCUT_HINT} role="note">?</span>

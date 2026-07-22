@@ -13,7 +13,11 @@ import { isTicketEventsResponse, statusFromPipeline } from '../lib/terminalRelay
 // Split out of TerminalWidget because session.ticket is optional — calling useTicketEvents there would
 // be a conditional hook.
 
-export default function TerminalPipelinePhase({ ticketId, minimized }: { ticketId: string; minimized: boolean }) {
+export default function TerminalPipelinePhase({ ticketId, minimized, onStartShell }: {
+  ticketId: string;
+  minimized: boolean;
+  onStartShell: () => void;
+}) {
   // Latched, not derived: `live` is an input to the hook that produces the data proving doneness, so it
   // can't be read off that data in the same render. Set during render (React's adjust-state-while-
   // rendering escape hatch), not in an effect — an effect here would cascade an extra render pass.
@@ -35,5 +39,23 @@ export default function TerminalPipelinePhase({ ticketId, minimized }: { ticketI
   if (!label) return null;
 
   const tone = view.failed ? 'failed' : status === 'done' ? 'done' : 'active';
+
+  // Done turns the chip into the way out. Offered, never taken automatically: the agent inside this
+  // very session is what marks the ticket done, so acting on it unprompted would cut off its own
+  // closing output. Switching to a shell session changes App's mount key, so the ticket-confined
+  // container is really torn down — the confinement is frozen at spawn and can't be relabelled away.
+  if (status === 'done') {
+    return (
+      <button
+        type="button"
+        className="tw-phase is-done tw-phase--action"
+        onClick={onStartShell}
+        title="Ticket complete — end this session and open a plain shell"
+      >
+        <span aria-hidden="true">✓</span> {label} · start fresh
+      </button>
+    );
+  }
+
   return <span className={`tw-phase is-${tone}`} title={`Pipeline: ${label}`}>{label}</span>;
 }
