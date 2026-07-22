@@ -1229,17 +1229,42 @@ body {
 }
 .terminal-widget.minimized { height: auto; }
 .terminal-widget.minimized .tw-body-wrap { display: none; }
+/* Live pipeline phase, chipped onto the ticket id in the header. Header-only by design: it must never
+   change .tw-body-wrap's height, or the pty ends up a row taller than the terminal.
+   Deliberately a CHIP, not a dot: .tw-status sits in the same header and is also a pulsing amber dot
+   (--st-in-progress and the connecting amber are the same hex in dark mode), so a second dot here read
+   as the same signal. Shape carries the distinction that colour can't — one dot in this header, and it
+   means the socket. */
+.tw-phase {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 10px; font-weight: 600; line-height: 1.5;
+  white-space: nowrap;
+  color: var(--st-in-progress);
+}
+.tw-phase.is-done { color: var(--st-done); }
+.tw-phase.is-failed { color: var(--danger); }
+/* Gentler than tw-status-pulse: a text chip flickering to 0.35 opacity reads as broken, not busy. */
+@media (prefers-reduced-motion: no-preference) {
+  .tw-phase.is-active { animation: tw-phase-pulse 1.6s ease-in-out infinite; }
+}
+@keyframes tw-phase-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 .tw-header {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; background: var(--col-bg); border-bottom: 1px solid var(--border);
   user-select: none;
 }
+/* Shrinks (with ellipsis) rather than expanding, so the phase chip stays glued to the ticket id
+   instead of being pushed across the header into the connection dot. */
 .tw-title {
-  flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text);
+  flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.tw-status { font-size: 10px; line-height: 1; }
+/* Owns the gap: pushes the socket dot + window buttons to the right edge. */
+.tw-status { margin-left: auto; font-size: 10px; line-height: 1; }
 /* Amber + gentle pulse while (re)connecting — the sole signal during a seamless reconnect
    (tkt-83e3d9a107a5), so the terminal frame stays visible instead of an overlay. */
 .tw-status-connecting { color: #d29922; }
