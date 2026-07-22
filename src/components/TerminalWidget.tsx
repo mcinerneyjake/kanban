@@ -3,6 +3,7 @@ import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
+import TerminalPipelinePhase from './TerminalPipelinePhase.js';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
@@ -310,6 +311,7 @@ export default function TerminalWidget({ session, theme, onClose }: {
     <div className={`terminal-widget${minimized ? ' minimized' : ''}`} role="dialog" aria-label="Embedded terminal">
       <div className="tw-header">
         <span className="tw-title">{title}</span>
+        {session.ticket && <TerminalPipelinePhase ticketId={session.ticket} minimized={minimized} />}
         <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
         <button className="tw-btn" onClick={() => setMinimized((m) => !m)} aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}>
           {minimized ? '▢' : '—'}
