@@ -3,7 +3,7 @@ import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
-  isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, type CredMount,
+  isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, containerizeLoopbackUrl, llmEnvArgs, type CredMount,
 } from './terminalAuth.js';
 
 import type { Ticket } from '../shared/constants.js';
@@ -382,5 +382,78 @@ describe('parseClientFrame', () => {
     const overCap = JSON.stringify({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS + 1) });
     expect(parseClientFrame(atCap)).toEqual({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS) });
     expect(parseClientFrame(overCap)).toBeNull();
+  });
+});
+
+describe('containerizeLoopbackUrl', () => {
+  // Inside a container `localhost` is the container itself — the host's LM Studio is unreachable
+  // there, which is why an un-rewritten default silently fails (tkt-c0cf617fdcc4).
+  it('rewrites every loopback spelling to the container host alias', () => {
+    for (const host of ['localhost', '127.0.0.1', '0.0.0.0']) {
+      expect(containerizeLoopbackUrl(`http://${host}:1234/v1`)).toBe('http://host.docker.internal:1234/v1');
+    }
+    expect(containerizeLoopbackUrl('http://[::1]:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+  });
+
+  it('preserves port, path and scheme', () => {
+    expect(containerizeLoopbackUrl('https://localhost:8443/api/v1')).toBe('https://host.docker.internal:8443/api/v1');
+  });
+
+  // A LAN or remote endpoint is already reachable from the container; rewriting it would BREAK it.
+  it('leaves a non-loopback host untouched', () => {
+    for (const url of ['http://192.168.1.50:1234/v1', 'https://llm.example.com/v1', 'http://ollama:11434/v1']) {
+      expect(containerizeLoopbackUrl(url)).toBe(url);
+    }
+  });
+
+  it('preserves the trailing-slash shape of the input', () => {
+    expect(containerizeLoopbackUrl('http://localhost:1234/')).toBe('http://host.docker.internal:1234/');
+    expect(containerizeLoopbackUrl('http://localhost:1234')).toBe('http://host.docker.internal:1234');
+  });
+
+  it('returns an unparseable value as-is rather than guessing', () => {
+    for (const junk of ['', 'not a url', 'localhost:1234']) {
+      expect(containerizeLoopbackUrl(junk)).toBe(junk);
+    }
+  });
+});
+
+describe('llmEnvArgs', () => {
+  it('passes both endpoints through, rewritten', () => {
+    expect(llmEnvArgs({ LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1' })).toEqual([
+      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+    ]);
+  });
+
+  it('emits nothing for an unset or empty endpoint — no invented default', () => {
+    expect(llmEnvArgs({})).toEqual([]);
+    expect(llmEnvArgs({ LLM_BASE_URL: '' })).toEqual([]);
+  });
+
+  it('carries a custom remote endpoint through unchanged', () => {
+    expect(llmEnvArgs({ LLM_BASE_URL: 'https://llm.example.com/v1' })).toEqual([
+      '-e', 'LLM_BASE_URL=https://llm.example.com/v1',
+    ]);
+  });
+});
+
+describe('buildDetachedRunArgs — LLM reachability', () => {
+  const base = {
+    roots: ['/repo'], sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', rootLabel: '/repo',
+    createdAt: 0, credMount: { hostHome: '/h', containerHome: '/kanban-home' },
+    image: 'img', containerName: 'kanban-term-x',
+  };
+
+  it('adds the host-gateway alias so the name resolves on Linux too', () => {
+    const args = buildDetachedRunArgs({ ...base, env: {} });
+    expect(args).toContain('--add-host');
+    expect(args).toContain('host.docker.internal:host-gateway');
+  });
+
+  it('injects the host endpoints, rewritten for the container', () => {
+    const args = buildDetachedRunArgs({ ...base, env: { LLM_BASE_URL: 'http://localhost:1234/v1' } });
+    expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+    expect(args).not.toContain('LLM_BASE_URL=http://localhost:1234/v1');
   });
 });

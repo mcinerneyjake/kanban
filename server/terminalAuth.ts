@@ -130,11 +130,40 @@ export function dtachSocket(sessionId: string): string {
   return `/tmp/kanban-term-${sessionId}.dtach`;
 }
 
+// The host as seen from inside a container. Docker Desktop resolves this automatically; on Linux the
+// --add-host below supplies it.
+const CONTAINER_HOST_ALIAS = 'host.docker.internal';
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
+
+// Rewrite a host-loopback URL so a container can reach it (tkt-c0cf617fdcc4). Inside a container
+// `localhost` is the container itself, so the agent's default endpoint resolves to nothing listening.
+// Only loopback is rewritten — a LAN or remote endpoint is already reachable and must pass through
+// untouched. An unparseable value is returned as-is rather than guessed at.
+export function containerizeLoopbackUrl(url: string): string {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return url; }
+  if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) return url;
+  parsed.hostname = CONTAINER_HOST_ALIAS;
+  return parsed.toString().replace(/\/$/, url.endsWith('/') ? '/' : '');
+}
+
+// The LLM endpoints a session container needs, taken from the HOST's own config so a custom endpoint
+// carries through instead of being overridden by a second hardcoded default that could drift.
+export function llmEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const args: string[] = [];
+  for (const key of ['LLM_BASE_URL', 'EMBED_BASE_URL'] as const) {
+    const value = env[key];
+    if (value) args.push('-e', `${key}=${containerizeLoopbackUrl(value)}`);
+  }
+  return args;
+}
+
 // Shared mount/HOME/git middle of the container argv (between the run flags and -w/image/cmd).
 function containerBaseArgs(opts: {
   roots: string[];
   credMount: CredMount;
   gitIdentity?: { name: string; email: string };
+  env?: NodeJS.ProcessEnv;
 }): string[] {
   const args = [...rootMountArgs(opts.roots)];
   // Persistent HOME so ALL of claude's state survives the container — not just ~/.claude but also
@@ -142,6 +171,10 @@ function containerBaseArgs(opts: {
   // writes. Outside every project mount, so the token isn't reachable via a project's file tree.
   args.push('-v', `${opts.credMount.hostHome}:${opts.credMount.containerHome}`);
   args.push('-e', `HOME=${opts.credMount.containerHome}`);
+  // Reach the host's LM Studio from inside the container. Docker Desktop resolves the alias itself;
+  // --add-host makes the same name work on Linux, where it isn't provided (tkt-c0cf617fdcc4).
+  args.push('--add-host', `${CONTAINER_HOST_ALIAS}:host-gateway`);
+  args.push(...llmEnvArgs(opts.env));
   if (opts.gitIdentity) {
     const { name, email } = opts.gitIdentity;
     args.push(
@@ -168,6 +201,7 @@ export function buildDetachedRunArgs(opts: {
   image: string;
   containerName: string;
   gitIdentity?: { name: string; email: string };
+  env?: NodeJS.ProcessEnv; // host env the container inherits its LLM endpoints from; defaults to process.env
 }): string[] {
   const [primaryRoot] = opts.roots;
   if (primaryRoot === undefined) throw new Error('buildDetachedRunArgs: roots must be non-empty');
