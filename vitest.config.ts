@@ -3,7 +3,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    exclude: ['e2e/**', 'node_modules/**'],
+    // `.claude/worktrees/**` holds full checkouts (CLAUDE.md tells concurrent sessions to make one),
+    // so without it vitest collects every suite twice AND tries to run the worktree's Playwright
+    // specs — reddening the husky gate from the main checkout whenever a worktree merely exists
+    // (tkt-17d81c74b662). The bare `e2e/**` above only covers this checkout's own.
+    exclude: ['e2e/**', 'node_modules/**', '.claude/worktrees/**'],
     coverage: {
       provider: 'v8',
       // Scope coverage to the testable logic layers (per CLAUDE.md's testing
