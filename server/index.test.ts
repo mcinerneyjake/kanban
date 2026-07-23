@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import express from 'express';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArchive } from './index.js';
+import { terminalRouter } from './routes/terminal.js';
+import { terminalToken } from './terminalToken.js';
 import * as tickets from './tickets.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
@@ -1030,5 +1033,35 @@ describe('GET /api/economics', () => {
     const res = await request(app).get('/api/economics');
     expect(res.status).toBe(500);
     spy.mockRestore();
+  });
+});
+
+// The router is mounted on the real app only when KANBAN_TERMINAL=1 (read at import time), so these
+// mount it directly — the route's own gate is what's under test, not app.ts's env switch.
+describe('GET /api/terminal/token (host gate, tkt-b6eb52013662)', () => {
+  const terminalApp = express().use('/api', terminalRouter);
+
+  it('serves the token to a loopback Host', async () => {
+    const res = await request(terminalApp).get('/api/terminal/token').set('Host', '127.0.0.1:3001');
+    expect(res.status).toBe(200);
+    expect(res.body.token).toEqual(expect.any(String));
+    expect(res.body.token.length).toBeGreaterThan(0);
+  });
+
+  it('still serves it under a shifted KANBAN_PORT_OFFSET port', async () => {
+    const res = await request(terminalApp).get('/api/terminal/token').set('Host', 'localhost:5223');
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a rebound foreign Host without leaking the token', async () => {
+    const res = await request(terminalApp).get('/api/terminal/token').set('Host', 'evil.com');
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'forbidden host' });
+    expect(JSON.stringify(res.body)).not.toContain(terminalToken());
+  });
+
+  it('rejects a foreign Host that merely embeds a loopback name', async () => {
+    const res = await request(terminalApp).get('/api/terminal/token').set('Host', 'localhost.evil.com');
+    expect(res.status).toBe(403);
   });
 });
