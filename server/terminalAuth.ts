@@ -130,11 +130,71 @@ export function dtachSocket(sessionId: string): string {
   return `/tmp/kanban-term-${sessionId}.dtach`;
 }
 
+// The host as seen from inside a container. Docker Desktop proxies this to the host's loopback; on
+// Linux the --add-host below maps it to the bridge gateway, which reaches a host service only if that
+// service binds beyond 127.0.0.1 (LM Studio: "serve on local network"). Not full parity — noted so a
+// Linux ECONNREFUSED isn't mistaken for this alias being absent.
+const CONTAINER_HOST_ALIAS = 'host.docker.internal';
+
+// Mirrors agent/runtime/llm.ts + agent/retrieval/models.ts. Only ever used pre-rewrite, so what a
+// container actually receives is the containerized form, never this.
+const DEFAULT_HOST_ENDPOINT = 'http://localhost:1234/v1';
+
+// A literal-spelling list missed most of the loopback space, so this tests the ranges instead
+// (tkt-c0cf617fdcc4 review). URL.hostname has already normalized 127.1, 0177.0.0.1 and 2130706433 to
+// 127.0.0.1, and always returns IPv6 bracketed — an unbracketed '::1' can never appear here.
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  // RFC 6761 reserves `localhost` and everything under `.localhost` as loopback.
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '0.0.0.0') return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true; // all of 127/8, not just 127.0.0.1
+  const v6 = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (v6 === '::1') return true;
+  // IPv4-mapped IPv6. URL normalizes ::ffff:127.0.0.1 to hex (::ffff:7f00:1), so match both: the
+  // first hextet of a mapped 127/8 address is 0x7f00–0x7fff.
+  if (v6.startsWith('::ffff:')) {
+    const mapped = v6.slice('::ffff:'.length);
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(mapped)) return true;
+    if (/^7f[0-9a-f]{2}:/.test(mapped)) return true;
+  }
+  return false;
+}
+
+// Rewrite a host-loopback URL so a container can reach it (tkt-c0cf617fdcc4). Inside a container
+// `localhost` is the container itself, so the agent's default endpoint resolves to nothing listening.
+// Only loopback is rewritten — a LAN or remote endpoint is already reachable and must pass through
+// untouched. An unparseable value is returned as-is rather than guessed at.
+export function containerizeLoopbackUrl(url: string): string {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return url; }
+  if (!isLoopbackHost(parsed.hostname)) return url;
+  parsed.hostname = CONTAINER_HOST_ALIAS;
+  return parsed.toString().replace(/\/$/, url.endsWith('/') ? '/' : '');
+}
+
+// The LLM endpoints a session container needs, taken from the HOST's own config so a custom endpoint
+// carries through instead of being overridden by a second hardcoded default that could drift.
+//
+// An UNSET endpoint still emits the containerized default rather than nothing (tkt-c0cf617fdcc4
+// review): `.env` is optional, and falling through to the agent's own `localhost` default is the one
+// value guaranteed unreachable inside a container — so "emit nothing" would leave the default install,
+// the exact case this exists to fix, still broken.
+export function llmEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const args: string[] = [];
+  for (const key of ['LLM_BASE_URL', 'EMBED_BASE_URL'] as const) {
+    const value = env[key]?.trim() || DEFAULT_HOST_ENDPOINT;
+    args.push('-e', `${key}=${containerizeLoopbackUrl(value)}`);
+  }
+  return args;
+}
+
 // Shared mount/HOME/git middle of the container argv (between the run flags and -w/image/cmd).
 function containerBaseArgs(opts: {
   roots: string[];
   credMount: CredMount;
   gitIdentity?: { name: string; email: string };
+  env?: NodeJS.ProcessEnv;
 }): string[] {
   const args = [...rootMountArgs(opts.roots)];
   // Persistent HOME so ALL of claude's state survives the container — not just ~/.claude but also
@@ -142,6 +202,10 @@ function containerBaseArgs(opts: {
   // writes. Outside every project mount, so the token isn't reachable via a project's file tree.
   args.push('-v', `${opts.credMount.hostHome}:${opts.credMount.containerHome}`);
   args.push('-e', `HOME=${opts.credMount.containerHome}`);
+  // Reach the host's LM Studio from inside the container. Docker Desktop resolves the alias itself;
+  // --add-host makes the same name work on Linux, where it isn't provided (tkt-c0cf617fdcc4).
+  args.push('--add-host', `${CONTAINER_HOST_ALIAS}:host-gateway`);
+  args.push(...llmEnvArgs(opts.env));
   if (opts.gitIdentity) {
     const { name, email } = opts.gitIdentity;
     args.push(
@@ -168,6 +232,7 @@ export function buildDetachedRunArgs(opts: {
   image: string;
   containerName: string;
   gitIdentity?: { name: string; email: string };
+  env?: NodeJS.ProcessEnv; // host env the container inherits its LLM endpoints from; defaults to process.env
 }): string[] {
   const [primaryRoot] = opts.roots;
   if (primaryRoot === undefined) throw new Error('buildDetachedRunArgs: roots must be non-empty');
@@ -183,8 +248,12 @@ export function buildDetachedRunArgs(opts: {
 
 // Attach a fresh interactive pty to the running container's dtach session. `-r winch` makes dtach
 // redraw claude's current screen via SIGWINCH on attach — so a reload/reattach repaints for free.
-export function buildAttachArgs(containerName: string, sessionId: string): string[] {
-  return ['exec', '-it', containerName, 'dtach', '-a', dtachSocket(sessionId), '-E', '-r', 'winch'];
+// Re-supplies the LLM env on EVERY attach, not just at create (tkt-c0cf617fdcc4 review). A container
+// adopted after an Express restart was built with whatever env existed then — possibly none — and
+// `docker exec` is the only lever left, since --add-host is fixed at create. `-e` on exec covers the
+// env half, so a reattached session picks up current config without being disposed and reopened.
+export function buildAttachArgs(containerName: string, sessionId: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  return ['exec', '-it', ...llmEnvArgs(env), containerName, 'dtach', '-a', dtachSocket(sessionId), '-E', '-r', 'winch'];
 }
 
 // ── Session resolution (id → validated ticket → seeded command) ──────────────
@@ -340,6 +409,9 @@ export async function resolveSessionCommand(opts: {
   image: string;
   containerName: string;
   gitIdentity?: { name: string; email: string };
+  // Threaded explicitly rather than left to the leaf default, so the host→argv path is pinnable in a
+  // test instead of depending on ambient process.env (tkt-c0cf617fdcc4 review).
+  env?: NodeJS.ProcessEnv;
 }): Promise<SessionCommand> {
   let ticket: Ticket | null = null;
   if (opts.ticket) {
@@ -357,10 +429,11 @@ export async function resolveSessionCommand(opts: {
     image: opts.image,
     containerName: opts.containerName,
     gitIdentity: opts.gitIdentity,
+    env: opts.env,
   });
   return {
     runArgs,
-    attachArgs: buildAttachArgs(opts.containerName, opts.sessionId),
+    attachArgs: buildAttachArgs(opts.containerName, opts.sessionId, opts.env),
     socket: dtachSocket(opts.sessionId),
     prefill: ticket ? buildSeedPrompt(ticket) : undefined,
     roots,

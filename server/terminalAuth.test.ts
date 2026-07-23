@@ -3,7 +3,7 @@ import {
   isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
-  isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, type CredMount,
+  isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, containerizeLoopbackUrl, llmEnvArgs, type CredMount,
 } from './terminalAuth.js';
 
 import type { Ticket } from '../shared/constants.js';
@@ -146,8 +146,11 @@ describe('buildDetachedRunArgs', () => {
 
 describe('buildAttachArgs / dtachSocket', () => {
   it('execs an interactive dtach attach on the session socket (winch redraw)', () => {
-    expect(buildAttachArgs('kanban-term-1', SID)).toEqual(
-      ['exec', '-it', 'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch'],
+    // env pinned: attach now re-supplies the LLM endpoints, so an ambient process.env would
+    // otherwise make this assertion environment-dependent (tkt-c0cf617fdcc4 review).
+    expect(buildAttachArgs('kanban-term-1', SID, { LLM_BASE_URL: 'http://x/v1', EMBED_BASE_URL: 'http://x/v1' })).toEqual(
+      ['exec', '-it', '-e', 'LLM_BASE_URL=http://x/v1', '-e', 'EMBED_BASE_URL=http://x/v1',
+        'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch'],
     );
   });
   it('dtachSocket is a per-session path under /tmp', () => {
@@ -198,12 +201,18 @@ describe('resolveSessionCommand', () => {
   };
 
   it('no ticket → detached claude under dtach + a matching attach, no prefill (never a raw shell)', async () => {
-    const { runArgs, attachArgs, socket, prefill, roots } = await resolveSessionCommand({ ...common });
+    const { runArgs, attachArgs, socket, prefill, roots } = await resolveSessionCommand({ ...common, env: {} });
     const imgIdx = runArgs.indexOf('kanban-terminal');
     expect(runArgs.slice(imgIdx + 1)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
     expect(runArgs).not.toContain('bash');
     expect(runArgs).not.toContain('--add-dir'); // variadic arg would swallow input; confinement is via mounts
-    expect(attachArgs).toEqual(['exec', '-it', 'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch']);
+    // Attach re-supplies the LLM env; with an empty host env that's the containerized default.
+    expect(attachArgs).toEqual([
+      'exec', '-it',
+      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+      'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch',
+    ]);
     expect(socket).toBe(dtachSocket(SID));
     expect(prefill).toBeUndefined();
     expect(roots).toEqual([KANBAN]); // the transport pre-installs deps for these
@@ -382,5 +391,177 @@ describe('parseClientFrame', () => {
     const overCap = JSON.stringify({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS + 1) });
     expect(parseClientFrame(atCap)).toEqual({ t: 'i', d: 'x'.repeat(MAX_INPUT_CHARS) });
     expect(parseClientFrame(overCap)).toBeNull();
+  });
+});
+
+describe('containerizeLoopbackUrl', () => {
+  // Inside a container `localhost` is the container itself — the host's LM Studio is unreachable
+  // there, which is why an un-rewritten default silently fails (tkt-c0cf617fdcc4).
+  it('rewrites every loopback spelling to the container host alias', () => {
+    for (const host of ['localhost', '127.0.0.1', '0.0.0.0']) {
+      expect(containerizeLoopbackUrl(`http://${host}:1234/v1`)).toBe('http://host.docker.internal:1234/v1');
+    }
+    expect(containerizeLoopbackUrl('http://[::1]:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+  });
+
+  it('preserves port, path and scheme', () => {
+    expect(containerizeLoopbackUrl('https://localhost:8443/api/v1')).toBe('https://host.docker.internal:8443/api/v1');
+  });
+
+  // A LAN or remote endpoint is already reachable from the container; rewriting it would BREAK it.
+  it('leaves a non-loopback host untouched', () => {
+    for (const url of ['http://192.168.1.50:1234/v1', 'https://llm.example.com/v1', 'http://ollama:11434/v1']) {
+      expect(containerizeLoopbackUrl(url)).toBe(url);
+    }
+  });
+
+  it('preserves the trailing-slash shape of the input', () => {
+    expect(containerizeLoopbackUrl('http://localhost:1234/')).toBe('http://host.docker.internal:1234/');
+    expect(containerizeLoopbackUrl('http://localhost:1234')).toBe('http://host.docker.internal:1234');
+  });
+
+  it('returns an unparseable value as-is rather than guessing', () => {
+    for (const junk of ['', 'not a url', 'localhost:1234']) {
+      expect(containerizeLoopbackUrl(junk)).toBe(junk);
+    }
+  });
+});
+
+describe('llmEnvArgs', () => {
+  it('passes both endpoints through, rewritten', () => {
+    expect(llmEnvArgs({ LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1' })).toEqual([
+      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+    ]);
+  });
+
+  // The no-.env case is the DEFAULT install, so emitting nothing here would leave the container
+  // falling back to its own localhost — the one address it can never reach.
+  it('falls back to the containerized default when unset or empty, never to container-localhost', () => {
+    expect(llmEnvArgs({})).toEqual([
+      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+    ]);
+    for (const blank of ['', '   ']) {
+      expect(llmEnvArgs({ LLM_BASE_URL: blank }).join(' ')).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+    }
+    expect(llmEnvArgs({}).join(' ')).not.toContain('localhost:1234');
+  });
+
+  it('carries a custom remote endpoint through unchanged', () => {
+    const args = llmEnvArgs({ LLM_BASE_URL: 'https://llm.example.com/v1' });
+    expect(args).toContain('LLM_BASE_URL=https://llm.example.com/v1');
+    // The unset sibling still gets the containerized default, not the remote one.
+    expect(args).toContain('EMBED_BASE_URL=http://host.docker.internal:1234/v1');
+  });
+});
+
+describe('buildDetachedRunArgs — LLM reachability', () => {
+  const base = {
+    roots: ['/repo'], sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', rootLabel: '/repo',
+    createdAt: 0, credMount: { hostHome: '/h', containerHome: '/kanban-home' },
+    image: 'img', containerName: 'kanban-term-x',
+  };
+
+  it('adds the host-gateway alias so the name resolves on Linux too', () => {
+    const args = buildDetachedRunArgs({ ...base, env: {} });
+    expect(args).toContain('--add-host');
+    expect(args).toContain('host.docker.internal:host-gateway');
+  });
+
+  it('injects the host endpoints, rewritten for the container', () => {
+    const args = buildDetachedRunArgs({ ...base, env: { LLM_BASE_URL: 'http://localhost:1234/v1' } });
+    expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+    expect(args).not.toContain('LLM_BASE_URL=http://localhost:1234/v1');
+  });
+});
+
+// Review findings on the first cut of this feature (tkt-c0cf617fdcc4): the loopback set was a list of
+// literal spellings, so most of the loopback space fell through and reached the container unrewritten.
+describe('containerizeLoopbackUrl — full loopback space', () => {
+  it('rewrites all of 127.0.0.0/8, not just 127.0.0.1', () => {
+    for (const host of ['127.0.0.2', '127.1.2.3', '127.255.255.254']) {
+      expect(containerizeLoopbackUrl(`http://${host}:1234/v1`)).toBe('http://host.docker.internal:1234/v1');
+    }
+  });
+
+  it('rewrites IPv4-mapped IPv6, in both the dotted and URL-normalized hex forms', () => {
+    // URL normalizes ::ffff:127.0.0.1 to ::ffff:7f00:1, so the dotted spelling never reaches the check.
+    expect(new URL('http://[::ffff:127.0.0.1]:1234/v1').hostname).toBe('[::ffff:7f00:1]');
+    expect(containerizeLoopbackUrl('http://[::ffff:127.0.0.1]:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+    expect(containerizeLoopbackUrl('http://[::ffff:7f00:1]:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+  });
+
+  it('rewrites the alternate integer/octal/short spellings URL normalizes into 127.0.0.1', () => {
+    for (const host of ['127.1', '0177.0.0.1', '2130706433']) {
+      expect(containerizeLoopbackUrl(`http://${host}:1234/v1`)).toBe('http://host.docker.internal:1234/v1');
+    }
+  });
+
+  it('rewrites bracketed ::1 and the RFC 6761 .localhost space', () => {
+    expect(containerizeLoopbackUrl('http://[::1]:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+    expect(containerizeLoopbackUrl('http://lm.localhost:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+  });
+
+  // The inverse error would be worse than the original bug: rewriting a reachable endpoint breaks it.
+  it('does not rewrite hosts that merely resemble loopback', () => {
+    for (const url of [
+      'http://localhost.evil.com:1234/v1',   // localhost as a label, not the host
+      'http://notlocalhost:1234/v1',
+      'http://128.0.0.1:1234/v1',            // adjacent to 127/8, outside it
+      'http://126.255.255.255:1234/v1',
+      'http://[::2]:1234/v1',
+      'http://[::ffff:8.8.8.8]:1234/v1',     // IPv4-mapped, but not loopback
+    ]) {
+      expect(containerizeLoopbackUrl(url)).toBe(url);
+    }
+  });
+});
+
+describe('buildAttachArgs — env repair on reattach', () => {
+  const NAME = 'kanban-term-abc';
+  const SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+  // A container adopted after an Express restart was created with whatever env existed then, and
+  // --add-host can't be changed on exec — but `-e` can, so every attach re-supplies current config.
+  it('re-supplies the LLM env, before the container name where docker exec expects options', () => {
+    const args = buildAttachArgs(NAME, SID, { LLM_BASE_URL: 'http://localhost:1234/v1' });
+    expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+    expect(args.indexOf('-e')).toBeLessThan(args.indexOf(NAME));
+  });
+
+  it('still ends with the dtach attach command, unchanged', () => {
+    const args = buildAttachArgs(NAME, SID, {});
+    expect(args.slice(0, 2)).toEqual(['exec', '-it']);
+    expect(args.slice(-7)).toEqual([NAME, 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch']);
+  });
+});
+
+// Round-trip pin for the host→container config path (CLAUDE.md integration-seam rule): host env →
+// resolveSessionCommand → docker argv. Unit tests on llmEnvArgs alone stayed green while the real
+// chain dropped the value, because resolveSessionCommand never forwarded it (tkt-c0cf617fdcc4 review).
+describe('resolveSessionCommand — LLM config round-trip', () => {
+  const common = {
+    sessionId: SID, getTicket: async () => ticket(), projectRoots: PROJECT_ROOTS, kanbanRoot: KANBAN,
+    createdAt: 0, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
+  };
+
+  it('carries a custom host endpoint all the way into BOTH the run and attach argv', async () => {
+    const { runArgs, attachArgs } = await resolveSessionCommand({
+      ...common, ticket: null, env: { LLM_BASE_URL: 'http://127.0.0.9:9999/v1', EMBED_BASE_URL: 'https://embed.example.com/v1' },
+    });
+    // 127.0.0.9 is loopback → rewritten; the remote embed endpoint is reachable → untouched.
+    for (const args of [runArgs, attachArgs]) {
+      expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:9999/v1');
+      expect(args).toContain('EMBED_BASE_URL=https://embed.example.com/v1');
+    }
+  });
+
+  it('never lets a container-unreachable localhost endpoint reach either argv', async () => {
+    for (const env of [{}, { LLM_BASE_URL: 'http://localhost:1234/v1' }, { LLM_BASE_URL: '  ' }]) {
+      const { runArgs, attachArgs } = await resolveSessionCommand({ ...common, ticket: null, env });
+      expect(runArgs.join(' ')).not.toMatch(/(LLM|EMBED)_BASE_URL=\S*localhost:/);
+      expect(attachArgs.join(' ')).not.toMatch(/(LLM|EMBED)_BASE_URL=\S*localhost:/);
+    }
   });
 });
