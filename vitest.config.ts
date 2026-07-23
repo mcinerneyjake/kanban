@@ -16,16 +16,20 @@ export default defineConfig({
       // construction and not yet in the testing table (its own tests run, but
       // it is excluded from the gate for now). So the threshold reflects real,
       // asserted behaviour — not UI glue or in-flight code.
+      // server/tickets.ts, server/events.ts, server/validation.ts and
+      // mcp/handlers.ts are excluded: they are thin re-export shims over the
+      // ticket-workflow package (tkt-66f0e22efd5e), which covers that logic in
+      // its own CI gate. As shims they declare no functions, so the perFile
+      // thresholds below would fail them for having nothing to cover. Their
+      // BEHAVIOUR is still asserted here — the suites that used to test them now
+      // drive the package through the shim as contract tests.
       include: [
-        'server/tickets.ts',
         'server/index.ts',
-        'server/events.ts',
         'server/stream.ts',
         'server/ticketWatcher.ts',
         'server/lib/**/*.ts',
         'server/middleware/**/*.ts',
         'server/schemas/**/*.ts',
-        'mcp/handlers.ts',
         'shared/constants.ts',
         'src/lib/**/*.ts',
       ],
