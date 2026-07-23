@@ -2,6 +2,7 @@
 // function maps inputs (a probe result, CLI stdout, env) to a decision, so they're unit-tested
 // in isolation while scripts/preflight-dev.mjs holds the spawn/fetch/prompt I/O. Mirrors the
 // terminalAuth (pure) vs terminal (I/O) split.
+import { validateSetupToken } from '../shared/terminalSeed.mjs';
 
 const DEFAULT_BASE = 'http://localhost:1234/v1';
 
@@ -88,6 +89,15 @@ export function describeSeedCredential({ credential, error = null, now = Date.no
     // Deliberately warn even when the local expiry looks far off: a /login credential's real lifetime
     // is ~24h regardless of what the file claims, so the expiry check alone would miss this.
     return { level: 'warn', message: `terminal credential seed will go stale.${drift} ${RESEED_HINT}` };
+  }
+  // Same check the seeder applies before writing, so a seed the seeder would have refused isn't
+  // reported healthy here — this path used to call any non-empty string "stable", which is how a
+  // truncated or wrong-shaped token stayed invisible until every session failed (tkt-bfb3bc9f98d4).
+  // Ordered LAST on purpose: expiry and the refresh-token tell are precisely characterized, while the
+  // token *shape* rule is the least-verified of the three, so it must not preempt a better diagnosis.
+  const shape = validateSetupToken(oauth.accessToken);
+  if (!shape.ok) {
+    return { level: 'warn', message: `terminal credential seed holds an unusable token — ${shape.reason} ${RESEED_HINT}` };
   }
   return { level: 'ok', message: '✓ terminal credential seed looks stable (setup-token shape, no refresh token)' };
 }
