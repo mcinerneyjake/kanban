@@ -118,10 +118,13 @@ describe('describeCheckoutFreshness', () => {
 
 describe('describeSeedCredential', () => {
   const NOW = Date.UTC(2026, 6, 22); // 2026-07-22
+  // A realistically-shaped setup token: the seeder now refuses to WRITE anything else, so a fixture
+  // using a 3-char placeholder would assert a state that can no longer exist (tkt-bfb3bc9f98d4).
+  const TOKEN = 'sk-ant-oat01-' + 'a'.repeat(97);
   const day = 86_400_000;
   // What terminal-setup-cred.mjs writes: non-refreshing, far-future local stamp.
   const setupToken = (over = {}) => ({
-    claudeAiOauth: { accessToken: 'tok', refreshToken: '', expiresAt: NOW + 3650 * day, scopes: ['user:inference'], ...over },
+    claudeAiOauth: { accessToken: TOKEN, refreshToken: '', expiresAt: NOW + 3650 * day, scopes: ['user:inference'], ...over },
   });
 
   it('passes a setup-token seed', () => {
@@ -179,7 +182,7 @@ describe('describeSeedCredential', () => {
   });
 
   it('accepts a bare credential object (no claudeAiOauth wrapper)', () => {
-    const r = describeSeedCredential({ credential: { accessToken: 'tok', refreshToken: '', expiresAt: NOW + 3650 * day }, now: NOW });
+    const r = describeSeedCredential({ credential: { accessToken: TOKEN, refreshToken: '', expiresAt: NOW + 3650 * day }, now: NOW });
     expect(r.level).toBe('ok');
   });
 
