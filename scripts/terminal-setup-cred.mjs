@@ -18,11 +18,14 @@
 // only COPY the seed, so a refreshable credential's refresh lands in a throwaway copy and the seed
 // rots into "login expired" (tkt-da1caf5316f7). Re-seeding resets the home to credentials-only.
 import { mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { seedHomePath } from '../shared/terminalSeed.mjs';
 
-const SEED_HOME = path.join(homedir(), '.kanban-terminal', 'home');
+// Resolved, not hardcoded: this script used to ignore KANBAN_TERMINAL_HOME while the server and the
+// preflight honored it, so with the override set it wrote a credential nothing would read AND its
+// rmSync wiped an unrelated directory (tkt-812b2b71acbe).
+const SEED_HOME = seedHomePath();
 const OUT_DIR = path.join(SEED_HOME, '.claude');
 const OUT_FILE = path.join(OUT_DIR, '.credentials.json');
 

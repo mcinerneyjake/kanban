@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, cpSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { isValidSessionId, type CredMount } from './terminalAuth.js';
+import { seedHomePath, sessionsRootPath } from '../shared/terminalSeed.mjs';
 
 // Per-session HOME isolation for the embedded terminal (S4, tkt-db09c3a52655).
 //
@@ -24,14 +24,16 @@ import { isValidSessionId, type CredMount } from './terminalAuth.js';
 const CONTAINER_HOME = '/kanban-home';
 
 // The pre-authenticated seed/template HOME. Sessions copy FROM it and never write TO it, so it stays
-// small and uncorrupted. Env-overridable (tests point it at a temp dir).
+// small and uncorrupted. Env-overridable (tests point it at a temp dir). Resolution lives in
+// shared/terminalSeed.mjs so the bare-`node` setup script resolves the identical path
+// (tkt-812b2b71acbe); these stay exported as the server's names for it.
 export function seedHomeDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.KANBAN_TERMINAL_HOME ?? path.join(homedir(), '.kanban-terminal', 'home');
+  return seedHomePath(env);
 }
 
 // Root holding every per-session HOME, a sibling of the seed.
 export function sessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(path.dirname(seedHomeDir(env)), 'sessions');
+  return sessionsRootPath(env);
 }
 
 // A session's isolated HOME. Deterministic in the session id, so dispose/adoption/reaper can
