@@ -243,6 +243,8 @@ Prefer the MCP tools for all ticket operations — never write a script to mark 
 - `src/` — React frontend
 - `tickets/` — one `.md` file per ticket (frontmatter + markdown body)
 - `shared/constants.ts` — enum values for status, type, priority
+- `shared/ports.ts` — dev API/Vite ports derived from one `KANBAN_PORT_OFFSET` knob (see **Concurrent sessions**); imported by `vite.config.ts` and `server/index.ts` so the two can never disagree
+- `shared/terminalSeed.mjs` — single source of truth for the embedded terminal's seed/session paths **and** setup-token validation, shared by `server/terminalHome.ts`, `scripts/preflight-dev.mjs`, `scripts/preflight-lib.mjs` and `scripts/terminal-setup-cred.mjs`. It stays `.mjs` with a hand-written `terminalSeed.d.mts` **because the setup scripts run under bare `node` and cannot import TypeScript** — do not "fix" it into a `.ts` (`tkt-812b2b71acbe`, `tkt-bfb3bc9f98d4`).
 - `mcp/handlers.ts` — MCP tool definitions + dispatch logic (the testable core)
 - `mcp/server.ts` — thin MCP entrypoint: wires the handlers to a stdio transport
 - `agent/` — local-first agentic-RAG intake agent (retrieval, tools, tool-use loop, CLI); talks to an OpenAI-compatible `/v1` endpoint
