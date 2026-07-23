@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness, describeSeedCredential } from './preflight-lib.mjs';
+import { seedHomePath } from '../shared/terminalSeed.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(`preflight: ${m}`);
@@ -58,10 +59,10 @@ function checkCheckout() {
 
 // The embedded terminal's credential seed dies silently: it only surfaces as a "login expired" prompt
 // inside a session, long after the seed went bad (tkt-da1caf5316f7). Surface it at dev start instead.
-// Honors KANBAN_TERMINAL_HOME so the guard follows the same seed terminalHome.ts actually mounts.
+// The path comes from shared/terminalSeed.mjs, so this guard, the server mount and the re-seed script
+// can never check, use and write three different directories (tkt-812b2b71acbe).
 function checkTerminalCredential() {
-  const seedHome = process.env.KANBAN_TERMINAL_HOME ?? path.join(homedir(), '.kanban-terminal', 'home');
-  const file = path.join(seedHome, '.claude', '.credentials.json');
+  const file = path.join(seedHomePath(), '.claude', '.credentials.json');
   let credential = null;
   let error = null;
   if (existsSync(file)) {
