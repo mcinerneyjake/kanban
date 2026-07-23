@@ -145,12 +145,14 @@ auto-removes it if nothing changed). The Agent tool takes `isolation: "worktree"
 Every ticket lands on its own branch and merges to `main` via a **squash-merged PR** — never a direct push to `main`. There are three human-approval gates: **"Ready to commit?"**, **"Ready to open PR?"**, **"Ready to merge?"**. Never cross a gate without explicit confirmation.
 
 > **Enforced locally:** a PreToolUse hook (`.claude/hooks/guard-bash.mjs`, wired in `.claude/settings.json`) blocks `git add -A`/`--all`/`.`, commits on `main`, and pushes to `main` before they run — these rules are no longer honor-system. (GitHub branch protection backstops the same at merge time — see the end of this section.)
+>
+> **It also fails CLOSED on `commit`/`push` when it cannot resolve the current branch** (`tkt-fbc74a3252fe`, #169), blocking with *"Could not determine the current branch, so this commit/push cannot be checked against the never-commit-to-main rule…"*. This deliberately contradicts the hook's general fail-open stance ("a guardrail must never wedge legitimate work"): an unresolvable branch is the one unknown that **silently disables the very rule it guards**, turning every way of breaking `git rev-parse` — a bogus `GIT_CONFIG_PARAMETERS`, `GIT_CEILING_DIRECTORIES` set over the repo, a `safe.directory` refusal, git off `PATH` — into a commit-to-`main` bypass. It is scoped to `commit`/`push` only, so an unresolvable branch still can't wedge ordinary work, and checked last, so explicit violations keep their precise message. **If you hit it, fix the environment** (look for a stale `GIT_DIR`/`GIT_CONFIG_PARAMETERS`) — do not work around the guard.
 
 ### Permissions (prompt-free workflow)
 
 The workflow commands run **prompt-free**: `.claude/settings.json` allowlists the non-destructive MCP tools (`list_tickets`, `get_ticket`, `start_ticket`, `create_ticket`, `update_ticket`) and the workflow shell commands. Safety is **layered**, not a function of the allowlist alone:
 
-- **git rules are intentionally broad** (`git add`/`commit`/`push`/…) but safe because the **`guard-bash` hook** inspects each actual command and blocks the dangerous shapes — `git add -A`/`-f`, `commit -a`, commits/pushes to `main`, force-push, `branch -D`, `reset --hard`, `clean -f`, `checkout -f` (proven by `guard-bash.test.mjs`).
+- **git rules are intentionally broad** (`git add`/`commit`/`push`/…) but safe because the **`guard-bash` hook** inspects each actual command and blocks the dangerous shapes — `git add -A`/`-f`, `commit -a`, commits/pushes to `main`, force-push, `branch -D`, `reset --hard`, `clean -f`, `checkout -f` — plus the **fail-closed** block on `commit`/`push` with an unresolvable branch (above), which is what stops a broken git environment from quietly reopening the `main` path (proven by `guard-bash.test.mjs`).
 - **`gh`/`npm`/`npx` rules have no such runtime hook**, so they are pinned to **specific subcommands** (`npm run lint`, `gh pr merge`, `npx vitest run *`, …) — never a wildcarded subcommand like `npm run *`.
 - **`delete_ticket` and destructive shapes stay excluded** — they still prompt.
 - **`create_ticket` is allowlisted but blocked at runtime by the `guard-ticket` hook** — ticket authoring is delegated to the local agent (see **Ticket creation flow**), parallel to the broad git rules being `guard-bash`-backed. The allow entry only avoids a re-prompt if that policy is ever relaxed; the hook is the real gate.
@@ -203,9 +205,18 @@ gh pr create --base main --title "<ticket title>" --body "<why + ticket id + the
 
 The PR body must reference the ticket id and include the `## Implementation summary` (which now carries both the `Tests:` and `Risk:` lines — so blast radius + rollback are visible inline on the PR). CI (`.github/workflows/ci.yml`) runs the same gate (typecheck + lint + test) on the PR — it must be green before merge. A second check (`.github/workflows/pr-branch-name.yml`) fails the PR if the head branch doesn't match `<type>/<id>-<slug>`. A fourth workflow (`.github/workflows/e2e.yml`, added 2026-07-02) runs the Playwright suite path-filtered to UI-touching changes (`src/**`, `e2e/**`, `playwright.config.ts`) — it is **advisory** (not in the ruleset) until it earns a stable track record, then gets promoted to required.
 
-**Branch protection:** `main` is protected by a GitHub ruleset that enforces the three **required** CI checks (`gate`, `branch-name`, `review`) and requires a PR — direct pushes are blocked at the GitHub level. (`e2e` reports on the PR but does not yet block merge.)
+**Branch protection:** `main` is protected by **two** rulesets, and the difference between them matters (verified against the API 2026-07-23):
 
-When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment.
+| ruleset | enforcement | required checks | bypass |
+|---|---|---|---|
+| `18042938` — *main: CI floor (no bypass)* | **active** | `gate`, `branch-name` | **none** (`current_user_can_bypass: never`) |
+| `18084578` — *main: review (admin-bypassable)* | **disabled** | `gate`, `branch-name`, `review` | RepositoryRole + User |
+
+So what is actually enforced today is the floor: a PR is required (**0 approvals**), deletion and force-push are blocked, and `gate` + `branch-name` must pass — with no bypass for anyone, including admins. **`review` is required by nothing right now**: the only ruleset naming it is parked, and everything else that ruleset declares (`pull_request`, `deletion`, `non_fast_forward`) merely duplicates the floor.
+
+It is parked on purpose. The `review` job **reports success without running** when `ANTHROPIC_API_KEY` is unset — it logs *"ANTHROPIC_API_KEY secret not configured — skipping code review"* and exits green (observed on PR #173). A required check that passes without running is the fail-open shape this repo rejects, so requiring it would be worse than not requiring it. Configure the secret (or make the skip path fail loudly) before re-enabling `18084578`. `e2e` likewise reports on the PR but does not block merge.
+
+When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment — **but only when `ANTHROPIC_API_KEY` is configured**; without it the job skips and still reports green (see **Branch protection** above), so a green `review` is not evidence that a review happened.
 
 ### 4. Merge (after CI is green)
 
@@ -228,7 +239,7 @@ gh pr merge --squash --delete-branch
 git switch main && git pull
 ```
 
-No `--admin` needed: the `main` rulesets require the `gate` / `branch-name` / `review` checks but **0 approvals**, so a normal squash-merge lands once CI is green (a red check still blocks it).
+No `--admin` needed: the active `main` ruleset requires the `gate` / `branch-name` checks but **0 approvals**, so a normal squash-merge lands once CI is green (a red check still blocks it).
 
 This squashes the branch to a single commit on `main` and deletes the branch locally and remotely. After the merge completes, call `update_ticket` to set `status: "done"` — this is the moment the ticket is officially closed.
 
