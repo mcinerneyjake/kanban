@@ -174,9 +174,18 @@ describe('decide — destructive git flags (blocked on any branch)', () => {
 });
 
 describe('decide — edge cases', () => {
-  it('does not block when the branch is undeterminable', () => {
-    expect(decide('git commit -m "x"', () => null).blocked).toBe(false);
-    expect(decide('git push', () => null).blocked).toBe(false);
+  // Fails CLOSED, reversing the original permissive behavior: an unresolvable branch is the one
+  // unknown that silently disables the never-commit-to-main rule (tkt-fbc74a3252fe).
+  it('blocks commit/push when the branch is undeterminable', () => {
+    expect(decide('git commit -m "x"', () => null).blocked).toBe(true);
+    expect(decide('git push', () => null).blocked).toBe(true);
+  });
+
+  // …but only those two, so a broken branch probe can never wedge ordinary work.
+  it('still allows everything else when the branch is undeterminable', () => {
+    for (const cmd of ['git status', 'git add src/App.tsx', 'git switch -c feat/x', 'git log --oneline']) {
+      expect(decide(cmd, () => null).blocked).toBe(false);
+    }
   });
 
   it('ignores empty / non-string commands', () => {
@@ -300,13 +309,14 @@ describe('the real hook, end to end', () => {
   const onFeat = repo('on-feat', 'feat/x');
 
   const hook = fileURLToPath(new URL('./guard-bash.mjs', import.meta.url));
-  // hermeticEnv matters most here: the hook resolves the branch by running git in `cwd`, so a leaked
-  // GIT_DIR would have it judge the REAL repo — quietly inverting these verdicts (tkt-cf1e0c0b3dda).
-  const runHook = (command, cwd) => {
+  // Hermetic base so an ambient GIT_DIR can't silently redirect these fixtures (tkt-cf1e0c0b3dda);
+  // `env` puts specific vars back INTO the child, which is the only way a test reaches the hook's
+  // own git-resolution behavior rather than the harness's (tkt-fbc74a3252fe).
+  const runHook = (command, cwd, env = {}) => {
     const r = spawnSync('node', [hook], {
       input: JSON.stringify({ cwd, tool_input: { command } }),
       encoding: 'utf8',
-      env: hermeticEnv(),
+      env: { ...hermeticEnv(), ...env },
     });
     return r.status; // 2 = blocked, 0 = allowed
   };
@@ -318,17 +328,32 @@ describe('the real hook, end to end', () => {
     expect(runHook('git commit -m x', onFeat)).toBe(0);
   });
 
-  // Without the scrub the hook resolves the DECOY repo (on main) and blocks the feature-branch
-  // commit — the shape that made every worktree commit fail the gate (tkt-cf1e0c0b3dda).
-  it('ignores an ambient absolute GIT_DIR and judges the real cwd', () => {
-    const prev = process.env.GIT_DIR;
-    process.env.GIT_DIR = join(onMain, '.git');
-    try {
-      expect(runHook('git commit -m x', onFeat)).toBe(0);
-      expect(runHook('git commit -m x', onMain)).toBe(2);
-    } finally {
-      if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev;
+  // GIT_DIR, not cwd, decides where a commit LANDS (measured: cwd=on-feat + GIT_DIR=on-main/.git
+  // puts the commit on main). So the guard must judge the repo GIT_DIR names — scrubbing it would
+  // grade a repo the commit never touches and allow a direct commit to main (tkt-fbc74a3252fe).
+  // Dangerous direction first, so a regression reports the fail-open rather than the benign symptom.
+  it('honors an ambient GIT_DIR — it judges the repo the commit will land in', () => {
+    expect(runHook('git commit -m x', onFeat, { GIT_DIR: join(onMain, '.git') })).toBe(2);
+    expect(runHook('git commit -m x', onMain, { GIT_DIR: join(onFeat, '.git') })).toBe(0);
+  });
+
+  // Each of these breaks `git rev-parse` outright rather than redirecting it, so the branch comes
+  // back null — which used to mean "allowed" (tkt-fbc74a3252fe). The on-feat half matters most: the
+  // branch there would have been safe, so only the fail-closed rule can be producing the block.
+  it('fails CLOSED when the environment breaks branch resolution', () => {
+    for (const env of [{ GIT_CONFIG_PARAMETERS: 'garbage' }, { GIT_COMMON_DIR: '/nonexistent' }, { GIT_OBJECT_DIRECTORY: '/nonexistent' }]) {
+      expect(runHook('git commit -m x', onMain, env)).toBe(2);
+      expect(runHook('git commit -m x', onFeat, env)).toBe(2);
     }
+  });
+
+  // GIT_CEILING_DIRECTORIES only bites where discovery must walk UP, so a repo root is immune and
+  // a subdirectory is not — measured, not assumed.
+  it('fails CLOSED when GIT_CEILING_DIRECTORIES blocks discovery from a subdirectory', () => {
+    const sub = join(onFeat, 'sub');
+    mkdirSync(sub, { recursive: true });
+    expect(runHook('git commit -m x', sub)).toBe(0); // control: resolves feat/x, allowed
+    expect(runHook('git commit -m x', sub, { GIT_CEILING_DIRECTORIES: onFeat })).toBe(2);
   });
 
   it('judges by the repo the chain cd-ed into — the bug this fixes', () => {
