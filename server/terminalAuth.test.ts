@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isAllowedOrigin, isValidToken, buildSessionEnv, allowedRootsFor,
+  isAllowedOrigin, isAllowedTerminalHost, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
   isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, containerizeLoopbackUrl, llmEnvArgs, type CredMount,
@@ -34,6 +34,34 @@ describe('isAllowedOrigin', () => {
     expect(isAllowedOrigin('https://evil.example')).toBe(false);
     expect(isAllowedOrigin('http://localhost:8080')).toBe(false);
     expect(isAllowedOrigin(undefined)).toBe(false);
+  });
+});
+
+describe('isAllowedTerminalHost', () => {
+  it('allows loopback hosts on any port', () => {
+    expect(isAllowedTerminalHost('localhost:5173')).toBe(true);
+    expect(isAllowedTerminalHost('127.0.0.1:3001')).toBe(true);
+    expect(isAllowedTerminalHost('localhost')).toBe(true);
+    expect(isAllowedTerminalHost('[::1]:3001')).toBe(true);
+    // KANBAN_PORT_OFFSET moves both dev ports; a port-pinned allowlist would reject a real worktree.
+    expect(isAllowedTerminalHost('localhost:5223')).toBe(true);
+    expect(isAllowedTerminalHost('127.0.0.1:3051')).toBe(true);
+  });
+
+  it('rejects the rebound-DNS host, which is the whole point', () => {
+    expect(isAllowedTerminalHost('evil.com')).toBe(false);
+    expect(isAllowedTerminalHost('evil.com:3001')).toBe(false);
+    // Rebinding needs a NAME; a name that merely contains "localhost" must not pass.
+    expect(isAllowedTerminalHost('localhost.evil.com')).toBe(false);
+    expect(isAllowedTerminalHost('notlocalhost')).toBe(false);
+  });
+
+  it('rejects credential and absent-header tricks', () => {
+    // URL parses these to hostname evil.com — the loopback part is userinfo, not the host dialed.
+    expect(isAllowedTerminalHost('localhost@evil.com')).toBe(false);
+    expect(isAllowedTerminalHost('127.0.0.1@evil.com')).toBe(false);
+    expect(isAllowedTerminalHost(undefined)).toBe(false);
+    expect(isAllowedTerminalHost('')).toBe(false);
   });
 });
 

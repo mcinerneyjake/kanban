@@ -21,6 +21,22 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
   return origin !== undefined && ALLOWED_ORIGINS.has(origin);
 }
 
+// Host gate for GET /api/terminal/token (tkt-b6eb52013662). Origin can't do this job: browsers omit
+// it on same-origin GETs, so the real page and a DNS-rebound one look identical. Host still carries
+// the name the browser dialed — `evil.com` for a rebound page, never loopback. Matched on hostname
+// only, deliberately port-blind: the Vite proxy may forward either its own or the API's Host, and
+// KANBAN_PORT_OFFSET moves both, so pinning ports would break real setups without adding security
+// (a port is not an authenticator). Parsing through URL normalizes ports, brackets and `user@host`
+// tricks — a bare `localhost@evil.com` resolves to hostname evil.com and is rejected.
+export function isAllowedTerminalHost(host: string | undefined): boolean {
+  if (host === undefined) return false;
+  try {
+    return isLoopbackHost(new URL(`http://${host}`).hostname);
+  } catch {
+    return false; // unparseable Host is not a loopback Host
+  }
+}
+
 // An empty expected token (misconfig) must never authorize — guard it explicitly
 // rather than letting '' === '' pass.
 export function isValidToken(provided: string | null | undefined, expected: string): boolean {

@@ -28,7 +28,11 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   const PORT = apiPort();
-  const server = app.listen(PORT, () => {
+  // Loopback only. Bare app.listen(PORT) binds every interface, which put the dev API — including
+  // the terminal token, and with it a forged-Origin path to a container shell — on the LAN for
+  // anyone sharing the network (tkt-b6eb52013662). Vite already defaults to loopback; this makes
+  // the API match. Nothing here is meant to be reached from another device.
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`Kanban API → http://localhost:${PORT}`);
     // Best-effort warm so the first intake search is instant. Free locally; embedder
     // down → lazy build on first use. On a paid embedder this re-embeds the whole
