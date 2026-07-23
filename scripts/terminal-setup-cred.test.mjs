@@ -63,7 +63,6 @@ describe('terminal-setup-cred end to end', () => {
     ['a truncated fragment', 'sk-ant-oat01-abc'],
     ['an Anthropic API key', `sk-ant-api03-${'x'.repeat(95)}`],
     ['a pasted URL', 'https://console.anthropic.com/settings/keys?tab=oauth&extra=padding-to-clear-40'],
-    ['a line-wrapped token', `sk-ant-oat01-${'a'.repeat(50)}\n${'b'.repeat(50)}`],
   ])('leaves an existing seed byte-identical when given %s', (_label, token) => {
     seedExisting('{"original":"do not clobber"}');
     const before = readFileSync(credentialsFile(), 'utf8');

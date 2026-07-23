@@ -25,10 +25,12 @@ describe('validateSetupToken', () => {
     expect(r.reason).toContain('sk-ant-oat');
   });
 
-  // The interactive prompt reads one line, so a wrapped token arrives already cut short.
-  it('rejects a token carrying a line break or any whitespace', () => {
-    expect(validateSetupToken(`sk-ant-oat01-${'a'.repeat(50)}\n${'b'.repeat(50)}`).ok).toBe(false);
-    expect(validateSetupToken(`sk-ant-oat01-${'a'.repeat(50)} ${'b'.repeat(50)}`).reason).toContain('whitespace');
+  // Pins the INVERSE of what tkt-bfb3bc9f98d4 briefly asserted. Whitespace looks like a truncated
+  // paste, but the live working credential contains internal whitespace (raw 110 == trimmed 110),
+  // so rejecting it locked out a valid token. Do not reintroduce the rule (tkt-7b21fb0b3307).
+  it('accepts a token containing internal whitespace, as real tokens do', () => {
+    expect(validateSetupToken(`sk-ant-oat01-${'a'.repeat(50)} ${'b'.repeat(46)}`).ok).toBe(true);
+    expect(validateSetupToken(`sk-ant-oat01-${'a'.repeat(50)}\n${'b'.repeat(46)}`).ok).toBe(true);
   });
 
   it('rejects a long non-token value such as a pasted URL', () => {
@@ -42,9 +44,8 @@ describe('validateSetupToken', () => {
   });
 
   // force is an override for the PREFIX rule only — it must not wave through a truncated paste.
-  it('does not let --force bypass the length or whitespace rules', () => {
+  it('does not let --force bypass the length rule', () => {
     expect(validateSetupToken('sk-ant-oat01-abc', { force: true }).ok).toBe(false);
-    expect(validateSetupToken(`sk-ant-oat01-${'a'.repeat(50)} x`, { force: true }).ok).toBe(false);
   });
 
   // Tolerates a version bump (oat02…) without a code change; the old `sk-ant-` did not discriminate.

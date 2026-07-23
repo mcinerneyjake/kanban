@@ -33,11 +33,13 @@ export function validateSetupToken(token, { force = false } = {}) {
   if (token.length < MIN_TOKEN_LENGTH) {
     return { ok: false, reason: `Token is only ${token.length} characters — that looks like a truncated paste, not a setup-token.` };
   }
-  // Whitespace means the paste was cut short: the interactive prompt reads a single line, so a token
-  // wrapped across lines arrives already truncated with the break still in it.
-  if (/\s/.test(token)) {
-    return { ok: false, reason: 'Token contains whitespace — a token copied across a line break arrives truncated. Re-copy it as one unbroken line.' };
-  }
+  // DO NOT reject embedded whitespace. It looks like a truncated paste, and `readline.question`
+  // returning only the first line makes that a real risk — but real tokens contain internal
+  // whitespace, so it cannot discriminate. Measured against the live working credential: raw length
+  // 110, trimmed length 110 (so it is not edge whitespace), and a whitespace match survives the trim.
+  // The rule shipped in tkt-bfb3bc9f98d4 and locked that token out entirely, since `force` was
+  // deliberately not allowed to override it (tkt-7b21fb0b3307). The truncation risk is real and is
+  // addressed at its source instead — see tkt-dba03a3b6bda.
   if (!token.startsWith(TOKEN_PREFIX) && !force) {
     return { ok: false, reason: `Token does not start with "${TOKEN_PREFIX}" — an API key (sk-ant-api…) or a URL is the usual mistake here. Re-run with --force if you are certain it is correct.` };
   }
