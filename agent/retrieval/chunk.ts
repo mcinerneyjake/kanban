@@ -33,16 +33,9 @@ export function chunkText(text: string, opts: ChunkOptions): string[] {
   return chunks;
 }
 
-// Resolve chunk options from env (CHUNK_SIZE / CHUNK_OVERLAP). Invalid/non-integer values fall back rather than throw; chunkText is the single place that validates the (size, overlap) relationship.
-export function resolveChunkConfig(env: NodeJS.ProcessEnv = process.env): ChunkOptions {
-  return {
-    size: intFromEnv(env.CHUNK_SIZE, DEFAULT_CHUNK_SIZE),
-    overlap: intFromEnv(env.CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP),
-  };
-}
-
-function intFromEnv(raw: string | undefined, fallback: number): number {
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isInteger(n) ? n : fallback;
-}
+// NOTE: there is deliberately no env-config layer (a former resolveChunkConfig reading
+// CHUNK_SIZE / CHUNK_OVERLAP) — it was removed by tkt-3e5cde5af6a4. An A/B over the T2 golden set
+// showed chunking gives the short-ticket board NO recall gain (recall@1/@5 identical) and slightly
+// worse MRR (0.917 → 0.910) at ~3× the vectors, so the board indexes whole-ticket (no chunk options).
+// `chunkText` + `DocumentIndex`'s optional `chunk` param remain as a per-connector capability: a
+// future long/multi-topic source (SOP, email) passes explicit ChunkOptions where chunking earns its keep.
