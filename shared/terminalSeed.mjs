@@ -45,3 +45,33 @@ export function validateSetupToken(token, { force = false } = {}) {
   }
   return { ok: true, reason: null };
 }
+
+// Seed-home pruning keep-lists (tkt-fc6f493e2033). Both setup scripts (terminal-setup-cred +
+// terminal-setup-github) prune the seed home to a template, so they must agree on ONE union of
+// top-level entries — otherwise re-seeding Claude wipes the GitHub auth, or vice versa. Centralized
+// here (not duplicated in each script) so the two can't drift, the same reason the seed PATH lives here.
+//   .claude / .claude.json — Claude credential + onboarding state
+//   .config / .gitconfig    — GitHub auth (gh hosts.yml under .config/gh, git credential+insteadOf)
+export const SEED_HOME_KEEP = ['.claude', '.claude.json', '.config', '.gitconfig'];
+// Inside .claude/, keep only the credential + settings (used by the Claude script alone).
+export const SEED_CLAUDE_KEEP = ['.credentials.json', 'settings.json'];
+
+// GitHub PAT shapes: `github_pat_…` (fine-grained, ~93 chars) and `ghp_…` (classic, 40). The length
+// floor catches a truncated paste while clearing a 40-char classic token. A FINE-GRAINED, repo-scoped
+// token is strongly preferred (least authority) — `force` is the escape hatch if GitHub changes the
+// prefix. Mirrors validateSetupToken so the writer (terminal-setup-github) and any reader agree.
+const GITHUB_TOKEN_PREFIXES = ['github_pat_', 'ghp_'];
+const MIN_GITHUB_TOKEN_LENGTH = 30;
+
+export function validateGithubToken(token, { force = false } = {}) {
+  if (typeof token !== 'string' || token.trim() === '') {
+    return { ok: false, reason: 'No token provided.' };
+  }
+  if (token.length < MIN_GITHUB_TOKEN_LENGTH) {
+    return { ok: false, reason: `Token is only ${token.length} characters — that looks like a truncated paste, not a GitHub PAT.` };
+  }
+  if (!GITHUB_TOKEN_PREFIXES.some((p) => token.startsWith(p)) && !force) {
+    return { ok: false, reason: 'Token does not start with "github_pat_" (fine-grained) or "ghp_" (classic) — a fine-grained, repo-scoped token is strongly preferred. Re-run with --force if you are certain it is correct.' };
+  }
+  return { ok: true, reason: null };
+}

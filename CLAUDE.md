@@ -241,6 +241,10 @@ git switch main && git pull
 
 No `--admin` needed: the active `main` ruleset requires the `gate` / `branch-name` checks but **0 approvals**, so a normal squash-merge lands once CI is green (a red check still blocks it).
 
+### Merge authority in the embedded terminal (push + open-PR only)
+
+When the workflow runs **from inside the embedded terminal**, the session has **push + open-PR authority only** — a repo-scoped GitHub PAT with **no merge permission**, seeded via the container's mounted HOME (see README → *GitHub-in-terminal*, `tkt-fc6f493e2033`). At the merge gate the agent must therefore **not** attempt `gh pr merge` (it would fail on the token scope). Instead: capture the PR URL from `gh pr create` (or `gh pr view --json url -q .url`), state plainly that merging to `main` is the human's decision — the container is the least-guarded context and `guard-bash` does not run there — and print the URL for a manual merge from the host. The human-in-the-loop merge gate is deliberate; narrate it rather than hitting a permission error.
+
 This squashes the branch to a single commit on `main` and deletes the branch locally and remotely. After the merge completes, call `update_ticket` to set `status: "done"` — this is the moment the ticket is officially closed.
 
 ## Temporary scripts

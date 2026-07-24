@@ -21,7 +21,7 @@ import { mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, readdirSync, r
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { seedHomePath, validateSetupToken } from '../shared/terminalSeed.mjs';
+import { seedHomePath, validateSetupToken, SEED_HOME_KEEP, SEED_CLAUDE_KEEP } from '../shared/terminalSeed.mjs';
 
 async function readToken() {
   if (!process.stdin.isTTY) {
@@ -56,9 +56,10 @@ async function readToken() {
 // lives in .credentials.json, and .claude.json holds onboarding flags, theme and caches, no
 // refreshable credential. The rot came from `/login` writing .credentials.json directly. So wiping
 // config bought no safety and cost every session its onboarding state (tkt-bfb3bc9f98d4).
-const SEED_HOME_KEEP = ['.claude', '.claude.json'];
-const SEED_CLAUDE_KEEP = ['.credentials.json', 'settings.json'];
-
+//
+// SEED_HOME_KEEP / SEED_CLAUDE_KEEP are centralized in shared/terminalSeed.mjs (tkt-fc6f493e2033):
+// SEED_HOME_KEEP now also lists .config/.gitconfig so a Claude re-seed preserves the GitHub auth that
+// terminal-setup-github seeds alongside — the two scripts share one union or they wipe each other.
 export function installSeed(seedHome, credentials) {
   const claudeDir = path.join(seedHome, '.claude');
   const target = path.join(claudeDir, '.credentials.json');

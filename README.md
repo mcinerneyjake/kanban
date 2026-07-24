@@ -180,6 +180,34 @@ not a maintained path. (The one cloud integration this repo keeps is the CI
 code-review job.) Note the embedder is keyless today, so retrieval still runs
 against a local embedding model either way.
 
+#### GitHub-in-terminal (optional) — push + open PRs from the embedded terminal
+
+The embedded terminal can run a ticket's `git push` + `gh pr create` in-container,
+over HTTPS, with a **scoped, least-authority** credential — so an agent working in
+the sandbox opens a PR while merging to `main` stays a human step.
+
+One-time setup:
+
+1. Create a GitHub **fine-grained PAT** scoped to **only this repo**, permissions
+   **Contents: Read and write** + **Pull requests: Read and write** (nothing else —
+   no merge), with an expiry.
+2. Seed it (the token is read hidden and written *outside* the repo — never to git
+   or the `docker run` argv):
+   ```bash
+   node scripts/terminal-setup-github.mjs --user <your-github-username>
+   # or:  printf '%s' "$PAT" | node scripts/terminal-setup-github.mjs --user <you>
+   ```
+3. Open a terminal session and confirm: `gh auth status`, then a throwaway
+   `git push` + `gh pr create`.
+
+**Security model.** The token lives in a `0600` file inside the container's mounted
+HOME — never in the `docker run` argv (so `ps`/`docker inspect` can't read it), and
+the seed sits outside the repo so no project mount can reach it. Remotes are
+rewritten to HTTPS, so no SSH host key is trusted. The container has **push +
+open-PR authority only** — it cannot merge or force-push; the server-side branch
+protection on `main` is the backstop. Revoke the PAT instantly if it is ever
+exposed on screen.
+
 ## Stack
 
 - **Backend** — Express, thin. Two-layer Route → Service; the service
