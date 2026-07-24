@@ -93,6 +93,12 @@ function chatUsageOf(v: unknown): CallTokens | undefined {
   return { prompt: u.prompt_tokens, completion: u.completion_tokens, total: u.total_tokens, cached };
 }
 
+// Size of the request as sent — tool-call args and results ride in the messages, so they count.
+function messageChars(messages: ChatMessage[]): number {
+  return messages.reduce((n, m) => n + (m.content?.length ?? 0)
+    + (m.tool_calls?.reduce((t, c) => t + c.function.name.length + c.function.arguments.length, 0) ?? 0), 0);
+}
+
 export class RuntimeChatClient implements ChatClient {
   private readonly meter = new UsageMeter();
 
@@ -120,7 +126,13 @@ export class RuntimeChatClient implements ChatClient {
     }
     const json: unknown = await res.json();
     if (!isChatCompletion(json)) throw new Error('Unexpected /chat/completions response shape');
-    this.meter.record(this.now() - start, chatUsageOf(json));
+    this.meter.record({
+      kind: 'chat',
+      startedAt: start,
+      elapsedMs: this.now() - start,
+      inputChars: messageChars(messages),
+      tokens: chatUsageOf(json),
+    });
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
   }

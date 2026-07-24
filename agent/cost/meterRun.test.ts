@@ -8,7 +8,7 @@ import { meterRun, type MeterRunInput } from './meterRun.js';
 // swallow on both the persist and the cost-assembly paths.
 import * as runLog from './runLog.js';
 import * as summary from './summary.js';
-import { emptyUsage } from './usage.js';
+import { emptyUsage, UsageMeter } from './usage.js';
 
 let runsDir: string;
 beforeEach(async () => {
@@ -34,6 +34,55 @@ function input(over: Partial<MeterRunInput> = {}): MeterRunInput {
     ...over,
   };
 }
+
+// tkt-1e98c78e8c01 — the seam round-trip. A per-call trace is only useful if it survives the
+// whole path (meter → summary → JSONL → read back); the fidelity invariant is that the trace's
+// per-call ms still reconciles to the aggregate activeMs on the far side.
+describe('per-call trace round-trip (meter → persist → read back)', () => {
+  it('preserves every call and reconciles the trace to activeMs after a read back', async () => {
+    const meter = new UsageMeter();
+    meter.record({ kind: 'embed', startedAt: 1_000, elapsedMs: 65_000, inputChars: 1_267_300 });
+    meter.record({ kind: 'chat', startedAt: 66_000, elapsedMs: 14_975, inputChars: 3_700, tokens: { prompt: 924, completion: 57, total: 981 } });
+    meter.record({ kind: 'chat', startedAt: 81_000, elapsedMs: 700, inputChars: 4_100, tokens: { prompt: 1_010, completion: 41, total: 1_051 } });
+    const usage = meter.get();
+
+    await meterRun(input({ runId: 'run-trace', usage }));
+    const run = await runLog.readRun('run-trace');
+    if (!run) throw new Error('run was not persisted');
+
+    // Source input == persisted output across the full path — no call silently dropped.
+    const trace = run.usage.callTrace;
+    if (!trace) throw new Error('callTrace did not survive the round-trip');
+    expect(trace).toEqual(usage.callTrace);
+    expect(trace).toHaveLength(3);
+    expect(trace.map((c) => c.kind)).toEqual(['embed', 'chat', 'chat']);
+
+    // The fidelity invariant, asserted on the far side of the boundary.
+    expect(trace.reduce((n, c) => n + c.ms, 0)).toBe(run.usage.activeMs);
+    expect(trace).toHaveLength(run.usage.calls);
+  });
+
+  // The 128 dev runs already on disk predate this field; they must stay readable.
+  it('still reads back a pre-trace record, leaving its trace undefined (not [])', async () => {
+    const legacy = { ...emptyUsage(), activeMs: 128_000, calls: 12 };
+    delete legacy.callTrace;
+    await meterRun(input({ runId: 'run-legacy', usage: legacy }));
+    const run = await runLog.readRun('run-legacy');
+    expect(run).not.toBeNull();
+    expect(run?.usage.activeMs).toBe(128_000);
+    expect(run?.usage.callTrace).toBeUndefined();
+  });
+
+  it('rejects a persisted record whose callTrace is malformed (not trusted on read)', async () => {
+    const bad = { ...emptyUsage(), callTrace: [{ kind: 'chat', ms: 'soon' }] };
+    expect(runLog.isRunRecord({
+      runId: 'r', at: 'now', model: 'm', usage: bad,
+      outcome: { created: 0, updated: 0, declined: 0, noProposal: true, errored: false },
+      reviewMs: 0, cost: { measured: [], assumed: [], externalities: [], headline: [] },
+      ticketIds: { created: [], updated: [] },
+    })).toBe(false);
+  });
+});
 
 describe('meterRun', () => {
   it('builds the cost summary, persists the run, and returns the summary', async () => {

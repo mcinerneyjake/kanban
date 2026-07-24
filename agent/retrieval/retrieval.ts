@@ -81,7 +81,13 @@ export class RuntimeEmbedder implements Embedder {
     if (!isEmbeddingResponse(json)) {
       throw new Error('Unexpected /v1/embeddings response shape');
     }
-    this.meter.record(this.now() - start, embedUsageOf(json));
+    this.meter.record({
+      kind: 'embed',
+      startedAt: start,
+      elapsedMs: this.now() - start,
+      inputChars: inputs.reduce((n, s) => n + s.length, 0),
+      tokens: embedUsageOf(json),
+    });
     // The API may return data out of input order; sort by index to realign.
     return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
   }
