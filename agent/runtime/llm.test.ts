@@ -116,6 +116,31 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/Unexpected/);
   });
 
+  // tkt-dcf9ceff7174: a token-limit truncation (finish_reason: "length") returns partial/empty
+  // content with no tool_calls. Untreated, the loop reads "no tool calls" as "the model is done" and
+  // returns the truncated text as the run's final answer, logging a truncated run as a success.
+  it('throws on a truncated response (finish_reason: length) rather than returning partial content', async () => {
+    stubFetch(() => ({ json: { choices: [{ finish_reason: 'length', message: { content: 'the CSV export cra' } }] } }));
+    await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/truncat|length/i);
+  });
+
+  it('meters a truncated call — the compute happened even though the call errors', async () => {
+    const times = [0, 9]; let i = 0;
+    stubFetch(() => ({ json: { choices: [{ finish_reason: 'length', message: { content: 'x' } }], usage: { prompt_tokens: 5, completion_tokens: 31, total_tokens: 36 } } }));
+    const client = new RuntimeChatClient(cfg, () => times[i++]);
+    await expect(client.complete([], [])).rejects.toThrow(/length/i);
+    // Unlike a non-OK HTTP failure (no completion produced), a truncated call ran the model — meter it.
+    expect(client.getUsage()).toMatchObject({ calls: 1, activeMs: 9, completionTokens: 31 });
+  });
+
+  it('does NOT throw on a normal finish_reason (stop / tool_calls / absent)', async () => {
+    for (const fr of ['stop', 'tool_calls', undefined]) {
+      stubFetch(() => ({ json: { choices: [{ ...(fr ? { finish_reason: fr } : {}), message: { content: 'ok' } }] } }));
+      const reply = await new RuntimeChatClient(cfg).complete([], []);
+      expect(reply.content).toBe('ok');
+    }
+  });
+
   it('reports a friendly error when the request times out', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))));
     await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/timed out/);

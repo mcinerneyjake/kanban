@@ -74,6 +74,17 @@ function isChatCompletion(v: unknown): v is ChatCompletion {
   return isAssistantMessage(first.message);
 }
 
+// `finish_reason: "length"` means the runtime hit its token cap and TRUNCATED — content/tool_calls are
+// incomplete. The loop reads a truncated turn (no tool_calls) as "the model is done" and returns the
+// partial text as the run's final answer (tkt-dcf9ceff7174), so this must be caught and surfaced as an
+// error, never treated as terminal. Any other reason (stop / tool_calls / absent) is a usable turn.
+function truncatedByLength(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null || !('choices' in v) || !Array.isArray(v.choices)) return false;
+  const first: unknown = v.choices[0];
+  return typeof first === 'object' && first !== null
+    && 'finish_reason' in first && first.finish_reason === 'length';
+}
+
 // Token usage is optional + best-effort: read only when well-formed, so a runtime that omits/malforms it never breaks the response.
 function chatUsageOf(v: unknown): CallTokens | undefined {
   if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
@@ -126,6 +137,8 @@ export class RuntimeChatClient implements ChatClient {
     }
     const json: unknown = await res.json();
     if (!isChatCompletion(json)) throw new Error('Unexpected /chat/completions response shape');
+    // Meter first: the model ran and burned tokens even if the reply was truncated — recording it
+    // before the truncation throw keeps compute attribution honest (tkt-1e98c78e8c01).
     this.meter.record({
       kind: 'chat',
       startedAt: start,
@@ -133,6 +146,9 @@ export class RuntimeChatClient implements ChatClient {
       inputChars: messageChars(messages),
       tokens: chatUsageOf(json),
     });
+    if (truncatedByLength(json)) {
+      throw new Error('Chat response was truncated (finish_reason: "length") — the model hit its token limit and the reply is incomplete. Refusing to treat a truncated response as a final answer; raise the token limit or shorten the input.');
+    }
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
   }
