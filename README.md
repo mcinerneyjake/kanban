@@ -147,6 +147,13 @@ Task-instruction prefixes for known embedders (Qwen3-Embedding, nomic) are
 applied automatically; override with `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX`
 for any other embedder.
 
+The chat model defaults to **`temperature: 0`** because intake is a
+classification task — the same report should land the same type/priority/project
+every run. Override sampling via `LLM_TEMPERATURE` / `LLM_TOP_P` / `LLM_SEED`, and
+the reasoning-effort hint via `LLM_REASONING_EFFORT` (`low`/`medium`/`high` — an
+accuracy dial, not a speed one; `high` is ~6× slower). Unset optional params are
+omitted so the runtime's own default stands.
+
 #### Trying it yourself — the quick, robust path
 
 Fully local: no API keys, no billing, nothing to flake mid-demo.
