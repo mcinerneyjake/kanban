@@ -6,3 +6,9 @@ export function validateSetupToken(
   token: unknown,
   options?: { force?: boolean },
 ): { ok: boolean; reason: string | null };
+export const SEED_HOME_KEEP: string[];
+export const SEED_CLAUDE_KEEP: string[];
+export function validateGithubToken(
+  token: unknown,
+  options?: { force?: boolean },
+): { ok: boolean; reason: string | null };
