@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
 import { clipboardIntent, decidePaste, pastePreview } from '../lib/terminalClipboard';
+import { serializeBuffer } from '../lib/terminalBuffer';
 import TerminalPipelinePhase from './TerminalPipelinePhase.js';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
@@ -96,6 +97,8 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
   const [pendingPaste, setPendingPaste] = useState<{ text: string; lines: number } | null>(null);
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   const cancelPasteRef = useRef<HTMLButtonElement | null>(null);
+  // A frozen, browser-selectable snapshot of the buffer (null = closed). See copy view below.
+  const [copyView, setCopyView] = useState<string | null>(null);
 
   // Keep the latest onClose reachable without listing it as a dep of the connection effect
   // (which would tear the pty down on every parent render).
@@ -364,6 +367,27 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
     term?.focus();
   };
 
+  // Copy view (tkt-2fa9b657008f). While a mouse-reporting TUI (Claude) runs, xterm DISABLES its
+  // selection service, so no drag — plain, Shift, or ⌥ — ever produces an xterm selection to copy.
+  // Snapshotting the buffer into a plain <textarea> sidesteps that entirely: it's ordinary DOM text,
+  // so the native browser selection + ⌘C copy any portion, immune to the mouse-mode lockout.
+  const openCopyView = () => {
+    const term = termRef.current;
+    if (!term) return;
+    setCopyView(serializeBuffer(term.buffer.active) || '(terminal is empty)');
+  };
+  const closeCopyView = () => {
+    setCopyView(null);
+    termRef.current?.focus();
+  };
+  const copyAll = () => {
+    if (copyView === null) return;
+    void navigator.clipboard.writeText(copyView).then(
+      () => setPasteNotice('Copied all terminal output to clipboard.'),
+      () => setPasteNotice('Copy failed — clipboard unavailable.'),
+    );
+  };
+
   const title = session.ticket ? `Terminal · ${session.ticket}` : 'Terminal';
   // Once booted, a reconnect shows NO overlay — the frozen frame stays and the dot carries the signal.
   const overlay = overlayFor(status, booted);
@@ -381,6 +405,7 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
         <span className={`tw-status tw-status-${status}`} title={statusLabel} aria-hidden="true">●</span>
         {/* Clipboard shortcuts aren't guessable in an embedded terminal — one hover-discoverable hint. */}
         <span className="tw-hint" title={SHORTCUT_HINT} aria-label={SHORTCUT_HINT} role="note">?</span>
+        <button className="tw-btn" onClick={openCopyView} aria-label="Copy terminal text" title="Copy terminal text — select any part and press ⌘C">⧉</button>
         <button className="tw-btn" onClick={() => setMinimized((m) => !m)} aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}>
           {minimized ? '▢' : '—'}
         </button>
@@ -389,6 +414,17 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
       <div className="tw-body-wrap">
         <div className="tw-body" ref={containerRef} />
         {overlay && <div className="tw-overlay">{overlay}</div>}
+        {copyView !== null && (
+          <div className="tw-copyview" role="dialog" aria-label="Copy terminal text"
+               onKeyDown={(e) => { if (e.key === 'Escape') closeCopyView(); }}>
+            <textarea className="tw-copyview-text" readOnly autoFocus wrap="off" value={copyView} aria-label="Terminal text — select and copy" />
+            <div className="tw-copyview-bar">
+              <span className="tw-copyview-hint">Select text and press ⌘C · Esc to close</span>
+              <button className="tw-paste-btn primary" onClick={copyAll}>Copy all</button>
+              <button className="tw-paste-btn" onClick={closeCopyView}>Close</button>
+            </div>
+          </div>
+        )}
         {/* Absolutely positioned: .tw-body-wrap's height is the pty's size, so a bar in the flow
             would leave the session a row taller than the pane. */}
         {pendingPaste && (
