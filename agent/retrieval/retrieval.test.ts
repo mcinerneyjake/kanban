@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cosineSimilarity, DocumentIndex, RuntimeEmbedder, type Document, type Embedder } from './retrieval.js';
 import { type EmbedConfig } from './models.js';
+import { buildSummary } from '../cost/summary.js';
+import { resolveCostConfig } from '../cost/costConfig.js';
 
 // Deterministic stub: maps any text containing a known keyword to a fixed
 // vector, so cosine ordering is predictable without a live embedding model.
@@ -280,6 +282,44 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
     const embedder = new RuntimeEmbedder(nomicCfg, () => times[i++]);
     await embedder.embedQuery('hello');
     expect(embedder.getUsage()).toMatchObject({ calls: 1, reportedCalls: 0, totalTokens: 0, activeMs: 8 });
+  });
+
+  // tkt-78eedf738778: LM Studio's /v1/embeddings returns {prompt_tokens: 0, total_tokens: 0} for a
+  // real non-empty input — it doesn't count embedding tokens. A non-empty input is never genuinely 0
+  // tokens, so a reported 0 means NOT COUNTED and must NOT increment reportedCalls (else it reads as a
+  // measured zero, violating the cost epic's measured-vs-assumed rule). activeMs is still recorded —
+  // the compute happened; only the token count is unreported.
+  it('getUsage() treats a reported 0-token embedding usage as UNREPORTED, not a measured zero', async () => {
+    const times = [0, 6]; let i = 0;
+    stubFetch((req) => ({ json: {
+      data: req.input.map((s, idx) => ({ index: idx, embedding: [hash(s)] })),
+      usage: { prompt_tokens: 0, total_tokens: 0 },
+    } }));
+    const embedder = new RuntimeEmbedder(nomicCfg, () => times[i++]);
+    await embedder.embedDocuments(['a real non-empty ticket body']);
+    expect(embedder.getUsage()).toMatchObject({
+      calls: 1, reportedCalls: 0, promptTokens: 0, totalTokens: 0, activeMs: 6,
+    });
+  });
+
+  // Seam test (tkt-78eedf738778): embedder 0-token response → meter → cost summary. An embed-only run
+  // (index build, agent:search) must render "usage unavailable", NOT "0 tokens (measured)" which would
+  // read as "embeddings are free". Locks the full path, not just the meter half.
+  it('an embed-only 0-token run renders "usage unavailable" in the cost summary, not a measured zero', async () => {
+    stubFetch((req) => ({ json: {
+      data: req.input.map((s, idx) => ({ index: idx, embedding: [hash(s)] })),
+      usage: { prompt_tokens: 0, total_tokens: 0 },
+    } }));
+    const embedder = new RuntimeEmbedder(nomicCfg);
+    await embedder.embedDocuments(['a non-empty ticket body']);
+    const summary = buildSummary({
+      usage: embedder.getUsage(),
+      outcome: { created: 0, updated: 0, declined: 0, noProposal: true, errored: false },
+      reviewMs: 0, cfg: resolveCostConfig(), model: 'local', prefixText: 'p', dynamicText: 'd',
+    });
+    const totalTokens = summary.measured.find((l) => l.label === 'total tokens');
+    expect(totalTokens?.amount).toBeNull();
+    expect(totalTokens?.note).toMatch(/unavailable/i);
   });
 
   it('getUsage() falls back to prompt_tokens for total when total is missing', async () => {

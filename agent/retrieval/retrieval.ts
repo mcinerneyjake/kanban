@@ -30,11 +30,17 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
 }
 
 // Usage is optional + best-effort (embeddings report prompt/total, no completion); omit when absent/malformed so it never breaks the response.
+// A reported 0 is treated as UNREPORTED (return undefined), NOT a measured zero: a non-empty embedding
+// input can never genuinely be 0 tokens, and LM Studio's /v1/embeddings returns `prompt_tokens: 0`
+// precisely because it doesn't count them. Counting that as a measured zero would tag a figure the
+// runtime never produced as `measured` — the exact error the cost epic (tkt-88b47600d94c) forbids, and
+// the reason a full run's embedding work logged as 0 tokens (tkt-78eedf738778). The compute is still
+// metered via activeMs + the T1 call trace's inputChars; only the (unavailable) token count is dropped.
 function embedUsageOf(v: unknown): CallTokens | undefined {
   if (typeof v !== 'object' || v === null || !('usage' in v)) return undefined;
   const u = v.usage;
   if (typeof u !== 'object' || u === null) return undefined;
-  if (!('prompt_tokens' in u) || typeof u.prompt_tokens !== 'number') return undefined;
+  if (!('prompt_tokens' in u) || typeof u.prompt_tokens !== 'number' || u.prompt_tokens === 0) return undefined;
   const total = 'total_tokens' in u && typeof u.total_tokens === 'number' ? u.total_tokens : u.prompt_tokens;
   return { prompt: u.prompt_tokens, completion: 0, total };
 }
