@@ -202,6 +202,15 @@ export function llmEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
     const value = env[key]?.trim() || DEFAULT_HOST_ENDPOINT;
     args.push('-e', `${key}=${containerizeLoopbackUrl(value)}`);
   }
+  // Model ids are opaque strings — no loopback rewrite, and no invented default (unlike the endpoints
+  // above). An unset host model means both host and container fall through to the SAME agent code
+  // default, so forwarding nothing keeps them in agreement; emitting a guessed id would be the drift
+  // this fixes. Forward only a non-empty host value — the exact mismatch case: host
+  // LLM_MODEL=openai/gpt-oss-20b vs the agent default qwen/qwen3.5-9b (tkt-2c8af65c114e).
+  for (const key of ['LLM_MODEL', 'EMBED_MODEL'] as const) {
+    const value = env[key]?.trim();
+    if (value) args.push('-e', `${key}=${value}`);
+  }
   return args;
 }
 
