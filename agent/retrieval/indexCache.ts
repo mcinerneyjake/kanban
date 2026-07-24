@@ -1,4 +1,6 @@
+import path from 'node:path';
 import { type Ticket } from '../../shared/constants.js';
+import { getTicketsDir } from '../../server/tickets.js';
 import { RuntimeEmbedder, DocumentIndex, type Embedder } from './retrieval.js';
 import { resolveEmbedConfig } from './models.js';
 import { TicketConnector } from './connectors/ticket.js';
@@ -21,10 +23,26 @@ function embeddingStore(cachePath?: string): Promise<EmbeddingStore> | null {
   return storeCache.store;
 }
 
-// Fresh (uncached) index — the CLIs run once and don't benefit from the process cache. Pass `tickets` to skip the board read (tests).
+// Fresh (uncached) index — pass `tickets` to skip the board read (tests). Kept as the pure building
+// block; the CLIs use buildCliIndex (below) for persistent caching.
 export async function buildBoardIndex(embedder: Embedder, tickets?: Ticket[]): Promise<DocumentIndex> {
   const all = tickets ?? await board.pull();
   return DocumentIndex.build(embedder, all.map((t) => board.toDocument(t)));
+}
+
+// Zero-config cache location: <boardRoot>/.cache/embeddings.json. Absolute + override-aware
+// (getTicketsDir honors BOARD_DIR_OVERRIDE), so every one-shot CLI shares ONE cache regardless of cwd —
+// a relative path would resolve against each process's cwd and diverge. `.cache/` is gitignored.
+export function defaultCachePath(): string {
+  return path.join(getTicketsDir(), '..', '.cache', 'embeddings.json');
+}
+
+// The CLI index build. One-shot CLIs get no benefit from the in-memory memo, but the persistent
+// EmbeddingStore turns a cold ~65s full re-embed into a warm run that re-embeds only changed tickets
+// (tkt-a74040f7cbed). Zero-config by default; EMBED_CACHE_PATH still overrides. The long-running server
+// keeps its opt-in caching (getTicketIndex with no cachePath) unchanged — this default is CLI-only.
+export function buildCliIndex(embedder: Embedder): Promise<DocumentIndex> {
+  return getTicketIndex({ embedder, cachePath: process.env.EMBED_CACHE_PATH ?? defaultCachePath() });
 }
 
 function signature(tickets: Ticket[]): string {

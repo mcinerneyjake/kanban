@@ -1,5 +1,5 @@
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
-import { buildBoardIndex } from './retrieval/indexCache.js';
+import { buildCliIndex } from './retrieval/indexCache.js';
 import { resolveEmbedConfig } from './retrieval/models.js';
 
 // Load local config if a .env is present; tolerate its absence.
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   console.log(`Embedder: ${cfg.model} @ ${cfg.baseUrl}`);
   console.log('Building index from the board…');
 
-  const index = await buildBoardIndex(RuntimeEmbedder.fromEnv());
+  const index = await buildCliIndex(RuntimeEmbedder.fromEnv());
   console.log(`Indexed ${index.size} tickets.\n`);
 
   const results = await index.search(query, 8);
