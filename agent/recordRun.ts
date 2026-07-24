@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
-import { buildBoardIndex } from './retrieval/indexCache.js';
+import { buildCliIndex } from './retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
 import { runIntake, SYSTEM_PROMPT } from './runtime/loop.js';
 import { AGENT_TOOLS } from './runtime/tools.js';
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const model = resolveLlmConfig().model;
 
   console.log('Building the board index…');
-  const index = await buildBoardIndex(embedder);
+  const index = await buildCliIndex(embedder);
   // Snapshot AFTER the index build so the one-time full-board embed isn't charged to this run — trace totals then reflect marginal cost (chat + per-query embeds).
   const embedBaseline = embedder.getUsage();
   recorder.instrument(index);

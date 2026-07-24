@@ -1,6 +1,6 @@
 import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
-import { buildBoardIndex } from './retrieval/indexCache.js';
+import { buildCliIndex } from './retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
 import { runIntake, RUN_PREFIX_TEXT, RUN_PREFIX_TEXT_CREATE_ONLY } from './runtime/loop.js';
 import { getTicket } from '../server/tickets.js';
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const model = resolveLlmConfig().model;
   try {
     console.log('Building the board index…');
-    const index = await buildBoardIndex(embedder);
+    const index = await buildCliIndex(embedder);
     console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}${createOnly ? ' (create-only)' : ''}…`);
     const result = await runIntake(input, { chat, index, approve, createOnly });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);

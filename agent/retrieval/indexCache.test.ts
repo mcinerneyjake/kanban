@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getTicketIndex, resetIndexCache, buildBoardIndex } from './indexCache.js';
+import { getTicketIndex, resetIndexCache, buildBoardIndex, buildCliIndex, defaultCachePath } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
 import { createTicket } from '../../server/tickets.js';
 import { type Ticket } from '../../shared/constants.js';
@@ -180,5 +180,54 @@ describe('buildBoardIndex', () => {
     const byId = new Map(results.map((r) => [r.id, r]));
     expect(byId.get('t1')?.meta?.status).toBe('done');
     expect(byId.get('t2')?.meta?.status).toBe('in-progress');
+  });
+});
+
+// The CLI cache wiring (tkt-a74040f7cbed): the one-shot CLIs now persist embeddings so a warm run
+// re-embeds only what changed, instead of the ~65s cold re-embed every run.
+describe('buildCliIndex + defaultCachePath', () => {
+  let tmpDir: string;
+  let cacheFile: string;
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-clicache-test-'));
+    process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+    cacheFile = path.join(tmpDir, '.cache', 'embeddings.json');
+    process.env.EMBED_CACHE_PATH = cacheFile; // pin the path so the test controls it
+    resetIndexCache();
+  });
+  afterEach(async () => {
+    delete process.env.TICKETS_DIR_OVERRIDE;
+    delete process.env.EMBED_CACHE_PATH;
+    resetIndexCache();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('defaultCachePath resolves to <boardRoot>/.cache/embeddings.json, override-aware and absolute', () => {
+    process.env.BOARD_DIR_OVERRIDE = '/tmp/some-board';
+    try {
+      const p = defaultCachePath();
+      expect(path.isAbsolute(p)).toBe(true);
+      expect(p.endsWith(path.join('.cache', 'embeddings.json'))).toBe(true);
+      // <boardRoot>/tickets/.. collapses to <boardRoot>; the tickets dir must not leak into the path.
+      expect(p).not.toContain(`${path.sep}tickets${path.sep}`);
+    } finally {
+      delete process.env.BOARD_DIR_OVERRIDE;
+    }
+  });
+
+  it('embeds the board cold, then re-embeds NOTHING on a warm "restart"', async () => {
+    await createTicket({ title: 'Cacheable ticket one' });
+    await createTicket({ title: 'Cacheable ticket two' });
+
+    const cold = new CountingEmbedder();
+    const first = await buildCliIndex(cold);
+    expect(cold.builds).toBe(1);          // cold cache → one embed pass
+    expect(first.size).toBe(2);
+
+    resetIndexCache();                     // drop in-memory index + loaded store → a fresh process
+    const warm = new CountingEmbedder();
+    const second = await buildCliIndex(warm);
+    expect(warm.builds).toBe(0);           // served entirely from the persisted cache on disk
+    expect(second.size).toBe(2);
   });
 });
