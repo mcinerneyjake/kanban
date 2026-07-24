@@ -185,11 +185,14 @@ describe('createTicket validation', () => {
     expect(err.message).toContain('status');
   });
 
-  // tkt-81b4d35e95e5 — appendBody is update-only; reject on create, don't silently drop
-  it('rejects appendBody on create with 400 (update-only field)', async () => {
-    const err = await httpError(createTicket({ title: 'T', appendBody: 'nope' }));
-    expect(err.status).toBe(400);
-    expect(err.message).toContain('appendBody');
+  // tkt-aea35fa11c2d — appendBody is update-only and gated OUT at the extractor as of
+  // ticket-workflow v0.3.0, so createTicket no longer advertises or rejects it. A stray
+  // runtime appendBody is ignored, not persisted, rather than hard-failing a create.
+  it('ignores a stray appendBody on create instead of throwing', async () => {
+    // @ts-expect-error — createTicket's signature no longer includes appendBody
+    const t = await createTicket({ title: 'Stray append on create', appendBody: 'nope' });
+    expect(t.title).toBe('Stray append on create');
+    expect('appendBody' in t).toBe(false);
   });
 });
 
