@@ -14,13 +14,44 @@ export interface LlmConfig {
   model: string;
   /** Optional bearer key — required by cloud endpoints, unused by local ones. */
   apiKey: string | null;
+  /** Sampling temperature. Defaults to 0: intake is a CLASSIFICATION task, so determinism beats
+   *  variety — the same report should land on the same type/priority/project every run. */
+  temperature: number;
+  /** Nucleus sampling. null ⇒ omit from the request (let the runtime default stand). */
+  topP: number | null;
+  /** RNG seed for reproducibility, when the runtime honors it. null ⇒ omit. */
+  seed: number | null;
+  /** Reasoning-effort hint (gpt-oss et al). An ACCURACY dial, not a latency one — high is ~6× slower.
+   *  null ⇒ omit. */
+  reasoningEffort: string | null;
+}
+
+// Parse a finite float from env; null on absent/blank/NaN so a bad value omits the param rather than
+// sending garbage. Callers apply their own default (temperature) or omit (top_p).
+function floatFromEnv(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function intFromEnv(raw: string | undefined): number | null {
+  const n = floatFromEnv(raw);
+  return n !== null && Number.isInteger(n) ? n : null;
 }
 
 export function resolveLlmConfig(env: NodeJS.ProcessEnv = process.env): LlmConfig {
   const baseUrl = (env.LLM_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const model = env.LLM_MODEL ?? 'qwen/qwen3.5-9b';
   const apiKey = env.LLM_API_KEY ?? null;
-  return { baseUrl, model, apiKey };
+  return {
+    baseUrl,
+    model,
+    apiKey,
+    temperature: floatFromEnv(env.LLM_TEMPERATURE) ?? 0,
+    topP: floatFromEnv(env.LLM_TOP_P),
+    seed: intFromEnv(env.LLM_SEED),
+    reasoningEffort: env.LLM_REASONING_EFFORT?.trim() || null,
+  };
 }
 
 // --- message + tool-call shapes (OpenAI chat-completions) -------------------
@@ -175,6 +206,12 @@ export class RuntimeChatClient implements ChatClient {
       messages,
       tools: tools.length ? tools : undefined,
       tool_choice: tools.length ? 'auto' : undefined,
+      // Sampling params. temperature is always sent (default 0 for deterministic classification); the
+      // rest are omitted when unset (JSON.stringify drops undefined) so the runtime's own default stands.
+      temperature: this.cfg.temperature,
+      top_p: this.cfg.topP ?? undefined,
+      seed: this.cfg.seed ?? undefined,
+      reasoning_effort: this.cfg.reasoningEffort ?? undefined,
     });
     try {
       return await fetch(`${this.cfg.baseUrl}/chat/completions`, {

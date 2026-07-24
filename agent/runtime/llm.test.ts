@@ -2,7 +2,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RuntimeChatClient, resolveLlmConfig, type LlmConfig } from './llm.js';
 import { AGENT_TOOLS } from './tools.js';
 
-const cfg: LlmConfig = { baseUrl: 'http://test/v1', model: 'test-model', apiKey: null };
+const cfg: LlmConfig = {
+  baseUrl: 'http://test/v1', model: 'test-model', apiKey: null,
+  temperature: 0, topP: null, seed: null, reasoningEffort: null,
+};
 
 function stubFetch(impl: (url: string, init: RequestInit) => { status?: number; json?: unknown; text?: string }) {
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -14,15 +17,24 @@ function stubFetch(impl: (url: string, init: RequestInit) => { status?: number; 
 }
 
 describe('resolveLlmConfig', () => {
-  it('defaults base URL + model and reports no api key', () => {
+  it('defaults base URL + model, no api key, and deterministic sampling (temperature 0, rest omitted)', () => {
     expect(resolveLlmConfig({})).toEqual({
       baseUrl: 'http://localhost:1234/v1', model: 'qwen/qwen3.5-9b', apiKey: null,
+      temperature: 0, topP: null, seed: null, reasoningEffort: null,
     });
   });
   it('strips a trailing slash and reads an api key', () => {
     const c = resolveLlmConfig({ LLM_BASE_URL: 'http://x/v1/', LLM_API_KEY: 'sk-1' });
     expect(c.baseUrl).toBe('http://x/v1');
     expect(c.apiKey).toBe('sk-1');
+  });
+  it('reads sampling params from env', () => {
+    expect(resolveLlmConfig({ LLM_TEMPERATURE: '0.7', LLM_TOP_P: '0.9', LLM_SEED: '42', LLM_REASONING_EFFORT: 'high' }))
+      .toMatchObject({ temperature: 0.7, topP: 0.9, seed: 42, reasoningEffort: 'high' });
+  });
+  it('falls back to a deterministic default on a blank/garbage temperature, and omits bad optional params', () => {
+    expect(resolveLlmConfig({ LLM_TEMPERATURE: 'hot' })).toMatchObject({ temperature: 0 });
+    expect(resolveLlmConfig({ LLM_TOP_P: 'nope', LLM_SEED: '3.5' })).toMatchObject({ topP: null, seed: null });
   });
 });
 
@@ -73,6 +85,30 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     });
     await new RuntimeChatClient(cfg).complete([], []);
     expect(auth).toBeNull();
+  });
+
+  it('sends temperature (default 0) and omits unset optional sampling params', async () => {
+    let sent: Record<string, unknown> = {};
+    stubFetch((_url, init) => {
+      sent = JSON.parse(typeof init.body === 'string' ? init.body : '{}');
+      return { json: { choices: [{ message: { content: 'ok' } }] } };
+    });
+    await new RuntimeChatClient(cfg).complete([{ role: 'user', content: 'hi' }], []);
+    expect(sent.temperature).toBe(0);            // always sent
+    expect(sent).not.toHaveProperty('top_p');    // null ⇒ omitted
+    expect(sent).not.toHaveProperty('seed');
+    expect(sent).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('forwards top_p / seed / reasoning_effort when configured', async () => {
+    let sent: Record<string, unknown> = {};
+    stubFetch((_url, init) => {
+      sent = JSON.parse(typeof init.body === 'string' ? init.body : '{}');
+      return { json: { choices: [{ message: { content: 'ok' } }] } };
+    });
+    const tuned = { ...cfg, temperature: 0.5, topP: 0.9, seed: 7, reasoningEffort: 'high' };
+    await new RuntimeChatClient(tuned).complete([{ role: 'user', content: 'hi' }], []);
+    expect(sent).toMatchObject({ temperature: 0.5, top_p: 0.9, seed: 7, reasoning_effort: 'high' });
   });
 
   it('omits tools and tool_choice when no tools are given', async () => {
