@@ -110,6 +110,16 @@ Each run ends with a cost summary from a pluggable model
 (kWh × your regional rate) rather than notional token prices — the per-token
 API-price model stays available as a dormant seam for cloud endpoints.
 
+### Measuring retrieval quality
+
+`npm run eval:retrieval` scores the board index against a golden set of
+`(query → expected ticket)` pairs (`agent/eval/`), reporting **recall@1 /
+recall@5 / MRR**. It proves its own instruments before reporting a number — a
+positive control (a near-verbatim title must rank top-1) and a negative control
+(a query with no answer must stay weak) — so a miswired embedder fails loud
+instead of emitting a plausible-but-false score. Needs the embedding runtime up;
+the metric and harness layers are unit-tested without it.
+
 ### Local-LLM setup
 
 Configure an embedding model and a chat model via a gitignored `.env` (copy
