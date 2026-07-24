@@ -78,6 +78,19 @@ describe('runIntake', () => {
     expect(chat.sawTools).toBe(true);
   });
 
+  // tkt-dcf9ceff7174: on a truncated turn RuntimeChatClient.complete now throws. The loop must let
+  // that propagate — never swallow it into a "successful" final. (Contrast the empty-final fallback
+  // above, which is the BENIGN weak-model case and must keep falling back.)
+  it('propagates a complete() error (e.g. truncation) instead of returning it as a final answer', async () => {
+    class ThrowingChat implements ChatClient {
+      complete(): Promise<ChatMessage> {
+        return Promise.reject(new Error('Chat response was truncated (finish_reason: "length")'));
+      }
+    }
+    await expect(runIntake('x', { chat: new ThrowingChat(), index: await buildIndex() }))
+      .rejects.toThrow(/truncated|length/i);
+  });
+
   it('links each tool result to its call via tool_call_id, after the assistant turn', async () => {
     const chat = new ScriptedChat([
       assistant(null, [toolCall('call-42', 'search_board', '{"query":"x"}')]),
