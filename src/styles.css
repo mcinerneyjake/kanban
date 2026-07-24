@@ -1344,3 +1344,22 @@ body {
   /* Don't trap keystrokes/clicks meant for the focused xterm beneath (e.g. type-to-recover). */
   pointer-events: none;
 }
+
+/* Copy view (tkt-2fa9b657008f): a plain, browser-selectable snapshot of the buffer. While a
+   mouse-reporting TUI (Claude) runs, xterm disables its own selection, so this DOM <textarea> is the
+   only way to select and copy an arbitrary portion — native selection + ⌘C, immune to the lockout. */
+.tw-copyview {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; background: var(--card-bg);
+}
+.tw-copyview-text {
+  flex: 1; min-height: 0; width: 100%; resize: none; border: none; outline: none;
+  margin: 0; padding: 4px 6px; background: var(--card-bg); color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.2;
+  white-space: pre; overflow: auto; user-select: text;
+}
+.tw-copyview-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 11px;
+  background: var(--col-bg); color: var(--text); border-top: 1px solid var(--border);
+}
+.tw-copyview-hint { flex: 1; min-width: 0; color: var(--muted); }
