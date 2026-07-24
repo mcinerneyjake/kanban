@@ -25,6 +25,9 @@ function embeddingStore(cachePath?: string): Promise<EmbeddingStore> | null {
 
 // Fresh (uncached) index — pass `tickets` to skip the board read (tests). Kept as the pure building
 // block; the CLIs use buildCliIndex (below) for persistent caching.
+// Whole-ticket embedding (no ChunkOptions) is a MEASURED decision, not an oversight (tkt-3e5cde5af6a4):
+// an A/B over the T2 golden set found chunking gives this short-ticket corpus no recall gain and
+// slightly worse MRR at ~3× the vectors. Chunking stays available per-connector for long-doc sources.
 export async function buildBoardIndex(embedder: Embedder, tickets?: Ticket[]): Promise<DocumentIndex> {
   const all = tickets ?? await board.pull();
   return DocumentIndex.build(embedder, all.map((t) => board.toDocument(t)));

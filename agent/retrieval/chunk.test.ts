@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  chunkText,
-  resolveChunkConfig,
-  DEFAULT_CHUNK_SIZE,
-  DEFAULT_CHUNK_OVERLAP,
-} from './chunk.js';
+import { chunkText } from './chunk.js';
 
 describe('chunkText', () => {
   it('returns [] for empty or whitespace-only text', () => {
@@ -52,21 +47,5 @@ describe('chunkText', () => {
     expect(() => chunkText('x', { size: 4, overlap: 4 })).toThrow(/overlap must be an integer in \[0, size\)/);
     expect(() => chunkText('x', { size: 4, overlap: 5 })).toThrow(/overlap must be an integer in \[0, size\)/);
     expect(() => chunkText('x', { size: 4, overlap: -1 })).toThrow(/overlap must be an integer in \[0, size\)/);
-  });
-});
-
-describe('resolveChunkConfig', () => {
-  it('falls back to the defaults when env is unset', () => {
-    expect(resolveChunkConfig({})).toEqual({ size: DEFAULT_CHUNK_SIZE, overlap: DEFAULT_CHUNK_OVERLAP });
-  });
-
-  it('reads CHUNK_SIZE / CHUNK_OVERLAP from env', () => {
-    expect(resolveChunkConfig({ CHUNK_SIZE: '500', CHUNK_OVERLAP: '50' })).toEqual({ size: 500, overlap: 50 });
-  });
-
-  it('ignores blank or non-integer env values, using the default instead', () => {
-    expect(resolveChunkConfig({ CHUNK_SIZE: '', CHUNK_OVERLAP: 'abc' }))
-      .toEqual({ size: DEFAULT_CHUNK_SIZE, overlap: DEFAULT_CHUNK_OVERLAP });
-    expect(resolveChunkConfig({ CHUNK_SIZE: '12.5' }).size).toBe(DEFAULT_CHUNK_SIZE);
   });
 });
