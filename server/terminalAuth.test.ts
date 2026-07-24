@@ -482,6 +482,44 @@ describe('llmEnvArgs', () => {
     // The unset sibling still gets the containerized default, not the remote one.
     expect(args).toContain('EMBED_BASE_URL=http://host.docker.internal:1234/v1');
   });
+
+  // tkt-2c8af65c114e: forward the model ids so the container asks the server for the model it actually
+  // has loaded, instead of the agent's code default. Unlike the endpoints, models are NOT rewritten and
+  // are omitted entirely when unset (an unset model means host + container share the same code default).
+  it('forwards LLM_MODEL / EMBED_MODEL verbatim when the host sets them', () => {
+    const args = llmEnvArgs({
+      LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1',
+      LLM_MODEL: 'openai/gpt-oss-20b', EMBED_MODEL: 'text-embedding-qwen3-embedding-0.6b',
+    });
+    expect(args).toEqual([
+      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'LLM_MODEL=openai/gpt-oss-20b',
+      '-e', 'EMBED_MODEL=text-embedding-qwen3-embedding-0.6b',
+    ]);
+  });
+
+  it('emits NO model arg when unset or blank — no invented default (container uses the agent default)', () => {
+    expect(llmEnvArgs({}).join(' ')).not.toContain('LLM_MODEL');
+    expect(llmEnvArgs({}).join(' ')).not.toContain('EMBED_MODEL');
+    for (const blank of ['', '   ']) {
+      const args = llmEnvArgs({ LLM_MODEL: blank, EMBED_MODEL: blank }).join(' ');
+      expect(args).not.toContain('LLM_MODEL');
+      expect(args).not.toContain('EMBED_MODEL');
+    }
+  });
+
+  it('forwards one model independently of the other (chat set, embed unset)', () => {
+    const args = llmEnvArgs({ LLM_MODEL: 'openai/gpt-oss-20b' });
+    expect(args).toContain('LLM_MODEL=openai/gpt-oss-20b');
+    expect(args.join(' ')).not.toContain('EMBED_MODEL');
+  });
+
+  it('is not rewritten like a URL — a model id that looks loopback-ish passes through verbatim', () => {
+    // Guards against a future refactor accidentally running a model id through containerizeLoopbackUrl.
+    const args = llmEnvArgs({ LLM_MODEL: 'localhost-tuned-model' });
+    expect(args).toContain('LLM_MODEL=localhost-tuned-model');
+  });
 });
 
 describe('buildDetachedRunArgs — LLM reachability', () => {
@@ -590,6 +628,27 @@ describe('resolveSessionCommand — LLM config round-trip', () => {
       const { runArgs, attachArgs } = await resolveSessionCommand({ ...common, ticket: null, env });
       expect(runArgs.join(' ')).not.toMatch(/(LLM|EMBED)_BASE_URL=\S*localhost:/);
       expect(attachArgs.join(' ')).not.toMatch(/(LLM|EMBED)_BASE_URL=\S*localhost:/);
+    }
+  });
+
+  // tkt-2c8af65c114e: the same seam pin for the MODEL half — the whole point of the fix is that the
+  // container asks for the loaded model, so prove the ids reach BOTH argv end-to-end (not just llmEnvArgs).
+  it('carries LLM_MODEL / EMBED_MODEL into BOTH the run and attach argv when the host sets them', async () => {
+    const { runArgs, attachArgs } = await resolveSessionCommand({
+      ...common, ticket: null,
+      env: { LLM_MODEL: 'openai/gpt-oss-20b', EMBED_MODEL: 'text-embedding-qwen3-embedding-0.6b' },
+    });
+    for (const args of [runArgs, attachArgs]) {
+      expect(args).toContain('LLM_MODEL=openai/gpt-oss-20b');
+      expect(args).toContain('EMBED_MODEL=text-embedding-qwen3-embedding-0.6b');
+    }
+  });
+
+  it('emits no model arg in either argv when the host has none (container keeps the agent default)', async () => {
+    const { runArgs, attachArgs } = await resolveSessionCommand({ ...common, ticket: null, env: {} });
+    for (const args of [runArgs, attachArgs]) {
+      expect(args.join(' ')).not.toContain('LLM_MODEL');
+      expect(args.join(' ')).not.toContain('EMBED_MODEL');
     }
   });
 });
