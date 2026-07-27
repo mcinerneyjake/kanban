@@ -16,6 +16,7 @@
     "agent:record": "tsx agent/recordRun.ts",
     "eval:retrieval": "tsx agent/eval/retrievalEval.ts",
     "terminal:clean": "tsx scripts/terminal-clean.ts",
+    "ticket": "tsx scripts/ticket.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
