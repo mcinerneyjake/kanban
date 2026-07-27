@@ -66,6 +66,16 @@ async function main(): Promise<void> {
   const embedder = RuntimeEmbedder.fromEnv();
   const chat = RuntimeChatClient.fromEnv();
   const model = resolveLlmConfig().model;
+
+  // Before the embedding pass, not after: indexing takes ~30s, and dying on the first chat call
+  // afterwards spends all of it to report a fault that was knowable up front (tkt-b97efe93a6a3).
+  const preflight = await chat.preflight();
+  if (!preflight.ok) {
+    rl.close();
+    console.error(preflight.message);
+    process.exit(1);
+  }
+
   try {
     console.log('Building the board index…');
     const index = await buildCliIndex(embedder);
