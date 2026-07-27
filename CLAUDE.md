@@ -104,8 +104,16 @@ In **this repo's sessions**, every **new** ticket is authored by the local intak
    ```bash
    npm run agent -- --yes --create-only "<the report, in the user's words plus any clarifying detail>"
    ```
+   **ONE ISSUE PER RUN — this is the rule, not a preference.** The agent counts the issues it can
+   find in the report and creates one ticket per issue, so a report covering several things gets
+   **sprayed** into several thin tickets (and can hit the step budget and stop half-finished). This
+   includes *enumeration inside prose*: "three rules have no test: X, Y and Z" is a list as far as
+   the model is concerned, and produced three tickets on 2026-07-26. Describe **one symptom**, and
+   add any sub-parts yourself afterwards with `update_ticket`. For several findings, make several
+   runs. Cleanup when it sprays anyway: repurpose one create and `delete_ticket` the rest.
+
    `--yes` auto-approves the write so the create happens **inside** the metered run (the run→ticket linkage the run log needs). `--create-only` drops `update_ticket` from the agent's toolset so a mis-matched retrieval can only ever create a **new** ticket — never overwrite an existing ticket's body (the interactive `npm run agent` path keeps the anti-duplicate update behavior). The agent authors title + body and classifies the four fields; if a related ticket exists it cites the id in the body rather than updating it. **Trade-off:** a retrieval miss yields a duplicate (non-destructive — delete/merge later), never a clobbered body.
-3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). Under `--create-only` the agent can't update, so it always creates — but it may still merge several issues from one report into a **single** create; when you handed it multiple distinct findings, confirm each got its own ticket and flag any that looks dropped.
+3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). **Always `get_ticket` the result**: besides the classification, check for a *mis-matched related-id* (it cites plausible `tkt-…` refs that belong to other projects) and for a body that drifted off the report entirely, then fix it via `update_ticket`.
 4. **Local model down → block, don't fall back.** If the agent exits non-zero (models unavailable) or `GET /api/intake/health` reports down, tell the user the local runtime is unavailable and **stop**. Do **not** author the ticket yourself via `create_ticket` — that creates an *untracked* ticket, defeating the metering (and the hook blocks it regardless).
 
 **What stays Claude's, directly (no agent):**
