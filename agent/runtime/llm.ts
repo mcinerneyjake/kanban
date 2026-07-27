@@ -73,6 +73,17 @@ export interface ChatClient {
   complete(messages: ChatMessage[], tools: ChatTool[]): Promise<ChatMessage>;
 }
 
+/** Preflight verdict. `ok: false` carries an operator-facing message naming the fix. */
+export type PreflightResult = { ok: true } | { ok: false; message: string };
+
+// The runtime reports an unloaded/evicting model as a 4xx whose body says so. Matched on the body
+// text because it is not a distinct status code, and translated into the command that fixes it —
+// the raw upstream JSON (`{"error":"Model has not started loading/has been unloaded."}`) tells the
+// operator nothing actionable (tkt-b97efe93a6a3).
+function looksUnloaded(body: string): boolean {
+  return /has not started loading|has been unloaded|model.{0,20}not loaded/i.test(body);
+}
+
 // --- response validation (type predicates, no casts) ------------------------
 
 function isToolCall(v: unknown): v is ToolCall {
@@ -164,6 +175,7 @@ export class RuntimeChatClient implements ChatClient {
     const res = await this.fetchCompletion(messages, tools);
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 500);
+      if (looksUnloaded(body)) throw new Error(this.unloadedMessage());
       throw new Error(`Chat request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
     }
     const json: unknown = await res.json();
@@ -184,13 +196,16 @@ export class RuntimeChatClient implements ChatClient {
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
   }
 
+  // Bearer auth is required by cloud endpoints and unused by local ones; one place decides.
+  private authHeaders(base: Record<string, string> = {}): Record<string, string> {
+    return this.cfg.apiKey ? { ...base, authorization: `Bearer ${this.cfg.apiKey}` } : base;
+  }
+
   // Liveness probe — a cheap GET to /models. Returns false on any failure (down, timeout, non-200) so callers branch without a try/catch.
   async available(): Promise<boolean> {
     try {
-      const headers: Record<string, string> = {};
-      if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
       const res = await fetch(`${this.cfg.baseUrl}/models`, {
-        headers, signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+        headers: this.authHeaders(), signal: AbortSignal.timeout(PING_TIMEOUT_MS),
       });
       return res.ok;
     } catch {
@@ -198,9 +213,48 @@ export class RuntimeChatClient implements ChatClient {
     }
   }
 
+  // Model ids the runtime advertises; null when it can't be reached or answers badly.
+  private async listModelIds(): Promise<string[] | null> {
+    try {
+      const res = await fetch(`${this.cfg.baseUrl}/models`, { headers: this.authHeaders(), signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
+      if (!res.ok) return null;
+      const json: unknown = await res.json();
+      if (typeof json !== 'object' || json === null || !('data' in json) || !Array.isArray(json.data)) return null;
+      return json.data.flatMap((m: unknown) =>
+        typeof m === 'object' && m !== null && 'id' in m && typeof m.id === 'string' ? [m.id] : []);
+    } catch {
+      return null;
+    }
+  }
+
+  private unloadedMessage(): string {
+    return `The model "${this.cfg.model}" is not loaded at ${this.cfg.baseUrl}.\n`
+      + `Load it and re-run:  lms load ${this.cfg.model}\n`
+      + '(The chat and embedding models evict each other in one LM Studio instance — tkt-5da0ac7b4956.)';
+  }
+
+  // Fail fast BEFORE the run's embedding pass, so a bad model id doesn't surface 30s of indexing later.
+  //
+  // Deliberately does NOT claim the model is *resident*: verified against LM Studio 2026-07-27, GET
+  // /models lists every DOWNLOADED model — an unloaded one is still listed — so residency is not
+  // observable over the OpenAI-compatible surface. A presence check would be a preflight that can
+  // never fail, which is worse than none. What it does catch is a typo'd/absent LLM_MODEL. Eviction
+  // is handled where it actually shows up: the 4xx translation in complete(). Loading is left to the
+  // runtime's JIT (LM Studio loads on first call), which is why this reports rather than loads.
+  async preflight(): Promise<PreflightResult> {
+    const ids = await this.listModelIds();
+    if (ids === null) {
+      return { ok: false, message: `The local LLM runtime at ${this.cfg.baseUrl} is not reachable.\nStart it and re-run (LM Studio: \`lms server start\`), or point LLM_BASE_URL elsewhere.` };
+    }
+    if (!ids.includes(this.cfg.model)) {
+      const known = ids.length ? ids.map((i) => `  - ${i}`).join('\n') : '  (none)';
+      return { ok: false, message: `LLM_MODEL "${this.cfg.model}" is not available at ${this.cfg.baseUrl}.\nModels the runtime reports:\n${known}\nFix LLM_MODEL in .env, or download the model.` };
+    }
+    return { ok: true };
+  }
+
   private async fetchCompletion(messages: ChatMessage[], tools: ChatTool[]): Promise<Response> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
+    const headers = this.authHeaders({ 'content-type': 'application/json' });
     const body = JSON.stringify({
       model: this.cfg.model,
       messages,

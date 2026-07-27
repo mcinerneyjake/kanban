@@ -198,6 +198,83 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))));
     expect(await new RuntimeChatClient(cfg).available()).toBe(false);
   });
+});
+
+describe('preflight (tkt-b97efe93a6a3)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('passes when the configured model is among the advertised ids', async () => {
+    let url = '';
+    stubFetch((u) => { url = u; return { json: { data: [{ id: 'other' }, { id: 'test-model' }] } }; });
+    expect(await new RuntimeChatClient(cfg).preflight()).toEqual({ ok: true });
+    expect(url).toBe('http://test/v1/models');
+  });
+
+  it('fails with the reachable models listed when LLM_MODEL is absent (a typo or an undownloaded model)', async () => {
+    stubFetch(() => ({ json: { data: [{ id: 'openai/gpt-oss-20b' }, { id: 'nomic-embed' }] } }));
+    const r = await new RuntimeChatClient(cfg).preflight();
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected a failed preflight');
+    expect(r.message).toContain('"test-model" is not available');
+    expect(r.message).toContain('openai/gpt-oss-20b');
+    expect(r.message).toContain('nomic-embed');
+  });
+
+  it('fails with a start-the-runtime message when the endpoint is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))));
+    const r = await new RuntimeChatClient(cfg).preflight();
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected a failed preflight');
+    expect(r.message).toContain('not reachable');
+    expect(r.message).toContain('lms server start');
+  });
+
+  it('fails on a non-OK or malformed /models response rather than assuming the model is fine', async () => {
+    stubFetch(() => ({ status: 500, text: 'boom' }));
+    expect((await new RuntimeChatClient(cfg).preflight()).ok).toBe(false);
+    stubFetch(() => ({ json: { nope: true } }));
+    expect((await new RuntimeChatClient(cfg).preflight()).ok).toBe(false);
+  });
+
+  it('ignores malformed entries but still finds the model', async () => {
+    stubFetch(() => ({ json: { data: [null, 42, { noId: true }, { id: 'test-model' }] } }));
+    expect(await new RuntimeChatClient(cfg).preflight()).toEqual({ ok: true });
+  });
+
+  it('sends the bearer header, so a cloud endpoint is preflighted as authenticated', async () => {
+    let auth: string | null = 'unset';
+    stubFetch((_u, init) => { auth = new Headers(init.headers).get('authorization'); return { json: { data: [{ id: 'test-model' }] } }; });
+    await new RuntimeChatClient({ ...cfg, apiKey: 'sk-9' }).preflight();
+    expect(auth).toBe('Bearer sk-9');
+  });
+
+  // Guards the empirical finding this design rests on: LM Studio's /models lists DOWNLOADED models,
+  // so an unloaded model is still advertised. Preflight must pass here — residency is not knowable
+  // from this endpoint, and the eviction case is handled by the complete() translation below.
+  it('passes for a downloaded-but-unloaded model, because /models cannot report residency', async () => {
+    stubFetch(() => ({ json: { data: [{ id: 'test-model' }] } }));
+    expect(await new RuntimeChatClient(cfg).preflight()).toEqual({ ok: true });
+  });
+});
+
+describe('unloaded-model error translation (tkt-b97efe93a6a3)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const UPSTREAM = '{"error":"Model has not started loading/has been unloaded."}';
+
+  it('translates the runtime 400 into the exact command that fixes it', async () => {
+    stubFetch(() => ({ status: 400, text: UPSTREAM }));
+    const err = await new RuntimeChatClient(cfg).complete([], []).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    if (!(err instanceof Error)) throw new Error('expected an Error');
+    expect(err.message).toContain('lms load test-model');
+    expect(err.message).not.toContain('400 Bad Request');
+  });
+
+  it('leaves an unrelated failure reported verbatim', async () => {
+    stubFetch(() => ({ status: 500, text: 'upstream exploded' }));
+    await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/500.*upstream exploded/);
+  });
 
   it('available() sends a bearer header only when an api key is configured', async () => {
     let auth: string | null = 'unset';
