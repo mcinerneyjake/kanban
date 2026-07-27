@@ -58,7 +58,12 @@ const IDLE_CAP_S = 300;
 const PR_HOURS = [2, 3];   // deliberately-low by-hand hours per merged PR (the counterfactual anchor)
 const RATE = 100;          // loaded engineer $/hr
 
-const OUT_OF_SCOPE = new Set(['portfolio-site', 'job-networking-tracker']);
+// Both spellings of the tracker: the board label was renamed job-networking-tracker → job-tracker on
+// 2026-07-22, and this walks the whole session history, so sessions on either side of that rename
+// must both be excluded. Dropping the old name would silently re-include everything before the
+// rename; omitting the new one silently counted everything after it as in-scope kanban work
+// (tkt-6b56ae9defce).
+const OUT_OF_SCOPE = new Set(['portfolio-site', 'job-networking-tracker', 'job-tracker']);
 
 function walkJsonl(dir, acc) {
   let ents; try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
