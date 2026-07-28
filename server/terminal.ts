@@ -10,11 +10,12 @@ import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
   authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, CONTAINER_NAME_PREFIX,
-  dtachSocket, filterAdoptable, isValidSessionId, parseClientFrame, parseSessionParam, parseTicketParam,
-  resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY, SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
+  dtachSocket, filterAdoptable, isHostGatewayRejection, isValidSessionId, parseClientFrame,
+  parseSessionParam, parseTicketParam, resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY,
+  SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY, withoutHostGateway,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
-import { spawnDockerCli } from './terminalDocker.js';
+import { spawnDockerCli, type DockerCli } from './terminalDocker.js';
 import { startReaper } from './terminalReaper.js';
 import { seedSessionHome, removeSessionHome } from './terminalHome.js';
 
@@ -79,6 +80,56 @@ function ensureDeps(roots: string[]): Promise<void> {
   return inFlight;
 }
 
+// Once a daemon has rejected `host-gateway` we stop sending it, so only the FIRST session on such a
+// daemon pays a failed `docker run`. Process-lifetime only and deliberately not persisted: a daemon
+// swap (DOCKER_HOST/DOCKER_CONTEXT) is picked up by a restart, same as every other docker setting.
+let hostGatewayRejected = false;
+
+// What the user is told when the alias is gone. Without this the session starts fine and then EVERY
+// LLM call inside it dies with ENOTFOUND host.docker.internal — llmEnvArgs still points there — with
+// the explanation only in the server log the browser user never sees (tkt-1cb370e16c55 review).
+const NO_ALIAS_NOTICE =
+  'This Docker daemon does not support the host.docker.internal alias, so this session cannot reach a host LLM endpoint (LM Studio, Ollama). Everything else works normally.';
+
+// Start the session container, falling back once if the daemon rejects the alias (tkt-1cb370e16c55).
+// Keyed on docker's specific message, NOT on any non-zero exit — a missing image or bad mount must
+// still fail loudly rather than be silently retried into the same error. Exported with injected deps
+// so the stderr → decision → argv → retry chain has a round-trip test; the module-level caller below
+// owns the latch.
+export async function startContainer(opts: {
+  docker: Pick<DockerCli, 'run'>;
+  runArgs: string[];
+  containerName: string;
+  env: NodeJS.ProcessEnv;
+  stripAlias: boolean;                 // a previous session already learned this daemon rejects it
+  notify: (message: string) => void;   // user-visible, in the terminal pane — not just the server log
+  isDisposed: () => boolean;           // re-checked before the retry — the client can vanish mid-run
+}): Promise<{ code: number | null; aliasDropped: boolean }> {
+  if (opts.stripAlias) {
+    const pre = await opts.docker.run(withoutHostGateway(opts.runArgs), { env: opts.env, context: 'run (session container, no host alias)' });
+    if (pre.code === 0) opts.notify(NO_ALIAS_NOTICE);
+    return { code: pre.code, aliasDropped: true };
+  }
+
+  const first = await opts.docker.run(opts.runArgs, { env: opts.env, context: 'run (session container)' });
+  if (first.code === 0 || !isHostGatewayRejection(first.stderr)) return { code: first.code, aliasDropped: false };
+
+  // The client went away during the failed run — dispose has already deleted the session HOME, so
+  // retrying would make docker recreate it as an unowned empty dir that nothing reclaims. Report the
+  // rejection so the caller still latches it.
+  if (opts.isDisposed()) return { code: first.code, aliasDropped: true };
+
+  console.error('[terminal] daemon rejected --add-host host-gateway — retrying without the host.docker.internal alias');
+  // AWAITED, not the fire-and-forget remove(): the retry reuses this name, and an unsequenced
+  // `rm -f` could land after the retry's create and delete the container out from under us. Routed
+  // through run() precisely because it returns a promise; no context, since "no such container" is
+  // the normal case and is not a failure worth logging.
+  await opts.docker.run(['rm', '-f', opts.containerName]);
+  const retry = await opts.docker.run(withoutHostGateway(opts.runArgs), { env: opts.env, context: 'run (session container, no host alias)' });
+  if (retry.code === 0) opts.notify(NO_ALIAS_NOTICE);
+  return { code: retry.code, aliasDropped: true };
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // Poll until dtach has created its session socket inside the container (it does so at startup), so
@@ -91,11 +142,11 @@ async function waitForDtachSocket(containerName: string, socket: string, timeout
   while (Date.now() < deadline) {
     // No context: this probe is EXPECTED to fail on every poll until dtach creates the socket, so
     // capturing its stderr would log a non-failure once a second for the whole window.
-    if (await docker.run(['exec', containerName, 'test', '-S', socket]) === 0) return true;
+    if ((await docker.run(['exec', containerName, 'test', '-S', socket])).code === 0) return true;
     // `exec` into a stopped container fails → the container died during startup; stop waiting. Unlike
     // the probe above this one fails at most ONCE and that failure is terminal, so it carries a
     // context — docker's "container is not running" is the diagnosis behind "did not become ready".
-    if (await docker.run(['exec', containerName, 'true'], { context: 'exec (liveness probe)' }) !== 0) return false;
+    if ((await docker.run(['exec', containerName, 'true'], { context: 'exec (liveness probe)' })).code !== 0) return false;
     await sleep(1000);
   }
   return false;
@@ -285,7 +336,20 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   // Start the DETACHED container (claude under dtach). `docker run -d` returns once it's launched;
   // claude then runs independent of any browser connection so it survives a reload (and, once S3a
   // lands, an Express restart).
-  const runCode = await docker.run(command.runArgs, { env: buildSessionEnv(process.env), context: 'run (session container)' });
+  const { code: runCode, aliasDropped } = await startContainer({
+    docker,
+    runArgs: command.runArgs,
+    containerName,
+    env: buildSessionEnv(process.env),
+    stripAlias: hostGatewayRejected,
+    // Same "write to the CURRENT socket" rule as fail() — a reload may have reattached during setup.
+    notify: (message) => {
+      const w = entry.currentWs;
+      if (w && w.readyState === WebSocket.OPEN) w.send(`\r\n[terminal] ${message}\r\n`);
+    },
+    isDisposed: () => entry.disposed,
+  });
+  if (aliasDropped) hostGatewayRejected = true;
   // Disposed mid-run → the container may have been created AFTER dispose's rm -f no-op'd against a
   // not-yet-existing name; force-remove it by name now so it can't leak (review of tkt-00dd79b261d7).
   if (entry.disposed) { docker.remove(containerName); return; }
