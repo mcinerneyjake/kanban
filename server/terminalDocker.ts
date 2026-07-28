@@ -9,12 +9,20 @@ import { spawn as nodeSpawn } from 'node:child_process';
 // detached-container slices.
 
 // Minimal structural signatures for the spawners, so both the real child_process functions and a
-// test fake satisfy them (the full `typeof spawn` overload set is awkward to fake).
+// test fake satisfy them (the full `typeof spawn` overload set is awkward to fake). `stderr` is
+// present only on the piped shape; optional so a fake that ignores it still satisfies the type.
 interface Spawned {
   on(event: 'error', listener: (err: Error) => void): unknown;
   on(event: 'exit', listener: (code: number | null) => void): unknown;
+  stderr?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
 }
-type SpawnFn = (command: string, args: readonly string[], options: { stdio: 'ignore'; env?: NodeJS.ProcessEnv }) => Spawned;
+type SpawnStdio = 'ignore' | ['ignore', 'ignore', 'pipe'];
+type SpawnFn = (command: string, args: readonly string[], options: { stdio: SpawnStdio; env?: NodeJS.ProcessEnv }) => Spawned;
+
+// Cap on the diagnostic we buffer from a failing docker command. Its errors are a line or two, so
+// anything beyond this is a runaway stream rather than a diagnosis — and the buffer is held for the
+// life of the call.
+const MAX_STDERR_CHARS = 4_000;
 
 // A running session container discovered via `docker ps`, with its creation time (from the
 // kanban.created label). createdAtMs is undefined when the label is absent or unparseable —
@@ -30,8 +38,10 @@ export interface DockerCli {
   // session containers run without `--rm`, so dispose must remove them explicitly.
   remove(name: string): void;
   // Run a container (or any `docker` subcommand) to completion; resolves its exit code, or null if
-  // `docker` couldn't spawn.
-  run(args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<number | null>;
+  // `docker` couldn't spawn. Pass `context` when a non-zero exit is a real failure: it pipes docker's
+  // stderr and logs it (tkt-c19be6016578), turning "failed to start session container" into docker's
+  // own diagnosis. OMIT it for probes that expect non-zero — see the note on the implementation.
+  run(args: string[], opts?: { env?: NodeJS.ProcessEnv; context?: string }): Promise<number | null>;
   // Running containers matching ALL `filterLabels` (each a `key` or `key=value`) → [{name, session}]
   // where session is the `sessionLabelKey` value. Used at boot to re-adopt containers that outlived a
   // restart (S3a) and periodically by the reaper (S3b). Each row also carries createdAtMs from the
@@ -66,11 +76,30 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
     remove(name) {
       spawn('docker', ['rm', '-f', name], { stdio: 'ignore' }).on('error', () => { /* already gone */ });
     },
+    // stderr is piped ONLY when the caller names a context. waitForDtachSocket polls `run` twice a
+    // second for up to two minutes and a non-zero exit there is the EXPECTED "not ready yet" signal —
+    // piping it would buffer and log hundreds of non-failures, burying the one that matters.
     run(args, opts = {}) {
+      const { context } = opts;
       return new Promise((resolve) => {
-        const proc = spawn('docker', args, { stdio: 'ignore', env: opts.env });
-        proc.on('exit', (code) => resolve(code));
-        proc.on('error', () => resolve(null));
+        const proc = context
+          ? spawn('docker', args, { stdio: ['ignore', 'ignore', 'pipe'], env: opts.env })
+          : spawn('docker', args, { stdio: 'ignore', env: opts.env });
+        let stderr = '';
+        if (context) proc.stderr?.on('data', (d) => { if (stderr.length < MAX_STDERR_CHARS) stderr += String(d); });
+        proc.on('exit', (code) => {
+          if (context && code !== 0) {
+            // stderr only, NEVER the argv — it carries `-e LLM_BASE_URL=…`, which can hold userinfo
+            // credentials until tkt-281272b5ef77 lands.
+            const detail = stderr.trim().slice(0, MAX_STDERR_CHARS);
+            console.error(`[terminal] docker ${context} exited ${code ?? 'null'}${detail ? `: ${detail}` : ' (no stderr)'}`);
+          }
+          resolve(code);
+        });
+        proc.on('error', (err) => {
+          if (context) console.error(`[terminal] docker ${context} failed to spawn:`, err instanceof Error ? err.message : err);
+          resolve(null);
+        });
       });
     },
     ps(sessionLabelKey, createdLabelKey, filterLabels, context) {
