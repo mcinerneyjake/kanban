@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Ticket } from '../shared/constants.js';
+import { apiPort, webPort } from '../shared/ports.js';
 
 // Pure core for the embedded terminal (tkt-be809dd2b7fb): WS-upgrade guards, the
 // curated session env, filesystem-confinement roots, and the `docker run` argv.
@@ -8,17 +9,13 @@ import type { Ticket } from '../shared/constants.js';
 
 // ── WS upgrade guards ────────────────────────────────────────────────────────
 
-// Only same-machine dev origins may open a terminal socket. Browsers can't forge
-// Origin, so this blocks drive-by connections from other sites — the primary gate.
-const ALLOWED_ORIGINS = new Set([
-  'http://localhost:5173',
-  'http://localhost:3001',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:3001',
-]);
-
-export function isAllowedOrigin(origin: string | undefined): boolean {
-  return origin !== undefined && ALLOWED_ORIGINS.has(origin);
+// Only same-machine dev origins may open a terminal socket; browsers can't forge Origin. Ports come
+// from shared/ports.ts so a KANBAN_PORT_OFFSET worktree isn't locked out (tkt-9ee5a1dfa141). Stays
+// port-pinned, unlike the Host gate below — Origin is the page's own, so the ports are knowable.
+export function isAllowedOrigin(origin: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (origin === undefined) return false;
+  const ports = [webPort(env), apiPort(env)];
+  return ['localhost', '127.0.0.1'].some((host) => ports.some((port) => origin === `http://${host}:${port}`));
 }
 
 // Host gate for GET /api/terminal/token (tkt-b6eb52013662). Origin can't do this job: browsers omit
@@ -366,9 +363,10 @@ export function authorizeUpgrade(opts: {
   expected: string;
   activeSessions: number;
   maxSessions: number;
+  env?: NodeJS.ProcessEnv; // threaded so the ports → origin-gate path is pinnable without ambient env
 }): UpgradeDecision {
   if (opts.path !== opts.wsPath) return { ok: false, status: 404, reason: 'not the terminal path' };
-  if (!isAllowedOrigin(opts.origin)) return { ok: false, status: 403, reason: 'origin not allowed' };
+  if (!isAllowedOrigin(opts.origin, opts.env)) return { ok: false, status: 403, reason: 'origin not allowed' };
   if (!isValidToken(opts.token, opts.expected)) return { ok: false, status: 403, reason: 'invalid token' };
   if (opts.activeSessions >= opts.maxSessions) return { ok: false, status: 503, reason: 'session limit reached' };
   return { ok: true };
@@ -395,8 +393,9 @@ export function authorizeReattach(opts: {
   token: string | null;
   expected: string;
   lookup: ReattachLookup;
+  env?: NodeJS.ProcessEnv;
 }): UpgradeDecision {
-  if (!isAllowedOrigin(opts.origin)) return { ok: false, status: 403, reason: 'origin not allowed' };
+  if (!isAllowedOrigin(opts.origin, opts.env)) return { ok: false, status: 403, reason: 'origin not allowed' };
   if (!isValidToken(opts.token, opts.expected)) return { ok: false, status: 403, reason: 'invalid token' };
   if (opts.lookup === 'not-found') return { ok: false, status: 404, reason: 'no such session' };
   return { ok: true };

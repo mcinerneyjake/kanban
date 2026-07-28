@@ -342,6 +342,7 @@ describe('reattach seam (widget URL → parse → lookup → authorize → pty r
     expect(registry.has(parsed)).toBe(true);
     const decision = authorizeReattach({
       origin: 'http://localhost:5173', token: 'secret', expected: 'secret', lookup: registry.lookup(parsed),
+      env: {}, // pinned: a worktree's KANBAN_PORT_OFFSET would otherwise move this origin's port
     });
     expect(decision.ok).toBe(true);
 
