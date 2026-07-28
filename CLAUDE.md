@@ -133,9 +133,17 @@ Use Claude Code's built-in support — do **not** hand-roll a convention. `Enter
 auto-removes it if nothing changed). The Agent tool takes `isolation: "worktree"` for the same thing.
 `.claude/worktrees/` is gitignored, so a worktree never shows up as untracked in the main checkout.
 
-- **`node_modules` needs no handling.** Worktrees are nested *inside* the repo, so Node's upward
-  resolution finds the main checkout's `node_modules` — verified: `npm run typecheck`/`lint`/`test`
-  all run in a fresh worktree with no install. Don't symlink, don't install per tree.
+**Rename the branch before the first commit.** `EnterWorktree` prefixes `worktree-` and rewrites `/`
+as `+`, so asking for `fix/tkt-abc123-slug` lands you on **`worktree-fix+tkt-abc123-slug`** — which
+fails the required `branch-name` check when the PR opens. Fix it immediately after entering:
+`git branch -m fix/tkt-abc123-slug` (`tkt-fb558add3a17`).
+
+- **`node_modules` needs no handling** — *unless the ticket changes a dependency.* Worktrees are
+  nested *inside* the repo, so Node's upward resolution finds the main checkout's `node_modules`:
+  `npm run typecheck`/`lint`/`test` all run in a fresh worktree with no install. Don't symlink, don't
+  install per tree. **Exception:** a ticket that bumps a dependency must `npm install` *in* the
+  worktree — otherwise the suite resolves upward to the main checkout's old copy and proves nothing
+  about the new one. The duplicate tree is gitignored and dies with the worktree.
 - **Running two dev servers: set `KANBAN_PORT_OFFSET`.** `npm run dev` binds the API and Vite ports
   from `shared/ports.ts`; the offset shifts **both together** (`KANBAN_PORT_OFFSET=1` → API 3002, web
   5174), which is what keeps a worktree's UI talking to its *own* API. Vite runs `strictPort`, so a
@@ -144,6 +152,13 @@ auto-removes it if nothing changed). The Agent tool takes `isolation: "worktree"
 - **Commits from a worktree run the full gate**, same as the main checkout — `.husky/pre-commit`
   scrubs git's exported repo context first, because git exports an *absolute* `GIT_DIR` in a worktree
   and inheriting it made the test suite drive the real repository (`tkt-cf1e0c0b3dda`).
+- **`gh pr merge --delete-branch` errors from a worktree — and the merge still landed.** It fails
+  with `fatal: 'main' is already used by worktree at …`, which is `gh`'s *local post-merge checkout*
+  being refused because the primary worktree holds `main`. The remote merge is already complete; only
+  the branch deletion and local sync were skipped. **Do not retry** — that runs against an
+  already-merged PR. Confirm with `gh pr view <n> --json state` (expect `MERGED`), then
+  `git push origin --delete <branch>` and `git pull --ff-only` in the *primary* checkout
+  (`tkt-fb558add3a17`).
 - **The embedded terminal is not isolated by this.** Its container mounts the *host* checkout, so an
   in-container `git switch` still moves the host branch — worktrees isolate Claude sessions, not
   terminal sessions.
