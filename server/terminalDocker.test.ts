@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { spawnDockerCli, parsePsLines } from './terminalDocker.js';
+import { spawnDockerCli, parsePsLines, redactUserinfo } from './terminalDocker.js';
 
 // A stand-in for a spawned child: .on('error'|'exit', …) is all the seam uses.
 function fakeChild() {
@@ -133,6 +133,20 @@ describe('spawnDockerCli', () => {
       err.mockRestore();
     });
 
+    it('redacts userinfo that docker itself echoed into stderr', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const child = fakeChildWithStderr();
+      const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (session container)' });
+      child.stderr.emit('data', 'invalid argument "=http://user:sekret@localhost:1234/v1" for "-e, --env" flag\n');
+      child.emit('exit', 125);
+      await p;
+      const logged = String(err.mock.calls[0]?.[0]);
+      expect(logged).not.toContain('sekret');
+      expect(logged).toContain('http://***@localhost:1234/v1');
+      expect(logged).toContain('for "-e, --env" flag'); // the diagnosis survives redaction
+      err.mockRestore();
+    });
+
     it('caps a runaway stderr stream instead of buffering it without bound', async () => {
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
       const child = fakeChildWithStderr();
@@ -179,5 +193,28 @@ describe('parsePsLines', () => {
         { name: 'n', session: '11111111-2222-4333-8444-555566667777' },
       ]);
     }
+  });
+});
+
+describe('redactUserinfo', () => {
+  // Verbatim from `docker run --rm -e "=http://user:sekret@localhost:1234/v1" alpine true` (29.6.2).
+  const REAL_ECHO = 'invalid argument "=http://user:sekret@localhost:1234/v1" for "-e, --env" flag: invalid environment variable: =http://user:sekret@localhost:1234/v1';
+
+  it('strips userinfo from docker\'s echo of a rejected credential-bearing argument', () => {
+    const out = redactUserinfo(REAL_ECHO);
+    expect(out).not.toContain('sekret');
+    expect(out).toContain('http://***@localhost:1234/v1');
+    expect(out).toContain('invalid environment variable');
+  });
+
+  it('redacts EVERY occurrence, not just the first', () => {
+    expect(redactUserinfo(REAL_ECHO).match(/\*\*\*@/g)).toHaveLength(2);
+  });
+
+  it('leaves ordinary text and non-URL @ alone', () => {
+    expect(redactUserinfo('no such image kanban-terminal:latest')).toBe('no such image kanban-terminal:latest');
+    expect(redactUserinfo('git@github.com:me/repo.git')).toBe('git@github.com:me/repo.git');
+    expect(redactUserinfo('http://localhost:1234/v1')).toBe('http://localhost:1234/v1');
+    expect(redactUserinfo('')).toBe('');
   });
 });
