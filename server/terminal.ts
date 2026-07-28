@@ -68,8 +68,10 @@ function ensureDeps(roots: string[]): Promise<void> {
   let inFlight = depsInFlight.get(key);
   if (!inFlight) {
     // Best-effort: on failure the interactive session still starts (degraded MCP, logged in-container).
+    // Unlike the session run below this one is ATTACHED (no -d), so the captured stderr carries the
+    // CONTAINER's output too — the entrypoint's messages and npm ci's — not just the docker client's.
     const args = ['run', '--rm', ...rootMountArgs(roots), IMAGE, 'true'];
-    inFlight = docker.run(args, { env: buildSessionEnv(process.env) })
+    inFlight = docker.run(args, { env: buildSessionEnv(process.env), context: 'run (deps install)' })
       .then(() => undefined)
       .finally(() => depsInFlight.delete(key));
     depsInFlight.set(key, inFlight);
@@ -87,9 +89,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 async function waitForDtachSocket(containerName: string, socket: string, timeoutMs = 120_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // No context: this probe is EXPECTED to fail on every poll until dtach creates the socket, so
+    // capturing its stderr would log a non-failure once a second for the whole window.
     if (await docker.run(['exec', containerName, 'test', '-S', socket]) === 0) return true;
-    // `exec` into a stopped container fails → the container died during startup; stop waiting.
-    if (await docker.run(['exec', containerName, 'true']) !== 0) return false;
+    // `exec` into a stopped container fails → the container died during startup; stop waiting. Unlike
+    // the probe above this one fails at most ONCE and that failure is terminal, so it carries a
+    // context — docker's "container is not running" is the diagnosis behind "did not become ready".
+    if (await docker.run(['exec', containerName, 'true'], { context: 'exec (liveness probe)' }) !== 0) return false;
     await sleep(1000);
   }
   return false;
@@ -279,7 +285,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   // Start the DETACHED container (claude under dtach). `docker run -d` returns once it's launched;
   // claude then runs independent of any browser connection so it survives a reload (and, once S3a
   // lands, an Express restart).
-  const runCode = await docker.run(command.runArgs, { env: buildSessionEnv(process.env) });
+  const runCode = await docker.run(command.runArgs, { env: buildSessionEnv(process.env), context: 'run (session container)' });
   // Disposed mid-run → the container may have been created AFTER dispose's rm -f no-op'd against a
   // not-yet-existing name; force-remove it by name now so it can't leak (review of tkt-00dd79b261d7).
   if (entry.disposed) { docker.remove(containerName); return; }
