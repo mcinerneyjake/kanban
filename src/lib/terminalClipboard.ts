@@ -36,13 +36,16 @@ export function clipboardIntent(e: KeyChord, ctx: { hasSelection: boolean }): Cl
 }
 
 // ESC is the one that matters: a payload carrying ESC[201~ would close bracketed paste early and the
-// rest would land as typed input. Bidi/zero-width go too, so the confirmation preview can't render
-// differently from the bytes it authorizes.
+// rest would land as typed input. Every member here is content-free, so deleting it loses nothing.
 // eslint-disable-next-line no-control-regex
 const UNSAFE_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
+// U+2028/U+2029 are line SEPARATORS carrying real content, so they are normalized, not deleted —
+// deleting them spliced two pasted commands into one token that then had no [\r\n] left to trip the
+// confirmation bar at all (tkt-9e3fd0da8398 review). Normalizing makes the browser's rendering, the
+// line count and the bytes sent to the pty agree.
 export function sanitizePaste(text: string): string {
-  return text.replace(UNSAFE_CHARS, '');
+  return text.replace(/[\u2028\u2029]/g, '\n').replace(UNSAFE_CHARS, '');
 }
 
 export type PasteDecision =
@@ -57,6 +60,12 @@ export type PasteDecision =
  * which kills the canonical paste-jacking payload (one hijacked command ending in \n) without a prompt
  * — and without trusting `bracketedPaste`, which terminal output alone can set. What's left needing
  * consent is an *embedded* line break with no bracketing to make it inert.
+ *
+ * The embedded-newline guard below DOES key on `bracketedPaste`, knowingly (tkt-ec1daaf94f96, folded
+ * into tkt-9e3fd0da8398). A `/security-review` accepted it: this terminal's workload is Claude Code,
+ * which enables bracketed paste, so confirming unconditionally would prompt on every routine paste and
+ * train the user to click through the bar — costing more than the narrow case it covers, where a
+ * foreground app sets the mode bit without honoring the wrapper.
  */
 export function decidePaste(raw: string, ctx: { bracketedPaste: boolean }): PasteDecision {
   const text = sanitizePaste(raw).replace(/[\r\n]+$/, '');
@@ -70,8 +79,7 @@ export function decidePaste(raw: string, ctx: { bracketedPaste: boolean }): Past
   return { kind: 'send', text };
 }
 
-/** First line of a pending paste, clipped for the confirmation bar. */
-export function pastePreview(text: string, maxChars = 60): string {
-  const [first = ''] = text.split(/\r\n|[\r\n]/);
-  return first.length > maxChars ? `${first.slice(0, maxChars - 1)}…` : first;
-}
+// No pastePreview: the bar renders the pending text verbatim in a read-only <textarea>, which needs
+// no truncation and therefore no counts. Three attempts at a truncating preview each found a new way
+// to hide content without reporting it — a CSS fold, zero-height blank lines, surrogate-split counts
+// (tkt-9e3fd0da8398). A textarea holds the whole paste and scrolls it natively.

@@ -1337,9 +1337,16 @@ body {
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
 }
 .tw-paste-msg { flex: 1; min-width: 0; }
-.tw-paste-msg code {
-  display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; vertical-align: bottom; color: var(--muted);
+.tw-paste-bar.confirm { align-items: flex-start; max-height: 100%; }
+/* A real form control, not styled markup: it holds the whole paste, scrolls it natively in both axes
+   with visible scrollbars, and keeps blank lines. `resize` stays NONE — the widget clips at
+   overflow:hidden, so a draggable grip lets the user pull content past the clip (tkt-9e3fd0da8398). */
+.tw-paste-preview {
+  display: block; width: 100%; margin: 4px 0 0; padding: 4px 6px; resize: none;
+  white-space: pre; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: inherit; line-height: 1.4; color: var(--text);
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
 }
 .tw-paste-btn {
   flex: 0 0 auto; padding: 3px 10px; border-radius: 4px; cursor: pointer;
