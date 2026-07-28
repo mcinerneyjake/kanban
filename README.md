@@ -32,7 +32,7 @@ rather than hand-counted.
 
 ## Quick Start
 
-**Requires Node 20+.** `.nvmrc` pins the major CI builds on — `nvm use` picks it up.
+**Requires Node 24+.** `.nvmrc` pins the major CI builds on — `nvm use` picks it up.
 
 ```bash
 npm install
