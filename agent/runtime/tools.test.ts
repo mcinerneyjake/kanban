@@ -3,6 +3,7 @@ import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
 import {
   AGENT_TOOLS,
   AGENT_TOOLS_CREATE_ONLY,
+  AGENT_TOOL_NAMES,
   CREATE_ONLY_TOOL_NAMES,
   dispatchTool,
   constrainAgentProject,
@@ -62,6 +63,7 @@ describe('AGENT_TOOLS', () => {
 
   it('excludes destructive / dev-workflow tools', () => {
     expect(names).not.toContain('delete_ticket');
+    expect(names).not.toContain('archive_ticket');
     expect(names).not.toContain('start_ticket');
   });
 
@@ -97,6 +99,7 @@ describe('AGENT_TOOLS_CREATE_ONLY', () => {
 
   it('still excludes the destructive / dev-workflow tools', () => {
     expect(names).not.toContain('delete_ticket');
+    expect(names).not.toContain('archive_ticket');
     expect(names).not.toContain('start_ticket');
   });
 });
@@ -193,6 +196,27 @@ describe('dispatchTool — security gate', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('not available');
     expect((await getTicket(created.id)).id).toBe(created.id);
+  });
+
+  // tkt-f388cfc8ad4b — archive_ticket is excluded from AGENT_TOOL_NAMES by omission, which is exactly
+  // why it was built as a named tool instead of an `archived` value on update_ticket: the agent keeps
+  // update_ticket, so widening that enum would have handed untrusted intake the power to hide tickets.
+  it('blocks archive_ticket and does NOT archive the ticket', async () => {
+    const created = await createTicket({ title: 'Do not archive' });
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('archive_ticket', { id: created.id }, index);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not available');
+    expect((await getTicket(created.id)).status).not.toBe('archived');
+  });
+
+  it('refuses archive_ticket even when a caller passes a widened allowedNames set', async () => {
+    const created = await createTicket({ title: 'Still do not archive' });
+    const index = await DocumentIndex.build(embedder, []);
+    const widened = new Set([...AGENT_TOOL_NAMES, 'archive_ticket']);
+    const res = await dispatchTool('archive_ticket', { id: created.id }, index, undefined, widened);
+    expect(res.isError).toBe(true);
+    expect((await getTicket(created.id)).status).not.toBe('archived');
   });
 
   it('blocks an unknown tool', async () => {

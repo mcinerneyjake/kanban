@@ -46,9 +46,9 @@ async function seed(fields: Parameters<typeof createTicket>[0] = {}): Promise<st
 // ---------------------------------------------------------------------------
 
 describe('TOOLS schema', () => {
-  it('exposes exactly the seven kanban tools', () => {
+  it('exposes exactly the eight kanban tools', () => {
     expect(new Set(TOOLS.map((t) => t.name))).toEqual(
-      new Set(['list_tickets', 'get_ticket', 'update_ticket', 'start_ticket', 'create_ticket', 'record_review', 'delete_ticket']),
+      new Set(['list_tickets', 'get_ticket', 'update_ticket', 'start_ticket', 'create_ticket', 'record_review', 'archive_ticket', 'delete_ticket']),
     );
   });
 
