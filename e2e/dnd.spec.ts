@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator, type APIRequestContext } from 'playwright/test';
+import { apiBaseUrl } from '../shared/ports.js';
 
-const API = 'http://localhost:3001/api';
+const API = `${apiBaseUrl()}/api`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

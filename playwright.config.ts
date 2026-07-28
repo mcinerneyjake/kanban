@@ -2,6 +2,7 @@ import { defineConfig, devices } from 'playwright/test';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { webBaseUrl } from './shared/ports.js';
 
 // The specs create and delete tickets through the UI. Point the dev server at
 // throwaway temp dirs so a run never mutates the real tickets/ or events/ dirs
@@ -18,11 +19,11 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
   globalTeardown: './e2e/globalTeardown.ts',
-  use: { baseURL: 'http://localhost:5173', trace: 'on-first-retry' },
+  use: { baseURL: webBaseUrl(), trace: 'on-first-retry' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:5173',
+    url: webBaseUrl(),
     // Never attach to a manually-started dev server — it would be serving the
     // real board, defeating the temp-dir isolation below.
     reuseExistingServer: false,
