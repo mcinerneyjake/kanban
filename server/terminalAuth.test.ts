@@ -28,13 +28,35 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
 
 describe('isAllowedOrigin', () => {
   it('allows localhost dev origins', () => {
-    expect(isAllowedOrigin('http://localhost:5173')).toBe(true);
-    expect(isAllowedOrigin('http://127.0.0.1:3001')).toBe(true);
+    expect(isAllowedOrigin('http://localhost:5173', {})).toBe(true);
+    expect(isAllowedOrigin('http://127.0.0.1:3001', {})).toBe(true);
   });
-  it('rejects a foreign origin, a wrong port, and undefined', () => {
-    expect(isAllowedOrigin('https://evil.example')).toBe(false);
-    expect(isAllowedOrigin('http://localhost:8080')).toBe(false);
-    expect(isAllowedOrigin(undefined)).toBe(false);
+
+  it('rejects a foreign origin and undefined', () => {
+    expect(isAllowedOrigin('https://evil.example', {})).toBe(false);
+    expect(isAllowedOrigin('http://evil.example:5173', {})).toBe(false); // right port, wrong host
+    expect(isAllowedOrigin('https://localhost:5173', {})).toBe(false);   // right host+port, wrong scheme
+    expect(isAllowedOrigin(undefined, {})).toBe(false);
+  });
+
+  // tkt-9ee5a1dfa141 — the suite previously asserted `localhost:8080 === false` as "rejects a wrong
+  // port", which pinned the bug as intended behavior.
+  it('tracks KANBAN_PORT_OFFSET on both the web and API ports', () => {
+    const offset = { KANBAN_PORT_OFFSET: '50' };
+    expect(isAllowedOrigin('http://localhost:5223', offset)).toBe(true);  // web 5173 + 50
+    expect(isAllowedOrigin('http://127.0.0.1:3051', offset)).toBe(true);  // api 3001 + 50
+    // …and the unshifted pair is no longer valid for THAT worktree.
+    expect(isAllowedOrigin('http://localhost:5173', offset)).toBe(false);
+  });
+
+  it('honours an explicit PORT override for the API origin', () => {
+    expect(isAllowedOrigin('http://localhost:4000', { PORT: '4000' })).toBe(true);
+  });
+
+  // Guards against "just make it port-blind" — another local dev server would then pass the gate.
+  it('still rejects an arbitrary loopback port', () => {
+    expect(isAllowedOrigin('http://localhost:8080', {})).toBe(false);
+    expect(isAllowedOrigin('http://localhost:9999', { KANBAN_PORT_OFFSET: '50' })).toBe(false);
   });
 });
 
@@ -398,9 +420,11 @@ describe('ticket-param round trip (widget URL → server parse → seeded comman
 });
 
 describe('authorizeUpgrade', () => {
+  // env pinned: the suite itself runs in a worktree with KANBAN_PORT_OFFSET set, which would
+  // otherwise move the ports out from under these origins.
   const base = {
     path: '/terminal-ws', wsPath: '/terminal-ws', origin: 'http://localhost:5173',
-    token: 'secret', expected: 'secret', activeSessions: 0, maxSessions: 2,
+    token: 'secret', expected: 'secret', activeSessions: 0, maxSessions: 2, env: {},
   };
   it('accepts a fully valid upgrade', () => {
     expect(authorizeUpgrade(base)).toEqual({ ok: true });
@@ -409,6 +433,17 @@ describe('authorizeUpgrade', () => {
     const d = authorizeUpgrade({ ...base, path: '/other' });
     expect(d).toEqual({ ok: false, status: 404, reason: 'not the terminal path' });
   });
+  // Seam: KANBAN_PORT_OFFSET → shared/ports.ts → isAllowedOrigin → this decision. A test on the gate
+  // alone wouldn't catch authorizeUpgrade dropping env on the way through (tkt-9ee5a1dfa141).
+  it('authorizes an offset worktree\'s origin end to end', () => {
+    const env = { KANBAN_PORT_OFFSET: '50' };
+    expect(authorizeUpgrade({ ...base, origin: 'http://localhost:5223', env })).toEqual({ ok: true });
+    expect(authorizeUpgrade({ ...base, origin: 'http://localhost:5173', env }))
+      .toMatchObject({ ok: false, status: 403, reason: 'origin not allowed' });
+    expect(authorizeUpgrade({ ...base, origin: 'https://evil.example', env }))
+      .toMatchObject({ ok: false, status: 403 });
+  });
+
   it('rejects a bad origin (403)', () => {
     expect(authorizeUpgrade({ ...base, origin: 'https://evil.example' })).toMatchObject({ ok: false, status: 403 });
     expect(authorizeUpgrade({ ...base, origin: undefined })).toMatchObject({ ok: false, status: 403 });
@@ -449,7 +484,7 @@ describe('parseSessionParam', () => {
 describe('authorizeReattach', () => {
   const base = {
     origin: 'http://localhost:5173', token: 'secret', expected: 'secret',
-    lookup: 'found' as const,
+    lookup: 'found' as const, env: {},
   };
   it('accepts a detached session on a valid origin + token', () => {
     expect(authorizeReattach(base)).toEqual({ ok: true });
