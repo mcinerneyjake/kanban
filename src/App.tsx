@@ -16,7 +16,7 @@ import ErrorBanner from './components/ui/ErrorBanner.jsx';
 import { encode, decode } from './lib/filterParams.js';
 import { type Prefill } from './lib/proposalPrefill.js';
 import { computeChildCounts } from './lib/childCounts.js';
-import { computeActiveBlockerCounts } from './lib/blockers.js';
+import { computeActiveBlockerCounts, computeStaleBlockerCounts } from './lib/blockers.js';
 import { filterTickets } from './lib/filterTickets.js';
 import { resolveTicket } from './lib/resolveTicket.js';
 import { useTheme } from './useTheme.js';
@@ -124,6 +124,8 @@ export default function App() {
 
   // ticket id → active blocker count; from all tickets so hidden-column blockers still count (see computeActiveBlockerCounts).
   const activeBlockerCounts = useMemo(() => computeActiveBlockerCounts(tickets), [tickets]);
+
+  const staleBlockerCounts = useMemo(() => computeStaleBlockerCounts(tickets), [tickets]);
 
   // Lets stable callbacks read current tickets without a dep; synced in an effect, not during render.
   const ticketsRef = useRef(tickets);
@@ -304,7 +306,7 @@ export default function App() {
 
         {view === 'board' ? (
           <>
-            <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+            <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} staleBlockerCounts={staleBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
             <ArchiveLane tickets={filteredArchivedTickets} totalCount={archivedTickets.length} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : view === 'economics' ? (
