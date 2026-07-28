@@ -7,21 +7,43 @@ export function isActiveBlocker(status: StatusId): boolean {
   return status !== 'done' && status !== 'archived';
 }
 
-// Over the full list so a filtered-out blocker still counts; deleted/done/archived ids aren't counted (legacy edges self-heal).
-export function computeActiveBlockerCounts(tickets: readonly Ticket[]): Record<string, number> {
+// Archived means stale, not resolved: archive_ticket retires from any status, so the edge may point at
+// abandoned work (tkt-5753a764e900). Missing targets stay excluded — deleteTicket scrubs those.
+export function isStaleBlocker(status: StatusId): boolean {
+  return status === 'archived';
+}
+
+// Open holders only — a closed ticket's unresolved deps are history, and counting them adds 400+ noisy badges.
+const OPEN_STATUSES: readonly StatusId[] = ['backlog', 'todo', 'in-progress', 'qa'];
+
+function countBlockers(
+  tickets: readonly Ticket[],
+  matches: (status: StatusId) => boolean,
+  holderMatches: (status: StatusId) => boolean,
+): Record<string, number> {
   const statusById = new Map<string, StatusId>();
   for (const t of tickets) statusById.set(t.id, t.status);
 
   const counts: Record<string, number> = {};
   for (const t of tickets) {
-    let active = 0;
+    if (!holderMatches(t.status)) continue;
+    let n = 0;
     for (const id of t.blockers) {
       const status = statusById.get(id);
-      if (status !== undefined && isActiveBlocker(status)) active++;
+      if (status !== undefined && matches(status)) n++;
     }
-    if (active > 0) counts[t.id] = active;
+    if (n > 0) counts[t.id] = n;
   }
   return counts;
+}
+
+// Over the full list so a filtered-out blocker still counts. Archived targets land in the stale count below.
+export function computeActiveBlockerCounts(tickets: readonly Ticket[]): Record<string, number> {
+  return countBlockers(tickets, isActiveBlocker, () => true);
+}
+
+export function computeStaleBlockerCounts(tickets: readonly Ticket[]): Record<string, number> {
+  return countBlockers(tickets, isStaleBlocker, (s) => OPEN_STATUSES.includes(s));
 }
 
 // Reverse edge (tickets this one blocks): archived dropped, done kept; read-only.
