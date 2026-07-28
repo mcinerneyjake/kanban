@@ -3,7 +3,7 @@
 # Self-contained: no COPY, so the build context is irrelevant — the board project(s)
 # are bind-mounted read-write at runtime and the subscription credential is mounted
 # read-only. Build once:  docker build -f Dockerfile.terminal -t kanban-terminal .
-FROM node:20-bookworm
+FROM node:24-bookworm
 
 # dtach: the detach/reattach layer that lets a Claude session survive an Express restart —
 # claude runs under `dtach` in the container and each connection re-attaches (epic tkt-d7e129290ff7).
@@ -36,7 +36,7 @@ RUN printf 'export PATH="/root/.local/bin:$PATH"\n' > /etc/profile.d/claude-path
 # the lockfile content changed, so it's a one-time cost per repo state. tkt-76fcbfb608a4.
 COPY <<'SH' /usr/local/bin/kanban-entrypoint.sh
 #!/bin/sh
-# `cmp` (diffutils) and `npm` are provided by the node:20-bookworm base — don't switch to a
+# `cmp` (diffutils) and `npm` are provided by the node:24-bookworm base — don't switch to a
 # -slim base without re-adding them, or the stamp check would always miss and reinstall.
 set -f                          # no globbing of the unquoted $KANBAN_INSTALL_DIRS split
 IFS=:
