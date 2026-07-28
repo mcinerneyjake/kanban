@@ -24,6 +24,12 @@ type SpawnFn = (command: string, args: readonly string[], options: { stdio: Spaw
 // life of the call.
 const MAX_STDERR_CHARS = 4_000;
 
+// Docker echoes a rejected argument into its own stderr (verified, 29.6.2), so "we never log the
+// argv" doesn't keep a credential-bearing LLM_BASE_URL out of the log (tkt-281272b5ef77).
+export function redactUserinfo(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s"'/@]+@/gi, '$1***@');
+}
+
 // A running session container discovered via `docker ps`, with its creation time (from the
 // kanban.created label). createdAtMs is undefined when the label is absent or unparseable —
 // the reaper treats that as "unknown age" and protects it rather than guessing (tkt-b4412f11b790).
@@ -89,9 +95,8 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
         if (context) proc.stderr?.on('data', (d) => { if (stderr.length < MAX_STDERR_CHARS) stderr += String(d); });
         proc.on('exit', (code) => {
           if (context && code !== 0) {
-            // stderr only, NEVER the argv — it carries `-e LLM_BASE_URL=…`, which can hold userinfo
-            // credentials until tkt-281272b5ef77 lands.
-            const detail = stderr.trim().slice(0, MAX_STDERR_CHARS);
+            // We never add the argv — but docker puts a rejected one in stderr itself, so redact.
+            const detail = redactUserinfo(stderr.trim().slice(0, MAX_STDERR_CHARS));
             console.error(`[terminal] docker ${context} exited ${code ?? 'null'}${detail ? `: ${detail}` : ' (no stderr)'}`);
           }
           resolve(code);
