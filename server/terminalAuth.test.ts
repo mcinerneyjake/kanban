@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isAllowedTerminalHost, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
+  isHostGatewayRejection, withoutHostGateway,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
   isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, containerizeLoopbackUrl, llmEnvArgs, type CredMount,
 } from './terminalAuth.js';
@@ -169,6 +170,84 @@ describe('buildDetachedRunArgs', () => {
   });
   it('throws loudly on empty roots rather than mounting nothing', () => {
     expect(() => buildDetachedRunArgs({ ...base, roots: [] })).toThrow(/non-empty/);
+  });
+});
+
+describe('isHostGatewayRejection', () => {
+  // VERBATIM from `docker run --rm --add-host foo:not-an-ip alpine true` on docker 29.6.2 — the shape
+  // is what matters: docker renders the value with %q, so it is DOUBLE-QUOTED. The first version of
+  // this matcher was written against a hand-guessed unquoted message and could never fire; the tests
+  // passed because they asserted the same fabrication. Do not "simplify" these fixtures by hand.
+  const REAL_UNRELATED = 'invalid argument "foo:not-an-ip" for "--add-host" flag: invalid IP address in add-host: "not-an-ip"';
+  const REAL_REJECTION = 'invalid argument "host.docker.internal:host-gateway" for "--add-host" flag: invalid IP address in add-host: "host-gateway"';
+
+  it('matches docker\'s ACTUAL quoted message for the unsupported magic value', () => {
+    expect(isHostGatewayRejection(REAL_REJECTION)).toBe(true);
+  });
+
+  it('also matches unquoted / whole-pair spellings, in case another engine words it differently', () => {
+    expect(isHostGatewayRejection('docker: invalid IP address in add-host: host-gateway')).toBe(true);
+    expect(isHostGatewayRejection('invalid IP address in add-host: "host.docker.internal:host-gateway"')).toBe(true);
+    expect(isHostGatewayRejection('INVALID IP ADDRESS IN ADD-HOST:  "HOST-GATEWAY"')).toBe(true);
+  });
+
+  // The narrowness IS the feature: a broad match would silently drop the alias on failures that have
+  // nothing to do with it, hiding the real cause behind a "successful" degraded start.
+  it('does NOT match unrelated failures, including a real non-host-gateway add-host error', () => {
+    expect(isHostGatewayRejection(REAL_UNRELATED)).toBe(false);
+    expect(isHostGatewayRejection('Unable to find image \'kanban-terminal:latest\' locally')).toBe(false);
+    expect(isHostGatewayRejection('docker: Error response from daemon: invalid mount config')).toBe(false);
+    expect(isHostGatewayRejection('Cannot connect to the Docker daemon')).toBe(false);
+    expect(isHostGatewayRejection('')).toBe(false);
+  });
+
+  // The two real fixtures differ only in the value, so this pins that the matcher discriminates on
+  // exactly the thing that distinguishes them — not on any incidental shared text.
+  it('discriminates between the two real messages, which differ only in the quoted value', () => {
+    expect(isHostGatewayRejection(REAL_REJECTION)).toBe(true);
+    expect(isHostGatewayRejection(REAL_UNRELATED)).toBe(false);
+  });
+});
+
+describe('withoutHostGateway', () => {
+  it('drops the flag and its value as a pair, leaving everything else in order', () => {
+    const args = ['run', '-d', '--add-host', 'host.docker.internal:host-gateway', '-w', '/repo', 'img'];
+    expect(withoutHostGateway(args)).toEqual(['run', '-d', '-w', '/repo', 'img']);
+  });
+
+  it('is a no-op when the flag is absent (already-stripped retry, or a future caller)', () => {
+    const args = ['run', '-d', '-w', '/repo', 'img'];
+    expect(withoutHostGateway(args)).toEqual(args);
+  });
+
+  it('never strips a DIFFERENT --add-host — it matches the exact value we emit', () => {
+    const args = ['run', '--add-host', 'someother.host:1.2.3.4', 'img'];
+    expect(withoutHostGateway(args)).toEqual(args);
+  });
+
+  it('does not mutate its input', () => {
+    const args = ['run', '--add-host', 'host.docker.internal:host-gateway', 'img'];
+    withoutHostGateway(args);
+    expect(args).toHaveLength(4);
+  });
+
+  // Seam: the value crosses buildDetachedRunArgs → withoutHostGateway → docker.run. A unit test on a
+  // hand-written argv would still pass if the builder changed how it emits the flag.
+  it('strips the alias from a REAL buildDetachedRunArgs output, keeping the rest intact', () => {
+    const full = buildDetachedRunArgs({
+      roots: [KANBAN], sessionId: SID, rootLabel: KANBAN, createdAt: 1_700_000_000_000,
+      credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
+    });
+    expect(full).toContain('--add-host'); // guard: the builder still emits it, so this test can fail
+
+    const stripped = withoutHostGateway(full);
+    expect(stripped).not.toContain('--add-host');
+    expect(stripped.some((a) => a.includes('host-gateway'))).toBe(false);
+    expect(stripped).toHaveLength(full.length - 2);
+    // Everything the session actually needs survives.
+    expect(stripped.join(' ')).toContain(`${CRED.hostHome}:${CRED.containerHome}`);
+    expect(stripped.join(' ')).toContain(`${KANBAN}:${KANBAN}`);
+    expect(stripped.slice(-4)).toEqual(['dtach', '-N', dtachSocket(SID), 'claude']);
   });
 });
 

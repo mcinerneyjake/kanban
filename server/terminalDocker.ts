@@ -19,15 +19,22 @@ interface Spawned {
 type SpawnStdio = 'ignore' | ['ignore', 'ignore', 'pipe'];
 type SpawnFn = (command: string, args: readonly string[], options: { stdio: SpawnStdio; env?: NodeJS.ProcessEnv }) => Spawned;
 
-// Cap on the diagnostic we buffer from a failing docker command. Its errors are a line or two, so
-// anything beyond this is a runaway stream rather than a diagnosis — and the buffer is held for the
-// life of the call.
+// Cap on the diagnostic we buffer from a failing docker command. We keep the TAIL, not the head:
+// docker writes pull progress to stderr before the error, so a head-first cap can truncate away the
+// very message a caller branches on (tkt-1cb370e16c55 review).
 const MAX_STDERR_CHARS = 4_000;
 
 // Docker echoes a rejected argument into its own stderr (verified, 29.6.2), so "we never log the
 // argv" doesn't keep a credential-bearing LLM_BASE_URL out of the log (tkt-281272b5ef77).
 export function redactUserinfo(text: string): string {
   return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s"'/@]+@/gi, '$1***@');
+}
+
+// Outcome of a `docker` invocation. `stderr` is '' unless the caller passed a `context` (only then is
+// it piped) — so a caller that wants to branch on the message must ask for capture.
+export interface RunResult {
+  code: number | null;
+  stderr: string;
 }
 
 // A running session container discovered via `docker ps`, with its creation time (from the
@@ -43,11 +50,12 @@ export interface DockerCli {
   // Best-effort async force-remove (kill + rm); a missing container is not an error. Detached
   // session containers run without `--rm`, so dispose must remove them explicitly.
   remove(name: string): void;
-  // Run a container (or any `docker` subcommand) to completion; resolves its exit code, or null if
-  // `docker` couldn't spawn. Pass `context` when a non-zero exit is a real failure: it pipes docker's
-  // stderr and logs it (tkt-c19be6016578), turning "failed to start session container" into docker's
-  // own diagnosis. OMIT it for probes that expect non-zero — see the note on the implementation.
-  run(args: string[], opts?: { env?: NodeJS.ProcessEnv; context?: string }): Promise<number | null>;
+  // Run a container (or any `docker` subcommand) to completion; resolves its exit code (null if
+  // `docker` couldn't spawn) plus whatever it wrote to stderr. Pass `context` when a non-zero exit is
+  // a real failure: it pipes docker's stderr, logs it (tkt-c19be6016578), and returns it so a caller
+  // can BRANCH on the message — which is how the host-gateway retry works (tkt-1cb370e16c55). OMIT it
+  // for probes that expect non-zero; `stderr` is then always '' because nothing is piped.
+  run(args: string[], opts?: { env?: NodeJS.ProcessEnv; context?: string }): Promise<RunResult>;
   // Running containers matching ALL `filterLabels` (each a `key` or `key=value`) → [{name, session}]
   // where session is the `sessionLabelKey` value. Used at boot to re-adopt containers that outlived a
   // restart (S3a) and periodically by the reaper (S3b). Each row also carries createdAtMs from the
@@ -92,18 +100,22 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
           ? spawn('docker', args, { stdio: ['ignore', 'ignore', 'pipe'], env: opts.env })
           : spawn('docker', args, { stdio: 'ignore', env: opts.env });
         let stderr = '';
-        if (context) proc.stderr?.on('data', (d) => { if (stderr.length < MAX_STDERR_CHARS) stderr += String(d); });
+        // Keep the last MAX_STDERR_CHARS, so a late error survives earlier pull progress.
+        if (context) proc.stderr?.on('data', (d) => {
+          stderr += String(d);
+          if (stderr.length > MAX_STDERR_CHARS) stderr = stderr.slice(-MAX_STDERR_CHARS);
+        });
+        const detail = (): string => redactUserinfo(stderr.trim());
         proc.on('exit', (code) => {
+          const message = detail();
           if (context && code !== 0) {
-            // We never add the argv — but docker puts a rejected one in stderr itself, so redact.
-            const detail = redactUserinfo(stderr.trim().slice(0, MAX_STDERR_CHARS));
-            console.error(`[terminal] docker ${context} exited ${code ?? 'null'}${detail ? `: ${detail}` : ' (no stderr)'}`);
+            console.error(`[terminal] docker ${context} exited ${code ?? 'null'}${message ? `: ${message}` : ' (no stderr)'}`);
           }
-          resolve(code);
+          resolve({ code, stderr: message });
         });
         proc.on('error', (err) => {
           if (context) console.error(`[terminal] docker ${context} failed to spawn:`, err instanceof Error ? err.message : err);
-          resolve(null);
+          resolve({ code: null, stderr: detail() });
         });
       });
     },

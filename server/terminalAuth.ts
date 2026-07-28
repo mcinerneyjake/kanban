@@ -177,6 +177,22 @@ function isLoopbackHost(hostname: string): boolean {
   return false;
 }
 
+// Docker QUOTES the offending value (`%q`), so the real text is `add-host: "host-gateway"` — verified
+// against docker 29.6.2, not guessed. Matching the phrase plus host-gateway anywhere on the same line
+// covers quoted, unquoted and whole-pair spellings while still rejecting `add-host: "not-an-ip"`.
+// An engine that words its rejection differently won't match and keeps the old hard failure
+// (tkt-1cb370e16c55).
+export function isHostGatewayRejection(stderr: string): boolean {
+  return /invalid IP address in add-host:[^\n]*host-gateway/i.test(stderr);
+}
+
+// Two adjacent argv entries, matched on the exact value we emit so a foreign --add-host survives.
+export function withoutHostGateway(args: readonly string[]): string[] {
+  const i = args.indexOf('--add-host');
+  if (i === -1 || args[i + 1] !== `${CONTAINER_HOST_ALIAS}:host-gateway`) return [...args];
+  return [...args.slice(0, i), ...args.slice(i + 2)];
+}
+
 // Rewrite a host-loopback URL so a container can reach it (tkt-c0cf617fdcc4). Inside a container
 // `localhost` is the container itself, so the agent's default endpoint resolves to nothing listening.
 // Only loopback is rewritten — a LAN or remote endpoint is already reachable and must pass through

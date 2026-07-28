@@ -42,14 +42,14 @@ describe('spawnDockerCli', () => {
     const p = spawnDockerCli(spawn).run(['run', '--rm', 'img', 'true'], { env: { X: '1' } });
     expect(spawn).toHaveBeenCalledWith('docker', ['run', '--rm', 'img', 'true'], { stdio: 'ignore', env: { X: '1' } });
     child.emit('exit', 0);
-    expect(await p).toBe(0);
+    expect(await p).toEqual({ code: 0, stderr: '' });
   });
 
   it('run resolves null when docker cannot spawn', async () => {
     const child = fakeChild();
     const p = spawnDockerCli(() => child).run(['run', 'img']);
     child.emit('error', new Error('ENOENT'));
-    expect(await p).toBeNull();
+    expect(await p).toEqual({ code: null, stderr: '' });
   });
 
   // tkt-c19be6016578 — a non-zero `docker run` used to discard stderr, so every container-start
@@ -61,13 +61,13 @@ describe('spawnDockerCli', () => {
       const spawn = vi.fn(() => child);
       const p = spawnDockerCli(spawn).run(['run', 'img'], { context: 'run (session container)' });
       expect(spawn).toHaveBeenCalledWith('docker', ['run', 'img'], { stdio: ['ignore', 'ignore', 'pipe'], env: undefined });
-      child.stderr.emit('data', 'docker: invalid IP address in add-host: host-gateway\n');
+      // Verbatim docker 29.6.2 output, not a paraphrase — see the note in terminalAuth.test.ts.
+      const real = 'invalid argument "host.docker.internal:host-gateway" for "--add-host" flag: invalid IP address in add-host: "host-gateway"';
+      child.stderr.emit('data', `${real}\n`);
       child.emit('exit', 125);
-      expect(await p).toBe(125);
+      expect(await p).toEqual({ code: 125, stderr: real });
       expect(err).toHaveBeenCalledTimes(1);
-      expect(err.mock.calls[0]?.[0]).toBe(
-        '[terminal] docker run (session container) exited 125: docker: invalid IP address in add-host: host-gateway',
-      );
+      expect(err.mock.calls[0]?.[0]).toBe(`[terminal] docker run (session container) exited 125: ${real}`);
       err.mockRestore();
     });
 
@@ -80,8 +80,10 @@ describe('spawnDockerCli', () => {
       const spawn = vi.fn(() => child);
       const p = spawnDockerCli(spawn).run(['exec', 'kanban-term-abc', 'true']);
       expect(spawn).toHaveBeenCalledWith('docker', ['exec', 'kanban-term-abc', 'true'], { stdio: 'ignore', env: undefined });
+      // Even if the child writes, nothing is subscribed — so it can neither be logged nor returned.
+      child.stderr.emit('data', 'container is not running');
       child.emit('exit', 1);
-      expect(await p).toBe(1);
+      expect(await p).toEqual({ code: 1, stderr: '' });
       expect(err).not.toHaveBeenCalled();
       err.mockRestore();
     });
@@ -92,7 +94,10 @@ describe('spawnDockerCli', () => {
       const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (deps install)' });
       child.stderr.emit('data', 'some progress chatter\n'); // docker writes non-error output to stderr too
       child.emit('exit', 0);
-      expect(await p).toBe(0);
+      // Full-result assertion, matching its siblings: the success path must still RETURN the captured
+      // stderr (trimmed + capped), since a caller may branch on a successful run's message. Asserting
+      // only `.code` here left that half of the contract unpinned.
+      expect(await p).toEqual({ code: 0, stderr: 'some progress chatter' });
       expect(err).not.toHaveBeenCalled();
       err.mockRestore();
     });
@@ -102,7 +107,7 @@ describe('spawnDockerCli', () => {
       const child = fakeChildWithStderr();
       const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (deps install)' });
       child.emit('exit', 1);
-      expect(await p).toBe(1);
+      expect(await p).toEqual({ code: 1, stderr: '' });
       expect(err.mock.calls[0]?.[0]).toBe('[terminal] docker run (deps install) exited 1 (no stderr)');
       err.mockRestore();
     });
@@ -112,7 +117,7 @@ describe('spawnDockerCli', () => {
       const child = fakeChildWithStderr();
       const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (session container)' });
       child.emit('error', new Error('ENOENT'));
-      expect(await p).toBeNull();
+      expect(await p).toEqual({ code: null, stderr: '' });
       expect(err).toHaveBeenCalledWith('[terminal] docker run (session container) failed to spawn:', 'ENOENT');
       err.mockRestore();
     });
@@ -133,17 +138,17 @@ describe('spawnDockerCli', () => {
       err.mockRestore();
     });
 
-    it('redacts userinfo that docker itself echoed into stderr', async () => {
+    it('redacts userinfo that docker itself echoed into stderr, in the log AND the result', async () => {
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
       const child = fakeChildWithStderr();
       const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (session container)' });
       child.stderr.emit('data', 'invalid argument "=http://user:sekret@localhost:1234/v1" for "-e, --env" flag\n');
       child.emit('exit', 125);
-      await p;
-      const logged = String(err.mock.calls[0]?.[0]);
-      expect(logged).not.toContain('sekret');
-      expect(logged).toContain('http://***@localhost:1234/v1');
-      expect(logged).toContain('for "-e, --env" flag'); // the diagnosis survives redaction
+      const { stderr } = await p;
+      expect(stderr).not.toContain('sekret');
+      expect(stderr).toContain('http://***@localhost:1234/v1');
+      expect(stderr).toContain('for "-e, --env" flag'); // the diagnosis survives redaction
+      expect(err.mock.calls.flat().join(' ')).not.toContain('sekret');
       err.mockRestore();
     });
 
@@ -160,7 +165,25 @@ describe('spawnDockerCli', () => {
       expect(logged.length).toBeLessThan(5_000); // …and kept ~4 KB of the 100 KB emitted
       err.mockRestore();
     });
+
+    // Head-first capping would drop the error: docker writes image-pull progress to stderr BEFORE
+    // the failure, and this string is now load-bearing for the host-gateway retry decision.
+    it('keeps the TAIL, so a late error survives earlier progress chatter', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const child = fakeChildWithStderr();
+      const p = spawnDockerCli(() => child).run(['run', 'img'], { context: 'run (session container)' });
+      for (let i = 0; i < 100; i++) child.stderr.emit('data', `pulling layer ${i}: ${'.'.repeat(500)}\n`);
+      child.stderr.emit('data', 'invalid IP address in add-host: "host-gateway"\n');
+      child.emit('exit', 125);
+      const { stderr } = await p;
+      expect(stderr).toContain('invalid IP address in add-host'); // the message that matters survived
+      expect(stderr.length).toBeLessThanOrEqual(4_000);
+      err.mockRestore();
+    });
   });
+
+  // Docker echoes a REJECTED argument verbatim into its own stderr, so "we never log the argv" does
+  // not keep a credential out of the log (tkt-1cb370e16c55 review; tkt-281272b5ef77).
 });
 
 describe('parsePsLines', () => {
