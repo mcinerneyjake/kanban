@@ -33,3 +33,13 @@ export function apiPort(env: NodeJS.ProcessEnv = process.env): number {
 export function webPort(env: NodeJS.ProcessEnv = process.env): number {
   return BASE_WEB_PORT + portOffset(env);
 }
+
+// With no derived URL to import, the e2e layer hand-wrote literals and silently un-did the offset —
+// seeding fixtures on the base API while asserting against the shifted app (tkt-914fec6e5084).
+export function apiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return `http://localhost:${apiPort(env)}`;
+}
+
+export function webBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return `http://localhost:${webPort(env)}`;
+}

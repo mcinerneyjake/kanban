@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from 'playwright/test';
+import { apiBaseUrl } from '../shared/ports.js';
 
-const API = 'http://localhost:3001/api';
+const API = `${apiBaseUrl()}/api`;
 
 // Clean up any tickets matching a given title so stale runs don't cause strict-mode failures.
 async function deleteByTitle(request: APIRequestContext, title: string) {

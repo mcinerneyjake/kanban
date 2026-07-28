@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { portOffset, apiPort, webPort } from './ports.js';
+import { portOffset, apiPort, webPort, apiBaseUrl, webBaseUrl } from './ports.js';
 
 describe('portOffset', () => {
   it('defaults to 0 when unset', () => {
@@ -47,5 +47,28 @@ describe('apiPort / webPort', () => {
   it('falls back to the offset when PORT is junk rather than binding NaN', () => {
     expect(apiPort({ PORT: 'nope', KANBAN_PORT_OFFSET: '1' })).toBe(3002);
     expect(apiPort({ PORT: '0' })).toBe(3001);
+  });
+});
+
+describe('apiBaseUrl / webBaseUrl', () => {
+  it('defaults to the documented pair', () => {
+    expect(apiBaseUrl({})).toBe('http://localhost:3001');
+    expect(webBaseUrl({})).toBe('http://localhost:5173');
+  });
+
+  // tkt-914fec6e5084 (FIXED) — a hardcoded literal fails this.
+  it('shifts with the offset instead of pinning the base port', () => {
+    const env = { KANBAN_PORT_OFFSET: '1' };
+    expect(apiBaseUrl(env)).toBe('http://localhost:3002');
+    expect(webBaseUrl(env)).toBe('http://localhost:5174');
+    expect(apiBaseUrl(env)).not.toBe(apiBaseUrl({}));
+    expect(webBaseUrl(env)).not.toBe(webBaseUrl({}));
+  });
+
+  it('stays consistent with apiPort/webPort for any offset, including an explicit PORT', () => {
+    for (const env of [{}, { KANBAN_PORT_OFFSET: '3' }, { PORT: '8080' }, { PORT: '8080', KANBAN_PORT_OFFSET: '2' }]) {
+      expect(apiBaseUrl(env)).toBe(`http://localhost:${apiPort(env)}`);
+      expect(webBaseUrl(env)).toBe(`http://localhost:${webPort(env)}`);
+    }
   });
 });
