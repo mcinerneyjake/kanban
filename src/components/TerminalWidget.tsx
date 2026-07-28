@@ -3,7 +3,7 @@ import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor, type TerminalStatus } from '../lib/terminalReconnect';
-import { clipboardIntent, decidePaste, pastePreview } from '../lib/terminalClipboard';
+import { clipboardIntent, decidePaste } from '../lib/terminalClipboard';
 import { serializeBuffer } from '../lib/terminalBuffer';
 import TerminalPipelinePhase from './TerminalPipelinePhase.js';
 
@@ -354,6 +354,7 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
   // would confirm the paste the bar exists to question.
   useEffect(() => { if (pendingPaste) cancelPasteRef.current?.focus(); }, [pendingPaste]);
 
+
   useEffect(() => {
     if (!pasteNotice) return;
     const id = setTimeout(() => setPasteNotice(null), 5000);
@@ -429,20 +430,37 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
             would leave the session a row taller than the pane. */}
         {pendingPaste && (
           <div
-            className="tw-paste-bar"
-            role="group"
+            className="tw-paste-bar confirm"
+            // alertdialog, not group: the warning must be announced when the bar appears, since focus
+            // goes to Cancel and a group would leave a screen-reader user deciding in silence.
+            role="alertdialog"
+            aria-modal="true"
             aria-label="Confirm paste"
+            aria-describedby="tw-paste-warning"
             onKeyDown={(e) => { if (e.key === 'Escape') resolvePaste(false); }}
           >
-            <span className="tw-paste-msg">
+            <div className="tw-paste-msg" id="tw-paste-warning">
               Paste {pendingPaste.lines} lines? Nothing is bracketing this paste, so each line break runs as a command.
-              {' '}<code>{pastePreview(pendingPaste.text)}</code>
-            </span>
+              {/* wrap="off" as in the copy view (tkt-2fa9b657008f): with soft wrap a long command
+                  draws extra rows, so a visual break would no longer mean a real one — and this bar's
+                  whole warning is about what a line break does. */}
+              <textarea
+                className="tw-paste-preview"
+                readOnly
+                wrap="off"
+                value={pendingPaste.text}
+                rows={6}
+                spellCheck={false}
+                aria-label={`Pending paste, ${pendingPaste.lines} lines`}
+              />
+            </div>
             <button className="tw-paste-btn primary" onClick={() => resolvePaste(true)}>Paste</button>
             <button className="tw-paste-btn" ref={cancelPasteRef} onClick={() => resolvePaste(false)}>Cancel</button>
           </div>
         )}
-        {pasteNotice && <div className="tw-paste-bar" role="status">{pasteNotice}</div>}
+        {/* Suppressed while a confirm is open: both bars are absolute/top:0/z-index:1, so the notice
+            (which Copy can raise mid-confirm) would paint over the security warning. */}
+        {pasteNotice && !pendingPaste && <div className="tw-paste-bar" role="status">{pasteNotice}</div>}
       </div>
       {/* Screen readers get the reconnect/recovery cue that used to live in the (now removed) overlay. */}
       <span className="sr-only" role="status" aria-live="polite">{liveMsg}</span>

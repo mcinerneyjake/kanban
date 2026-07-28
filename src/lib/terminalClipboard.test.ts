@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clipboardIntent, decidePaste, sanitizePaste, pastePreview, MAX_PASTE_CHARS, type KeyChord,
+  clipboardIntent, decidePaste, sanitizePaste, MAX_PASTE_CHARS, type KeyChord,
 } from './terminalClipboard';
 
 const chord = (over: Partial<KeyChord>): KeyChord => ({
@@ -55,7 +55,20 @@ describe('sanitizePaste', () => {
     expect(sanitizePaste('a\x00b\x07c\x1bd\x7fe\x9ff')).toBe('abcdef');
   });
 
-  it('strips bidi and zero-width chars, so the preview cannot render differently from what is sent', () => {
+  // U+2028/U+2029 are line SEPARATORS carrying real content, so they are normalized rather than
+  // deleted: deleting them spliced two commands into one token with no [\r\n] left to trip the
+  // confirmation bar at all (tkt-9e3fd0da8398 review). Escapes, not literals — a literal separator
+  // does not survive a copy-paste through a shell, which silently weakens the fixture.
+  it('normalizes U+2028/U+2029 to a newline rather than deleting them', () => {
+    expect(sanitizePaste('a b c')).toBe('a\nb\nc');
+  });
+
+  it('keeps a U+2028-separated paste in the confirmation bar, with both commands intact', () => {
+    expect(decidePaste('git status rm -rf ~', { bracketedPaste: false }))
+      .toEqual({ kind: 'confirm', text: 'git status\nrm -rf ~', lines: 2 });
+  });
+
+  it('strips explicit bidi and zero-width controls, so they cannot reorder the preview', () => {
     expect(sanitizePaste('echo ‮diohw‬​')).toBe('echo diohw');
     expect(sanitizePaste('﻿git⁦ ⁩status')).toBe('git status');
   });
@@ -98,13 +111,5 @@ describe('decidePaste', () => {
 
   it('measures the cap against the sanitized text', () => {
     expect(decidePaste(`${'\x00'.repeat(1000)}${'x'.repeat(MAX_PASTE_CHARS)}`, { bracketedPaste: true }).kind).toBe('send');
-  });
-});
-
-describe('pastePreview', () => {
-  it('shows the first line only, clipped', () => {
-    expect(pastePreview('first\nsecond')).toBe('first');
-    expect(pastePreview('first\r\nsecond')).toBe('first');
-    expect(pastePreview('y'.repeat(80))).toBe(`${'y'.repeat(59)}…`);
   });
 });
