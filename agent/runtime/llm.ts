@@ -273,7 +273,7 @@ export class RuntimeChatClient implements ChatClient {
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'TimeoutError') {
-        throw new Error(`Chat request timed out after ${CHAT_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`);
+        throw new Error(`Chat request timed out after ${CHAT_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`, { cause: err });
       }
       throw err;
     }

@@ -108,7 +108,7 @@ export class RuntimeEmbedder implements Embedder {
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'TimeoutError') {
-        throw new Error(`Embeddings request timed out after ${EMBED_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`);
+        throw new Error(`Embeddings request timed out after ${EMBED_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`, { cause: err });
       }
       throw err;
     }

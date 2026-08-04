@@ -178,8 +178,12 @@ describe('RuntimeChatClient (mocked fetch)', () => {
   });
 
   it('reports a friendly error when the request times out', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))));
+    const original = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(original)));
+    // The friendly message replaces the opaque 'aborted'; `cause` keeps the original reachable
+    // for diagnosis (preserve-caught-error, tkt-bcbca06a0df3).
     await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/timed out/);
+    await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toMatchObject({ cause: original });
   });
 
   it('available() returns true and probes /models when the runtime responds', async () => {

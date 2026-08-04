@@ -31,6 +31,11 @@ updates:
       # and its types in the same change (tkt-b3867cc89402).
       - dependency-name: '@types/node'
         update-types: [version-update:semver-major]
+      # ticket-workflow is pinned to a git TAG, not a registry range, and Dependabot mis-sorts those
+      # tags — #231 proposed v0.6.0 → v0.5.0, a downgrade wearing a "bump" label that would have
+      # silently reverted a shipped feature. This pin moves by hand when a new tag is cut and
+      # consumed; there is no version a bot can correctly pick for it (tkt-bcbca06a0df3).
+      - dependency-name: 'ticket-workflow'
     commit-message:
       prefix: chore
       include: scope
