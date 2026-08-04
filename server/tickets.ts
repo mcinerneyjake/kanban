@@ -4,10 +4,13 @@
 // removes; naming them makes that a compile error here instead.
 // Note the board root now resolves via the package's paths.ts
 // (BOARD_DIR_OVERRIDE ?? CLAUDE_PROJECT_DIR ?? cwd), not __dirname.
+export type { BoardListing, UnreadableTicketFile } from 'ticket-workflow';
 export {
   getTicketsDir,
   HttpError,
   listTickets,
+  listBoard,
+  filterBySearch,
   listProjects,
   getTicket,
   createTicket,

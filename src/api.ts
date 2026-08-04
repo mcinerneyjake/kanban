@@ -1,4 +1,7 @@
 import type { Ticket, DashboardSummary, EconomicsSummary, EconomicsRunDetail, TicketEventsResponse } from '../shared/constants.js';
+// Type-only, so it is erased before the bundle — the service's own shape, not a hand-copy
+// that could drift from the wire format (tkt-6cd916608a2f).
+import type { BoardListing } from 'ticket-workflow';
 
 // Network-level fetch rejections (offline/DNS) propagate as TypeError, not here.
 async function throwIfError(res: Response): Promise<void> {
@@ -28,7 +31,7 @@ export interface IntakeProposal { action: string; args: Record<string, unknown> 
 export interface ProposeResult { proposal: IntakeProposal | null; summary: string; runId: string }
 
 export const api = {
-  list: (): Promise<Ticket[]> => get('/api/tickets'),
+  list: (): Promise<BoardListing> => get('/api/tickets'),
   get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),

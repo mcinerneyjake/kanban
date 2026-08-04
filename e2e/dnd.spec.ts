@@ -20,7 +20,8 @@ async function getTicketList(
   request: APIRequestContext,
 ): Promise<Array<{ id: string; order: number; status: string }>> {
   const res = await request.get(`${API}/tickets`);
-  return res.json();
+  const board: { tickets: Array<{ id: string; order: number; status: string }> } = await res.json();
+  return board.tickets;
 }
 
 // Find a ticket by id, failing loudly if it's missing — avoids a non-null

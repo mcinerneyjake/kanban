@@ -6,8 +6,8 @@ const API = `${apiBaseUrl()}/api`;
 // Clean up any tickets matching a given title so stale runs don't cause strict-mode failures.
 async function deleteByTitle(request: APIRequestContext, title: string) {
   const res = await request.get(`${API}/tickets`);
-  const tickets: { id: string; title: string }[] = await res.json();
-  for (const t of tickets.filter((t) => t.title === title)) {
+  const board: { tickets: { id: string; title: string }[] } = await res.json();
+  for (const t of board.tickets.filter((t) => t.title === title)) {
     await request.delete(`${API}/tickets/${t.id}`);
   }
 }

@@ -132,6 +132,9 @@ body {
   font-size: 14px;
 }
 
+/* Not dismissible, so no pointer cursor promising a click that does nothing. */
+.error.persistent { cursor: default; }
+
 /* --- Filter popover ---------------------------------------------------- */
 .fp-anchor {
   position: relative;
