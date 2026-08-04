@@ -1,0 +1,43 @@
+# Scheduled dependency updates (tkt-23d0b499f57a). Modeled on portfolio-site's (tkt-ae93ec704c27),
+# with two deliberate differences — see the security-updates group and the github-actions entry.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # `applies-to` defaults to version-updates, so groups do NOT cover security updates unless
+      # asked. That default is exactly how 8 ungrouped security PRs accumulated, each touching
+      # package-lock.json so merging any one forced the other seven to rebase (tkt-33738be77d99).
+      # Grouping them is the whole point of this file — do not drop this block.
+      security:
+        applies-to: security-updates
+        patterns: ['*']
+      production-minor-patch:
+        dependency-type: production
+        update-types: [minor, patch]
+      development-minor-patch:
+        dependency-type: development
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # Kanban pins actions by major tag (`actions/checkout@v5`), not by SHA as portfolio-site does, so
+  # this only ever fires on a major bump — the floating tag absorbs everything below it. Low volume
+  # by construction, which is why the limit is small rather than because majors are grouped.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: chore
