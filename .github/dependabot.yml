@@ -23,6 +23,14 @@ updates:
       development-minor-patch:
         dependency-type: development
         update-types: [minor, patch]
+    ignore:
+      # @types/node must track the Node runtime in `engines` (>=24), never run ahead of it — types
+      # for Node 26 APIs let typecheck pass code the runtime cannot execute. tkt-f1ca2c440d83 already
+      # pinned this down once (^26 → ^20) and #223 tried to reintroduce it; without this ignore that
+      # PR returns every week and gets re-litigated. Lift it when `engines` moves, bumping the runtime
+      # and its types in the same change (tkt-b3867cc89402).
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: chore
       include: scope
