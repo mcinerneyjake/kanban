@@ -8,10 +8,16 @@ export default tseslint.config(
   // .gitignore, so every generated dir `eslint .` could traverse must be listed
   // here explicitly (coverage from vitest; test-results + playwright-report from
   // the e2e run, whose HTML report bundles lintable JS).
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'test-results/**', 'playwright-report/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'test-results/**', 'playwright-report/**', '.claude/worktrees/**'] },
   js.configs.recommended,
   tseslint.configs.recommended,
   reactHooks.configs.flat.recommended,
+  // Pin the root explicitly: a worktree under .claude/worktrees is a second full checkout with its
+  // own tsconfig, so typescript-eslint sees multiple candidate roots and fails EVERY file with a
+  // parse error — 454 of them, enforcing nothing. CI never sees it (no worktree there), so without
+  // this the breakage lands only on whoever followed CLAUDE.md and made one. Same root cause the
+  // vitest exclude above fixes for the test runner (tkt-17d81c74b662).
+  { languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } } },
   {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
