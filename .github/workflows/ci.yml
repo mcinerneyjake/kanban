@@ -4,6 +4,11 @@ name: CI
 # so every PR into main must pass the same checks before it can be merged — and
 # the gate is enforced even if a contributor bypasses the local hook. CI runs the
 # coverage variant so the per-layer thresholds in vitest.config.ts are enforced too.
+#
+# The build step goes beyond the local hook on purpose: typecheck/lint/test never
+# invoke the bundler, so a frontend-breaking change compiled green until it reached
+# a human. Dependabot's vite 5→8 PR (#195) carried a green gate that proved nothing
+# about whether the app still built (tkt-29aa091a74f1).
 on:
   pull_request:
     branches: [main]
@@ -33,3 +38,4 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:coverage
+      - run: npm run build
