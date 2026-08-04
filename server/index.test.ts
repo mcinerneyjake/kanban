@@ -34,10 +34,10 @@ async function seedTicket(id: string, title = 'Test ticket', body = '') {
 }
 
 describe('GET /api/tickets', () => {
-  it('returns an empty array when no tickets exist', async () => {
+  it('returns an empty board when no tickets exist', async () => {
     const res = await request(app).get('/api/tickets');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.body).toEqual({ tickets: [], unreadable: [] });
   });
 
   it('returns all tickets', async () => {
@@ -45,7 +45,54 @@ describe('GET /api/tickets', () => {
     await seedTicket('def123456789', 'Second');
     const res = await request(app).get('/api/tickets');
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(2);
+    expect(res.body.tickets).toHaveLength(2);
+    expect(res.body.unreadable).toEqual([]);
+  });
+
+  // tkt-6cd916608a2f — a corrupt file is skipped so the board survives, but the client
+  // must be told: a short array is otherwise indistinguishable from the whole board.
+  describe('unreadable ticket files', () => {
+    // The real trigger: a hand-edited unquoted title whose colon makes YAML read
+    // "Fix the seam" as a nested mapping key.
+    const UNQUOTED_COLON = '---\ntitle: Fix the seam: stale tabs\ntype: task\n---\n';
+
+    it('serves the readable tickets and names the unreadable file', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
+      await seedTicket('abc123456789', 'Good');
+      await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
+
+      const res = await request(app).get('/api/tickets');
+
+      expect(res.status).toBe(200); // one bad file must not 500 the board (tkt-cd9d5026c34f)
+      expect(res.body.tickets.map((t: { id: string }) => t.id)).toEqual(['abc123456789']);
+      expect(res.body.unreadable).toEqual([{ file: 'tkt-colon.md', reason: expect.any(String) }]);
+      warn.mockRestore();
+    });
+
+    it('still reports the unreadable file on the search path', async () => {
+      // Search must not re-read the board — a second read would drop the report.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
+      await seedTicket('abc123456789', 'Findable');
+      await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
+
+      const res = await request(app).get('/api/tickets?q=findable');
+
+      expect(res.body.tickets.map((t: { id: string }) => t.id)).toEqual(['abc123456789']);
+      expect(res.body.unreadable).toHaveLength(1);
+      warn.mockRestore();
+    });
+
+    it('narrows the tickets by q while leaving unreadable board-wide', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence */ });
+      await seedTicket('abc123456789', 'Findable');
+      await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
+
+      const res = await request(app).get('/api/tickets?q=nomatch');
+
+      expect(res.body.tickets).toEqual([]);
+      expect(res.body.unreadable).toHaveLength(1); // a filter must never hide it
+      warn.mockRestore();
+    });
   });
 });
 
@@ -368,15 +415,15 @@ describe('GET /api/tickets?q= (search)', () => {
     await seedTicket('abc444444444', 'Add dashboard');
     const res = await request(app).get('/api/tickets?q=login');
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].title).toBe('Fix login bug');
+    expect(res.body.tickets).toHaveLength(1);
+    expect(res.body.tickets[0].title).toBe('Fix login bug');
   });
 
   it('search is case-insensitive', async () => {
     await seedTicket('abc555555555', 'Fix Login Bug');
     const res = await request(app).get('/api/tickets?q=LOGIN');
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
+    expect(res.body.tickets).toHaveLength(1);
   });
 
   it('matches tickets by body content', async () => {
@@ -384,15 +431,15 @@ describe('GET /api/tickets?q= (search)', () => {
     await seedTicket('abc777777777', 'Another ticket', 'Nothing relevant');
     const res = await request(app).get('/api/tickets?q=password');
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].id).toBe('abc666666666');
+    expect(res.body.tickets).toHaveLength(1);
+    expect(res.body.tickets[0].id).toBe('abc666666666');
   });
 
-  it('returns empty array when nothing matches', async () => {
+  it('returns an empty tickets array when nothing matches', async () => {
     await seedTicket('abc888888888', 'Some ticket');
     const res = await request(app).get('/api/tickets?q=xyzzy-no-match');
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(0);
+    expect(res.body.tickets).toHaveLength(0);
   });
 });
 

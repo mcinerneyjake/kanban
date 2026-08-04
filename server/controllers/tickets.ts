@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import {
-  listTickets,
-  searchTickets,
+  listBoard,
+  filterBySearch,
   getTicket,
   createTicket,
   updateTicket,
@@ -12,9 +12,14 @@ import { ticketId } from '../schemas/params.js';
 
 // Thin orchestration: read request → service → response. :id narrowing in ticketId(); the service owns id-format validation.
 
+// Envelope, not a bare array: a ticket file that won't parse is skipped so one bad
+// file can't 500 the board, and `unreadable` is how the client learns the board is
+// bigger than the array it just got (tkt-6cd916608a2f). One board read serves both
+// branches — re-reading for search would discard that report.
 export async function list(req: Request, res: Response): Promise<void> {
   const q = parseSearchTerm(req.query.q);
-  res.json(q ? await searchTickets(q) : await listTickets());
+  const { tickets, unreadable } = await listBoard();
+  res.json({ tickets: q ? filterBySearch(tickets, q) : tickets, unreadable });
 }
 
 export async function get(req: Request, res: Response): Promise<void> {

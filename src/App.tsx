@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { api } from './api.js';
+import type { UnreadableTicketFile } from 'ticket-workflow';
 import Board from './components/Board.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import EconomicsDashboard from './components/EconomicsDashboard.jsx';
@@ -45,6 +46,7 @@ export default function App() {
   const { theme, toggle } = useTheme();
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [unreadable, setUnreadable] = useState<UnreadableTicketFile[]>([]);
   const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   // Non-null → Save routes through intake-apply (provenance + metering), not the human route.
@@ -85,7 +87,11 @@ export default function App() {
 
   const load = useCallback(() => {
     api.list()
-      .then((t) => { setTickets(t); setRefreshKey((k) => k + 1); })
+      .then((board) => {
+        setTickets(board.tickets);
+        setUnreadable(board.unreadable);
+        setRefreshKey((k) => k + 1);
+      })
       .catch((e: Error) => setError(e.message));
   }, []);
 
@@ -303,6 +309,16 @@ export default function App() {
         </header>
 
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+        {/* Not dismissible: the board below is missing these tickets until the files are
+            fixed, and a warning you can wave away is the silence this replaced. */}
+        {unreadable.length > 0 && (
+          <div className="error persistent" role="alert">
+            {unreadable.length} ticket file(s) could not be read and are missing from this board:{' '}
+            {unreadable.map((u) => u.file).join(', ')} — fix the frontmatter (an unquoted title
+            containing a colon is the usual cause).
+          </div>
+        )}
 
         {view === 'board' ? (
           <>
