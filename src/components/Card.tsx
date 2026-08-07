@@ -3,6 +3,8 @@ import type { Ticket, TicketType } from '../../shared/constants.js';
 import CardProgress from './CardProgress.js';
 import ProvenanceBadge from './ProvenanceBadge.js';
 import { ticketProvenance } from '../lib/provenance.js';
+import { staleAge } from '../lib/ticketAge.js';
+import { formatIso } from '../lib/formatDate.js';
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' };
 
@@ -48,6 +50,9 @@ type Props = {
 function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlockerCount = 0, staleBlockerCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop);
   const [dropMode, setDropMode] = useState<DropMode>(null);
+  // Lazy init, not a bare Date.now(): reading the clock during render violates react-hooks/purity.
+  // Day-granularity, so a board left open overnight shows yesterday's count until it remounts.
+  const [mountedAt] = useState(() => Date.now());
   // Passive marker; the run's economics deep-link lives in the modal (ProvenanceNote).
   const provenance = ticketProvenance(ticket);
 
@@ -162,6 +167,16 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
           return (
             <span className={`badge due-date${cls}`} title={`Due ${ticket.dueDate}`}>
               📅 {formatDueDate(ticket.dueDate)}
+            </span>
+          );
+        })()}
+        {(() => {
+          const stale = staleAge(ticket, mountedAt);
+          if (!stale) return null;
+          const last = formatIso(ticket.updated, (d) => d.toLocaleDateString());
+          return (
+            <span className="badge stale" title={`Last updated ${last} — ${plural(stale.days, 'day')} ago`}>
+              ⏳ {stale.label}
             </span>
           );
         })()}
