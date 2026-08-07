@@ -594,6 +594,16 @@ body {
   color: #e0a44d;
 }
 
+/* Same amber as .stale-blocked, and for the same reason: attention, not a blocker. */
+.badge.stale {
+  background: #fff5e6;
+  color: #9a5b00;
+}
+[data-theme="dark"] .badge.stale {
+  background: #3a2c14;
+  color: #e0a44d;
+}
+
 .badge.due-date { background: var(--badge-bg); color: var(--muted); }
 .badge.due-date.due-today { background: #fff3cd; color: #7a5500; }
 .badge.due-date.overdue { background: #ffebe6; color: var(--danger); }
@@ -636,6 +646,17 @@ body {
   color: var(--muted);
 }
 .provenance-note .provenance-text { flex: 1 1 auto; }
+
+/* The modal's read-only created/updated stamps — same muted weight as the provenance row. */
+.ticket-dates {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 /* --- Parent crumb -------------------------------------------------------- */
 

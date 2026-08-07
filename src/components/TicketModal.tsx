@@ -12,6 +12,8 @@ import { type Prefill } from '../lib/proposalPrefill.js';
 import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge, createFromUpdatePrefill } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
+import { daysSince, formatAge } from '../lib/ticketAge.js';
+import { formatIso } from '../lib/formatDate.js';
 import Spinner from './ui/Spinner.js';
 import Modal from './ui/Modal.jsx';
 
@@ -57,6 +59,8 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
   const [form, setForm] = useState<FormState>(() => buildTicketForm(ticket, allTickets, initial));
   const [baseline] = useState<FormState>(() => buildTicketForm(ticket, allTickets));
   const [preview, setPreview] = useState(false);
+  // Lazy init, not a bare Date.now(): reading the clock during render violates react-hooks/purity.
+  const [mountedAt] = useState(() => Date.now());
   // Create mode only: live dedup as the title is typed.
   const related = useRelatedTickets(form.title, ticket === null);
   const relatedState = relatedStripState(related.matches.length > 0, related.loading, related.error);
@@ -293,6 +297,21 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
 
           {/* Provenance: agent-authored tickets link to their run's economics. */}
           {provenance && <ProvenanceNote source={provenance.source} runId={provenance.runId} onOpenRun={onOpenRun} />}
+
+          {/* Read-only, existing-ticket-only: the server owns both stamps. */}
+          {ticket && (() => {
+            const age = daysSince(ticket.updated, mountedAt);
+            return (
+              <div className="ticket-dates">
+                <span title={ticket.created}>🕐 Created {formatIso(ticket.created, (d) => d.toLocaleDateString())}</span>
+                {age !== null && (
+                  <span title={ticket.updated}>
+                    · updated {age === 0 ? 'today' : `${formatAge(age)} ago`}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Dedup: semantic matches as you type; click one to edit instead of duplicating. */}
           {relatedState !== 'hidden' && (
