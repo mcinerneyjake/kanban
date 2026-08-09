@@ -104,13 +104,23 @@ In **this repo's sessions**, every **new** ticket is authored by the local intak
    ```bash
    npm run agent -- --yes --create-only "<the report, in the user's words plus any clarifying detail>"
    ```
-   **ONE ISSUE PER RUN — this is the rule, not a preference.** The agent counts the issues it can
-   find in the report and creates one ticket per issue, so a report covering several things gets
-   **sprayed** into several thin tickets (and can hit the step budget and stop half-finished). This
-   includes *enumeration inside prose*: "three rules have no test: X, Y and Z" is a list as far as
-   the model is concerned, and produced three tickets on 2026-07-26. Describe **one symptom**, and
-   add any sub-parts yourself afterwards with `update_ticket`. For several findings, make several
-   runs. Cleanup when it sprays anyway: repurpose one create and `delete_ticket` the rest.
+   **ONE ISSUE PER RUN — this is the rule, not a preference.** A report covering several things gets
+   **sprayed** into several thin tickets. This includes *enumeration inside prose*: "three rules have
+   no test: X, Y and Z" is a list as far as the model is concerned, and produced three tickets on
+   2026-07-26. Describe **one symptom**, and add any sub-parts yourself afterwards with
+   `update_ticket`. For several findings, make several runs. Cleanup when it sprays anyway: repurpose
+   one create and `delete_ticket` the rest.
+
+   `tkt-dd22f37d1c60` hardened the runtime on both counts — the create-only prompt now says *prefer
+   ONE ticket for the whole report* (it used to say the opposite), and a create-only run is
+   hard-capped at **3 tickets created**. Neither replaces the rule above: the prompt is a bias on a
+   local model, not a guarantee, and the cap stops a runaway without preventing a 2–3-way split.
+   **The cap bounds tickets, not steps** — a blocked create still burns a loop step, so a model that
+   keeps retrying past the limit can still exhaust the 8-step budget and end on *"did not finish
+   within 8 steps"* instead of a summary naming ids. When the cap fires the CLI prints a
+   `! N further create_ticket call(s) were blocked` line (deterministic — the model's own summary
+   omits what it was blocked from filing). Seeing it means the report was too broad: re-file the
+   remainder as separate single-issue runs rather than raising the cap.
 
    `--yes` auto-approves the write so the create happens **inside** the metered run (the run→ticket linkage the run log needs). `--create-only` drops `update_ticket` from the agent's toolset so a mis-matched retrieval can only ever create a **new** ticket — never overwrite an existing ticket's body (the interactive `npm run agent` path keeps the anti-duplicate update behavior). The agent authors title + body and classifies the four fields; if a related ticket exists it cites the id in the body rather than updating it. **Trade-off:** a retrieval miss yields a duplicate (non-destructive — delete/merge later), never a clobbered body.
 3. **Report what landed.** After the run, state the resulting ticket **id + classified fields** (type/priority/status/project). The agent is *intake-tuned*, so an internal chore may land as `task`/`medium` or the wrong project — this gives the user a chance to correct any field via `update_ticket` (structured-field fixes stay Claude's). **Always `get_ticket` the result**: besides the classification, check for a *mis-matched related-id* (it cites plausible `tkt-…` refs that belong to other projects) and for a body that drifted off the report entirely, then fix it via `update_ticket`.

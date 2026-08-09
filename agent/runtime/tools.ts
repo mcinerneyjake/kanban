@@ -55,7 +55,7 @@ export const AGENT_TOOLS: ChatTool[] = buildAgentTools(AGENT_TOOL_NAMES);
 export const AGENT_TOOLS_CREATE_ONLY: ChatTool[] = buildAgentTools(CREATE_ONLY_TOOL_NAMES);
 
 // Text-only result matching the MCP ToolResult shape.
-function textResult(text: string, isError = false): ToolResult {
+export function textResult(text: string, isError = false): ToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
 

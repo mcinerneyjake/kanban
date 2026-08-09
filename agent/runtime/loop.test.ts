@@ -147,6 +147,145 @@ describe('runIntake', () => {
     expect(result.updatedIds).toHaveLength(0);
   });
 
+  // --- create cap (tkt-dd22f37d1c60): a runaway guard maxSteps cannot provide ---
+
+  it('stops creating once the create cap is reached, and the blocked write never lands', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{"title":"Cap under 1"}'),
+        toolCall('c2', 'create_ticket', '{"title":"Cap under 2"}'),
+        toolCall('c3', 'create_ticket', '{"title":"Cap over — must not exist"}'),
+      ]),
+      assistant('made two'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxCreates: 2 });
+    expect(result.outcome).toMatchObject({ created: 2, declined: 0, errored: false });
+    expect(result.createdIds).toHaveLength(2);
+    const board = await listTickets();
+    expect(board.some((t) => t.title === 'Cap over — must not exist')).toBe(false);
+  });
+
+  it('tells the model the cap is a hard stop, not a retryable failure', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Only one"}'), toolCall('c2', 'create_ticket', '{"title":"Blocked"}')]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxCreates: 1 });
+    const toolMsgs = result.messages.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2); // every tool_call still gets a response
+    expect(toolMsgs[1].content).toMatch(/limit reached/i);
+    expect(toolMsgs[1].content).toMatch(/do not call create_ticket again/i);
+  });
+
+  it('the cap bounds creates across turns, not just within one turn', async () => {
+    const chat: ChatClient = {
+      complete: () => Promise.resolve(assistant(null, [toolCall('c', 'create_ticket', '{"title":"Runaway"}')])),
+    };
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxSteps: 6, createOnly: true, maxCreates: 2 });
+    // Without the cap this spends all 6 steps minting tickets — the observed runaway shape.
+    expect(result.outcome.created).toBe(2);
+    expect((await listTickets()).filter((t) => t.title === 'Runaway')).toHaveLength(2);
+  });
+
+  it('a failed create does not consume the cap (no ticket reached the board)', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{}'), // no title → 400 → isError
+        toolCall('c2', 'create_ticket', '{"title":"Still allowed"}'),
+      ]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxCreates: 1 });
+    expect(result.outcome.created).toBe(1);
+    expect((await listTickets()).some((t) => t.title === 'Still allowed')).toBe(true);
+  });
+
+  it('reports capped creates deterministically, not via the model summary', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{"title":"Signal 1"}'),
+        toolCall('c2', 'create_ticket', '{"title":"Signal blocked A"}'),
+        toolCall('c3', 'create_ticket', '{"title":"Signal blocked B"}'),
+      ]),
+      assistant('I created one ticket.'), // narrates nothing about the two it was blocked from
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxCreates: 1 });
+    expect(result.cappedCreates).toBe(2);
+    // The outcome alone cannot carry it: a capped run looks identical to a clean one.
+    expect(result.outcome).toMatchObject({ created: 1, declined: 0, errored: false });
+  });
+
+  it('leaves cappedCreates at 0 when nothing was blocked', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Uncapped"}')]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxCreates: 3 });
+    expect(result.cappedCreates).toBe(0);
+  });
+
+  it('does not cap full mode — there the human approval gate is the bound', async () => {
+    // Capping ahead of runCall would skip deps.approve entirely, so a create the human never saw
+    // would vanish with no prompt, no decline, and no replay step.
+    let prompted = 0;
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{"title":"Full mode 1"}'),
+        toolCall('c2', 'create_ticket', '{"title":"Full mode 2"}'),
+        toolCall('c3', 'create_ticket', '{"title":"Full mode 3"}'),
+      ]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 1, approve: () => { prompted++; return true; } });
+    expect(prompted).toBe(3); // every create still reached the gate
+    expect(result.outcome.created).toBe(3);
+    expect(result.cappedCreates).toBe(0);
+  });
+
+  it('does not cap update_ticket — the guard is about tickets created', async () => {
+    const seeded = await createTicket({ title: 'Cap-exempt update target' });
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"One create"}')]),
+      assistant(null, [toolCall('c2', 'update_ticket', JSON.stringify({ id: seeded.id, title: 'Renamed' }))]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 1 });
+    expect(result.outcome).toMatchObject({ created: 1, updated: 1 });
+    expect((await getTicket(seeded.id)).title).toBe('Renamed');
+  });
+
+  it('applies the default cap of 3 when none is injected', async () => {
+    // The default is what every production caller gets (agent/index.ts, agent/recordRun.ts pass no
+    // maxCreates) and what CLAUDE.md publishes — the injected values above never exercise it.
+    const chat: ChatClient = {
+      complete: () => Promise.resolve(assistant(null, [toolCall('c', 'create_ticket', '{"title":"Default cap"}')])),
+    };
+    const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxSteps: 6 });
+    expect(result.outcome.created).toBe(3);
+    expect((await listTickets()).filter((t) => t.title === 'Default cap')).toHaveLength(3);
+  });
+
+  it('falls back to the default rather than disabling itself on an invalid cap', async () => {
+    // NaN is not nullish, so `?? DEFAULT` lets it through and `created >= NaN` is false forever —
+    // a guard that silently switches itself off. Fail toward the stricter value.
+    for (const bad of [Number.NaN, 0, -1, 2.5]) {
+      const chat: ChatClient = {
+        complete: () => Promise.resolve(assistant(null, [toolCall('c', 'create_ticket', '{"title":"Invalid cap"}')])),
+      };
+      const result = await runIntake('x', { chat, index: await buildIndex(), createOnly: true, maxSteps: 6, maxCreates: bad });
+      expect(result.outcome.created).toBe(3);
+    }
+  });
+
+  it('create-only prompt biases toward one ticket rather than one per issue', async () => {
+    // The old prompt said "create a NEW ticket for each concrete issue" / "ALWAYS call create_ticket
+    // for each issue" — pin the inversion so a future edit cannot quietly restore it.
+    expect(SYSTEM_PROMPT_CREATE_ONLY).toMatch(/Prefer ONE ticket for the whole report/);
+    expect(SYSTEM_PROMPT_CREATE_ONLY).not.toMatch(/for each (concrete )?issue/i);
+    // …without losing the per-ticket reference lookup a legitimate split still needs.
+    expect(SYSTEM_PROMPT_CREATE_ONLY).toMatch(/Search again for each further ticket you file/);
+  });
+
   it('mints a runId and returns it on the result', async () => {
     const result = await runIntake('hi', { chat: new ScriptedChat([assistant('done')]), index: await buildIndex() });
     expect(typeof result.runId).toBe('string');
