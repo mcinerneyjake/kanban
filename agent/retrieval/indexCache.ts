@@ -6,17 +6,39 @@ import { resolveEmbedConfig } from './models.js';
 import { TicketConnector } from './connectors/ticket.js';
 import { EmbeddingStore } from './embeddingStore.js';
 import { CachingEmbedder } from './cachingEmbedder.js';
+import { emptyUsage, type RunUsage } from '../cost/usage.js';
 
-// Process-wide cached DocumentIndex for the HTTP intake endpoints. Two caching layers stack: (1) in-memory index memoization keyed by an id+updated signature (process-local, lost on restart); (2) persistent embedding cache (EmbeddingStore + CachingEmbedder), opt-in via EMBED_CACHE_PATH — a rebuild re-embeds only new/changed content, a warm restart re-embeds nothing. A cloud embedder would need an EMBED_API_KEY bearer + a SQLite store at scale.
+// Process-wide cached DocumentIndex for the HTTP intake endpoints. Two caching layers stack: (1) in-memory index memoization keyed by an id+updated signature (process-local, lost on restart); (2) persistent embedding cache (EmbeddingStore + CachingEmbedder) — a rebuild re-embeds only new/changed content, a warm restart re-embeds nothing. A cloud embedder would need an EMBED_API_KEY bearer + a SQLite store at scale.
 
 // The board's connector — the one place that knows tickets, keeping caching concerns separate from source-schema knowledge.
 const board = new TicketConnector();
 
-// Lazily-loaded persistent embedding cache, keyed by path (a path change — tests only — reloads). Null when no path configured, so the index runs purely in memory.
+// One shared embedder per process so its usage meter survives across index builds — the
+// intake controller reads a baseline/delta off it to charge a run for its embeds
+// (tkt-9f09b3a1e95c). A per-build `RuntimeEmbedder.fromEnv()` reset the meter each time,
+// which is why embeds were invisible to the run log.
+let runtimeEmbedder: RuntimeEmbedder | null = null;
+function sharedEmbedder(): RuntimeEmbedder {
+  runtimeEmbedder ??= RuntimeEmbedder.fromEnv();
+  return runtimeEmbedder;
+}
+
+// The shared embedder's cumulative usage. Read the RAW embedder, never the CachingEmbedder
+// wrapper: a cache hit issues no runtime call and must not be metered as one.
+export function embedUsage(): RunUsage {
+  return runtimeEmbedder ? runtimeEmbedder.getUsage() : emptyUsage();
+}
+
+// Explicit path > EMBED_CACHE_PATH > the board default. Exported so the resolution order is
+// asserted directly rather than inferred from embedding behaviour.
+export function resolveCachePath(cachePath?: string): string {
+  return cachePath ?? process.env.EMBED_CACHE_PATH ?? defaultCachePath();
+}
+
+// Lazily-loaded persistent embedding cache, keyed by path (a path change reloads).
 let storeCache: { path: string; store: Promise<EmbeddingStore> } | null = null;
-function embeddingStore(cachePath?: string): Promise<EmbeddingStore> | null {
-  const p = cachePath ?? process.env.EMBED_CACHE_PATH;
-  if (!p) return null;
+function embeddingStore(cachePath?: string): Promise<EmbeddingStore> {
+  const p = resolveCachePath(cachePath);
   if (!storeCache || storeCache.path !== p) {
     storeCache = { path: p, store: EmbeddingStore.load(p) };
   }
@@ -41,11 +63,11 @@ export function defaultCachePath(): string {
 }
 
 // The CLI index build. One-shot CLIs get no benefit from the in-memory memo, but the persistent
-// EmbeddingStore turns a cold ~65s full re-embed into a warm run that re-embeds only changed tickets
-// (tkt-a74040f7cbed). Zero-config by default; EMBED_CACHE_PATH still overrides. The long-running server
-// keeps its opt-in caching (getTicketIndex with no cachePath) unchanged — this default is CLI-only.
+// EmbeddingStore turns a cold full re-embed into a warm run that re-embeds only changed tickets
+// (tkt-a74040f7cbed). Now identical to the server's default resolution — kept as a named entry
+// point because the CLIs read better for it.
 export function buildCliIndex(embedder: Embedder): Promise<DocumentIndex> {
-  return getTicketIndex({ embedder, cachePath: process.env.EMBED_CACHE_PATH ?? defaultCachePath() });
+  return getTicketIndex({ embedder });
 }
 
 function signature(tickets: Ticket[]): string {
@@ -72,24 +94,17 @@ async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
   const sig = signature(tickets);
   if (cache && cache.sig === sig) return cache.index;
 
-  const raw = opts.embedder ?? RuntimeEmbedder.fromEnv();
+  const raw = opts.embedder ?? sharedEmbedder();
   const documents = tickets.map((t) => board.toDocument(t));
-  const store = await (embeddingStore(opts.cachePath) ?? Promise.resolve(null));
+  const store = await embeddingStore(opts.cachePath);
 
-  // With a persistent store, embed through the cache then prune + flush; without one, embed directly (pure in-memory).
-  if (store) {
-    // Namespace by the embedder's identity so a model/prefix swap re-embeds rather than serving stale vectors.
-    const caching = new CachingEmbedder(raw, store, cacheNamespace());
-    const index = await DocumentIndex.build(caching, documents);
-    // Prune to bound growth — but NOT when the corpus is empty: a transiently unreadable board must not wipe the cache and force a cold re-embed next build.
-    const keep = caching.corpusHashes();
-    if (keep.size > 0) store.prune(keep);
-    await store.persist();
-    cache = { index, sig };
-    return index;
-  }
-
-  const index = await DocumentIndex.build(raw, documents);
+  // Namespace by the embedder's identity so a model/prefix swap re-embeds rather than serving stale vectors.
+  const caching = new CachingEmbedder(raw, store, cacheNamespace());
+  const index = await DocumentIndex.build(caching, documents);
+  // Prune to bound growth — but NOT when the corpus is empty: a transiently unreadable board must not wipe the cache and force a cold re-embed next build.
+  const keep = caching.corpusHashes();
+  if (keep.size > 0) store.prune(keep);
+  await store.persist();
   cache = { index, sig };
   return index;
 }
@@ -108,9 +123,11 @@ export function getTicketIndex(opts: IndexOptions = {}): Promise<DocumentIndex> 
   return p;
 }
 
-// Test hook — drop the cached index, in-flight build, and loaded store. Clearing the store forces a disk reload next build, simulating a process restart.
+// Test hook — drop the cached index, in-flight build, loaded store, and shared embedder.
+// Clearing the store forces a disk reload next build, simulating a process restart.
 export function resetIndexCache(): void {
   cache = null;
   pending = null;
   storeCache = null;
+  runtimeEmbedder = null;
 }

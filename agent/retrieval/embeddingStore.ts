@@ -20,6 +20,9 @@ function isVectorMap(v: unknown): v is Record<string, number[]> {
   return vectors.every((vec) => vec.length === dim);
 }
 
+// Disambiguates two persists from the SAME process (pid alone would collide).
+let nextTmpSeq = 0;
+
 export class EmbeddingStore {
   // Tracks unpersisted mutations so persist() can no-op when nothing changed.
   private dirty = false;
@@ -73,7 +76,10 @@ export class EmbeddingStore {
   async persist(): Promise<void> {
     if (!this.dirty) return;
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmp = `${this.filePath}.tmp`;
+    // Unique temp name per write: the server and the CLI now share one cache file
+    // (tkt-9f09b3a1e95c), so a fixed `${filePath}.tmp` let two concurrent persists write the
+    // same scratch path and rename a half-overwritten file into place.
+    const tmp = `${this.filePath}.${process.pid}.${nextTmpSeq++}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(Object.fromEntries(this.vectors)));
     await fs.rename(tmp, this.filePath);
     this.dirty = false;

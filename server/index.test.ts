@@ -695,6 +695,27 @@ describe('POST /api/intake/propose', () => {
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
   });
 
+  // tkt-9f09b3a1e95c round-trip (indexCache → controller → meterRun → runLog): the run record
+  // counted CHAT calls only, so a draft whose embed burst dominated wall-clock logged ~32s of a
+  // ~111s run. Both kinds must survive persist → read-back, or the economics under-report ~3.5×.
+  it('records BOTH chat and embed calls in the run trace (not chat only)', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
+      { content: 'Nothing to do.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'a report' });
+    expect(res.status).toBe(200);
+
+    const run = await readRun(res.body.runId);
+    const trace = run?.usage.callTrace ?? [];
+    expect(trace.some((c) => c.kind === 'chat')).toBe(true);
+    expect(trace.some((c) => c.kind === 'embed')).toBe(true);
+    // The trace must reconcile with the scalar totals it is a breakdown of.
+    expect(trace).toHaveLength(run?.usage.calls ?? -1);
+    expect(trace.reduce((sum, c) => sum + c.ms, 0)).toBe(run?.usage.activeMs);
+  });
+
   it('meters a no-proposal run (agent only searched → noProposal:true)', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     stubProposeFlow([
