@@ -695,6 +695,49 @@ describe('POST /api/intake/propose', () => {
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
   });
 
+  // tkt-9f09b3a1e95c round-trip (indexCache → controller → meterRun → runLog): the run record
+  // counted CHAT calls only, so a draft whose embed burst dominated wall-clock logged ~32s of a
+  // ~111s run. Both kinds must survive persist → read-back, or the economics under-report ~3.5×.
+  it('records BOTH chat and embed calls in the run trace (not chat only)', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
+      { content: 'Nothing to do.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'a report' });
+    expect(res.status).toBe(200);
+
+    const run = await readRun(res.body.runId);
+    const trace = run?.usage.callTrace ?? [];
+    expect(trace.some((c) => c.kind === 'chat')).toBe(true);
+    // The embed entry must be the agent's search_board QUERY embed, carrying its text. A bare
+    // `some(kind === 'embed')` would also pass on an unrelated document embed, so this pins the
+    // per-run marginal cost the controller is supposed to attribute.
+    const embeds = trace.filter((c) => c.kind === 'embed');
+    expect(embeds).toHaveLength(1);
+    expect(embeds[0].inputChars).toBeGreaterThan(0);
+    // The trace must reconcile with the scalar totals it is a breakdown of.
+    expect(trace).toHaveLength(run?.usage.calls ?? -1);
+    expect(trace.reduce((sum, c) => sum + c.ms, 0)).toBe(run?.usage.activeMs);
+  });
+
+  // The index build is SHARED (getTicketIndex coalesces concurrent callers), so it must never be
+  // billed to a run — otherwise two simultaneous drafts each record the whole burst.
+  it('does not charge a run for the shared index build', async () => {
+    await seedTicket('tkt-bbb', 'A ticket whose text nothing has embedded yet');
+    resetIndexCache(); // force a real document-embedding build inside this request
+    stubProposeFlow([
+      { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"anything"}' } }] },
+      { content: 'Done.' },
+    ]);
+    const res = await request(app).post('/api/intake/propose').send({ report: 'a report' });
+    expect(res.status).toBe(200);
+
+    const run = await readRun(res.body.runId);
+    // Exactly the one query embed — not the build's document batches.
+    expect((run?.usage.callTrace ?? []).filter((c) => c.kind === 'embed')).toHaveLength(1);
+  });
+
   it('meters a no-proposal run (agent only searched → noProposal:true)', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     stubProposeFlow([

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getTicketIndex, resetIndexCache, buildBoardIndex, buildCliIndex, defaultCachePath } from './indexCache.js';
+import { getTicketIndex, resetIndexCache, buildBoardIndex, buildCliIndex, defaultCachePath, resolveCachePath, embedUsage } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
 import { createTicket } from '../../server/tickets.js';
 import { type Ticket } from '../../shared/constants.js';
@@ -27,7 +27,21 @@ function mk(id: string, title: string, updated = '2026-01-01'): Ticket {
   };
 }
 
-beforeEach(() => resetIndexCache());
+// Every test gets a COLD embedding cache. The persistent store is default-on since
+// tkt-9f09b3a1e95c, so without this a warm cache from a prior test would silently satisfy
+// the embeds a later test is counting — turning "did it re-embed?" assertions into
+// order-dependent noise.
+let cacheDirs: string[] = [];
+beforeEach(async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-indexcache-test-'));
+  cacheDirs.push(dir);
+  process.env.EMBED_CACHE_PATH = path.join(dir, 'embeddings.json');
+  resetIndexCache();
+});
+afterAll(async () => {
+  await Promise.all(cacheDirs.map((d) => fs.rm(d, { recursive: true, force: true })));
+  cacheDirs = [];
+});
 
 describe('getTicketIndex', () => {
   it('builds once and reuses the cache for an unchanged board', async () => {
@@ -39,12 +53,24 @@ describe('getTicketIndex', () => {
     expect(second).toBe(first); // same cached instance
   });
 
+  // Asserts index IDENTITY, not embed counts: since tkt-9f09b3a1e95c the embedding cache is
+  // content-addressed, so a rebuild re-embeds only text that actually changed. Counting embeds
+  // would conflate "the index was invalidated" (what this test is about) with "everything was
+  // re-embedded" (the ~79s bug the cache exists to prevent).
   it('rebuilds when a ticket is updated or added', async () => {
     const embedder = new CountingEmbedder();
-    await getTicketIndex({ embedder, tickets: [mk('t1', 'A')] });
-    await getTicketIndex({ embedder, tickets: [mk('t1', 'A', '2026-02-02')] }); // t1 updated
-    await getTicketIndex({ embedder, tickets: [mk('t1', 'A', '2026-02-02'), mk('t2', 'B')] }); // added
-    expect(embedder.builds).toBe(3);
+    const first = await getTicketIndex({ embedder, tickets: [mk('t1', 'A')] });
+
+    const afterUpdate = await getTicketIndex({ embedder, tickets: [mk('t1', 'A', '2026-02-02')] });
+    expect(afterUpdate).not.toBe(first); // invalidated by the `updated` stamp
+    // …but the document text is unchanged, so the cache serves it — nothing re-embedded.
+    expect(embedder.embeddedTexts).toHaveLength(1);
+
+    const afterAdd = await getTicketIndex({ embedder, tickets: [mk('t1', 'A', '2026-02-02'), mk('t2', 'B')] });
+    expect(afterAdd).not.toBe(afterUpdate);
+    expect(afterAdd.size).toBe(2);
+    expect(embedder.embeddedTexts).toHaveLength(2); // only the genuinely new document
+    expect(embedder.embeddedTexts[1]).toContain('B');
   });
 
   it('is insensitive to ticket ordering', async () => {
@@ -56,18 +82,19 @@ describe('getTicketIndex', () => {
 
   it('rebuilds when a ticket is removed', async () => {
     const embedder = new CountingEmbedder();
-    await getTicketIndex({ embedder, tickets: [mk('t1', 'A'), mk('t2', 'B')] });
-    await getTicketIndex({ embedder, tickets: [mk('t1', 'A')] }); // t2 removed
-    expect(embedder.builds).toBe(2);
+    const first = await getTicketIndex({ embedder, tickets: [mk('t1', 'A'), mk('t2', 'B')] });
+    const after = await getTicketIndex({ embedder, tickets: [mk('t1', 'A')] }); // t2 removed
+    expect(after).not.toBe(first);
+    expect(after.size).toBe(1);
   });
 
   it('resetIndexCache forces a rebuild of the same board', async () => {
     const embedder = new CountingEmbedder();
     const tickets = [mk('t1', 'A')];
-    await getTicketIndex({ embedder, tickets });
+    const first = await getTicketIndex({ embedder, tickets });
     resetIndexCache();
-    await getTicketIndex({ embedder, tickets });
-    expect(embedder.builds).toBe(2);
+    const after = await getTicketIndex({ embedder, tickets });
+    expect(after).not.toBe(first); // a fresh instance, even though the board is identical
   });
 
   it('coalesces concurrent builds, then releases so the next change rebuilds', async () => {
@@ -154,6 +181,76 @@ describe('getTicketIndex — persistent embedding cache', () => {
 
 // ticket→Document mapping now lives in the TicketConnector — see
 // connectors.test.ts. These tests cover the cache's use of it end-to-end.
+// tkt-9f09b3a1e95c: the SERVER path (getTicketIndex with no explicit cachePath) used to
+// run pure in-memory, so every board change re-embedded all ~816 tickets — ~79s per in-app
+// draft. It now resolves the same persistent store the CLI uses. EMBED_CACHE_PATH is pinned
+// to a temp file by the vitest setup, so these drive the real default-resolution path.
+describe('getTicketIndex — server path is persistently cached (no explicit cachePath)', () => {
+  it('re-embeds NOTHING on a rebuild after a simulated restart', async () => {
+    const tickets = [mk('t1', 'Alpha'), mk('t2', 'Beta')];
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets });
+
+    resetIndexCache(); // drops the in-memory memo AND the loaded store — a process restart
+    const warm = new CountingEmbedder();
+    await getTicketIndex({ embedder: warm, tickets });
+
+    expect(warm.embeddedTexts).toEqual([]);
+  });
+
+  it('re-embeds ONLY the changed ticket when the board changes', async () => {
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets: [mk('t1', 'Alpha')] });
+
+    const next = new CountingEmbedder();
+    await getTicketIndex({ embedder: next, tickets: [mk('t1', 'Alpha'), mk('t2', 'Beta')] });
+
+    expect(next.embeddedTexts).toHaveLength(1);
+    expect(next.embeddedTexts[0]).toContain('Beta');
+  });
+});
+
+describe('embedUsage', () => {
+  // The intake controller reads this before the first index build of a process. It must
+  // report an empty run rather than throw — the alternative is a 500 on the first draft.
+  it('reports empty usage when no runtime embedder has been created yet', () => {
+    resetIndexCache();
+    const usage = embedUsage();
+    expect(usage.calls).toBe(0);
+    expect(usage.activeMs).toBe(0);
+  });
+
+  // An injected stub is NOT the shared runtime embedder, so its work is deliberately not
+  // metered here — the meter tracks real runtime calls, and tests inject fakes freely.
+  it('stays empty when a stub embedder is injected', async () => {
+    await getTicketIndex({ embedder: new CountingEmbedder(), tickets: [mk('t1', 'A')] });
+    expect(embedUsage().calls).toBe(0);
+  });
+});
+
+describe('resolveCachePath', () => {
+  const prev = process.env.EMBED_CACHE_PATH;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.EMBED_CACHE_PATH;
+    else process.env.EMBED_CACHE_PATH = prev;
+  });
+
+  it('prefers an explicit path over the env var', () => {
+    process.env.EMBED_CACHE_PATH = '/env/path.json';
+    expect(resolveCachePath('/explicit/path.json')).toBe('/explicit/path.json');
+  });
+
+  it('falls back to EMBED_CACHE_PATH when no explicit path is given', () => {
+    process.env.EMBED_CACHE_PATH = '/env/path.json';
+    expect(resolveCachePath()).toBe('/env/path.json');
+  });
+
+  // The behaviour change: unset used to mean "no cache at all" (null), which is what
+  // left the server re-embedding the whole board on every draft.
+  it('falls back to the default board cache when nothing is configured', () => {
+    delete process.env.EMBED_CACHE_PATH;
+    expect(resolveCachePath()).toBe(defaultCachePath());
+  });
+});
+
 describe('buildBoardIndex', () => {
   let tmpDir: string;
   beforeAll(async () => {
@@ -188,6 +285,9 @@ describe('buildBoardIndex', () => {
 describe('buildCliIndex + defaultCachePath', () => {
   let tmpDir: string;
   let cacheFile: string;
+  // Restore rather than delete: the vitest setup pins EMBED_CACHE_PATH away from the real
+  // board cache, and deleting it would unpin every later suite in this worker.
+  const pinnedCachePath = process.env.EMBED_CACHE_PATH;
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-clicache-test-'));
     process.env.TICKETS_DIR_OVERRIDE = tmpDir;
@@ -197,7 +297,8 @@ describe('buildCliIndex + defaultCachePath', () => {
   });
   afterEach(async () => {
     delete process.env.TICKETS_DIR_OVERRIDE;
-    delete process.env.EMBED_CACHE_PATH;
+    if (pinnedCachePath === undefined) delete process.env.EMBED_CACHE_PATH;
+    else process.env.EMBED_CACHE_PATH = pinnedCachePath;
     resetIndexCache();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });

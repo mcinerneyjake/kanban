@@ -3,6 +3,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    // Pins EMBED_CACHE_PATH away from the real board cache — see the file's comment.
+    setupFiles: ['./test-support/vitest.setup.ts'],
     // `.claude/worktrees/**` holds full checkouts (CLAUDE.md tells concurrent sessions to make one),
     // so without it vitest collects every suite twice AND tries to run the worktree's Playwright
     // specs — reddening the husky gate from the main checkout whenever a worktree merely exists

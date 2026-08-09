@@ -1,11 +1,11 @@
 import type { Request, Response } from 'express';
-import { getTicketIndex } from '../../agent/retrieval/indexCache.js';
+import { getTicketIndex, embedUsage } from '../../agent/retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from '../../agent/runtime/llm.js';
 import { proposeIntake } from '../../agent/runtime/propose.js';
 import { RUN_PREFIX_TEXT } from '../../agent/runtime/loop.js';
 import { type RunRecord } from '../../agent/cost/runLog.js';
 import { meterRun } from '../../agent/cost/meterRun.js';
-import type { RunUsage } from '../../agent/cost/usage.js';
+import { mergeUsage, subtractUsage, type RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
 import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../validation.js';
 import { createTicket, updateTicket, getTicket, HttpError } from '../tickets.js';
@@ -44,8 +44,9 @@ const appliedRuns = new BoundedMap<string>(MAX_RUNS);
 const inFlightRuns = new Set<string>();
 
 function rememberRun(runId: string, usage: RunUsage, report: string): PendingRun {
-  // Captures CHAT usage only — the generation dominates cost; the embed is a
-  // cached query-embed, not cleanly per-run attributable, and minor.
+  // `usage` carries CHAT + EMBED (merged by the caller). The old comment here claimed the
+  // embed was "minor" and dropped it; measured, embeds were 79 of a 111-second draft
+  // (tkt-9f09b3a1e95c), so the run log under-reported by ~3.5×.
   const pending: PendingRun = { usage, model: resolveLlmConfig().model, report, at: Date.now() };
   pendingRuns.set(runId, pending);
   return pending;
@@ -84,13 +85,22 @@ export async function search(_req: Request, res: Response, input: IntakeSearchRe
 export async function propose(_req: Request, res: Response, input: IntakeProposeRequest): Promise<void> {
   const result = await requireRuntime(async () => {
     const index = await getTicketIndex();
+    // Baseline AFTER the build, matching agent/recordRun.ts: a run is charged its own MARGINAL
+    // embeds (the search_board query embeds), never the shared index build. getTicketIndex
+    // coalesces concurrent callers onto one `pending` build, so baselining before it billed the
+    // same burst in full to every waiter — two simultaneous drafts logged ~2x the embed time
+    // that was actually spent, over-reporting the very figure this ticket exists to correct.
+    // The build itself is no longer a per-draft cost anyway now that it is cached.
+    const embedBaseline = embedUsage();
     const chat = RuntimeChatClient.fromEnv();
     const proposed = await proposeIntake(input.report, { chat, index });
     // Meter the spend NOW so never-applied proposes still reach the run log; an
     // applied proposal re-records at apply and the rollup dedupes last-wins. Best-effort:
     // if `pending` is lost before apply (restart / MAX_RUNS eviction), this record remains
     // as honest spend with 0 accepted. Durable reconciliation is a follow-up (tkt-2073125cac5c).
-    const pending = rememberRun(proposed.runId, chat.getUsage(), input.report);
+    // mergeUsage orders callTrace by startedAt, so chat and embed entries interleave in real order.
+    const usage = mergeUsage(chat.getUsage(), subtractUsage(embedUsage(), embedBaseline));
+    const pending = rememberRun(proposed.runId, usage, input.report);
     await meterIntakeRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
     return proposed;
   });

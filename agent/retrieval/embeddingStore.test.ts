@@ -92,4 +92,21 @@ describe('EmbeddingStore', () => {
     expect(reloaded.size).toBe(1);
     expect(reloaded.has(hashText('drop'))).toBe(false);
   });
+
+  // tkt-9f09b3a1e95c: the server and the CLI now share one cache file, so this store has
+  // two writers. A fixed `${file}.tmp` meant concurrent persists wrote the same temp path —
+  // one rename could land a partially-overwritten temp file.
+  it('concurrent persists to the same file leave a valid, loadable cache', async () => {
+    const a = await EmbeddingStore.load(file);
+    const b = await EmbeddingStore.load(file);
+    a.set(hashText('from-a'), [1, 0, 0]);
+    b.set(hashText('from-b'), [0, 1, 0]);
+
+    await Promise.all([a.persist(), b.persist()]);
+
+    const reloaded = await EmbeddingStore.load(file);
+    // Last writer wins on content (they hold independent maps); the invariant under test is
+    // that the file is never corrupt — a torn write reloads as an EMPTY store, not a full one.
+    expect(reloaded.size).toBeGreaterThan(0);
+  });
 });

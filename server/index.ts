@@ -35,8 +35,9 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`Kanban API → http://localhost:${PORT}`);
     // Best-effort warm so the first intake search is instant. Free locally; embedder
-    // down → lazy build on first use. On a paid embedder this re-embeds the whole
-    // board each boot (see agent/indexCache.ts).
+    // down → lazy build on first use. Since tkt-9f09b3a1e95c the persistent embedding
+    // cache is default-on here, so a boot re-embeds only tickets that changed since the
+    // last run — it no longer re-embeds the whole board each boot.
     getTicketIndex()
       .then((ix) => console.log(`[intake] index warmed (${ix.size} tickets)`))
       .catch((e: unknown) => console.warn(`[intake] index warm skipped: ${e instanceof Error ? e.message : String(e)}`));
