@@ -147,6 +147,78 @@ describe('runIntake', () => {
     expect(result.updatedIds).toHaveLength(0);
   });
 
+  // --- create cap (tkt-dd22f37d1c60): a runaway guard maxSteps cannot provide ---
+
+  it('stops creating once the create cap is reached, and the blocked write never lands', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{"title":"Cap under 1"}'),
+        toolCall('c2', 'create_ticket', '{"title":"Cap under 2"}'),
+        toolCall('c3', 'create_ticket', '{"title":"Cap over — must not exist"}'),
+      ]),
+      assistant('made two'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 2 });
+    expect(result.outcome).toMatchObject({ created: 2, declined: 0, errored: false });
+    expect(result.createdIds).toHaveLength(2);
+    const board = await listTickets();
+    expect(board.some((t) => t.title === 'Cap over — must not exist')).toBe(false);
+  });
+
+  it('tells the model the cap is a hard stop, not a retryable failure', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Only one"}'), toolCall('c2', 'create_ticket', '{"title":"Blocked"}')]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 1 });
+    const toolMsgs = result.messages.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2); // every tool_call still gets a response
+    expect(toolMsgs[1].content).toMatch(/limit reached/i);
+    expect(toolMsgs[1].content).toMatch(/do not call create_ticket again/i);
+  });
+
+  it('the cap bounds creates across turns, not just within one turn', async () => {
+    const chat: ChatClient = {
+      complete: () => Promise.resolve(assistant(null, [toolCall('c', 'create_ticket', '{"title":"Runaway"}')])),
+    };
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxSteps: 6, maxCreates: 2 });
+    // Without the cap this spends all 6 steps minting tickets — the observed runaway shape.
+    expect(result.outcome.created).toBe(2);
+    expect((await listTickets()).filter((t) => t.title === 'Runaway')).toHaveLength(2);
+  });
+
+  it('a failed create does not consume the cap (no ticket reached the board)', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [
+        toolCall('c1', 'create_ticket', '{}'), // no title → 400 → isError
+        toolCall('c2', 'create_ticket', '{"title":"Still allowed"}'),
+      ]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 1 });
+    expect(result.outcome.created).toBe(1);
+    expect((await listTickets()).some((t) => t.title === 'Still allowed')).toBe(true);
+  });
+
+  it('does not cap update_ticket — the guard is about tickets created', async () => {
+    const seeded = await createTicket({ title: 'Cap-exempt update target' });
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"One create"}')]),
+      assistant(null, [toolCall('c2', 'update_ticket', JSON.stringify({ id: seeded.id, title: 'Renamed' }))]),
+      assistant('done'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxCreates: 1 });
+    expect(result.outcome).toMatchObject({ created: 1, updated: 1 });
+    expect((await getTicket(seeded.id)).title).toBe('Renamed');
+  });
+
+  it('create-only prompt biases toward one ticket rather than one per issue', async () => {
+    // The old prompt said "create a NEW ticket for each concrete issue" / "ALWAYS call create_ticket
+    // for each issue" — pin the inversion so a future edit cannot quietly restore it.
+    expect(SYSTEM_PROMPT_CREATE_ONLY).toMatch(/Prefer ONE ticket for the whole report/);
+    expect(SYSTEM_PROMPT_CREATE_ONLY).not.toMatch(/for each (concrete )?issue/i);
+  });
+
   it('mints a runId and returns it on the result', async () => {
     const result = await runIntake('hi', { chat: new ScriptedChat([assistant('done')]), index: await buildIndex() });
     expect(typeof result.runId).toBe('string');
