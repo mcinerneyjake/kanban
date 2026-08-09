@@ -80,8 +80,16 @@ export class EmbeddingStore {
     // (tkt-9f09b3a1e95c), so a fixed `${filePath}.tmp` let two concurrent persists write the
     // same scratch path and rename a half-overwritten file into place.
     const tmp = `${this.filePath}.${process.pid}.${nextTmpSeq++}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(Object.fromEntries(this.vectors)));
-    await fs.rename(tmp, this.filePath);
+    try {
+      await fs.writeFile(tmp, JSON.stringify(Object.fromEntries(this.vectors)));
+      await fs.rename(tmp, this.filePath);
+    } catch (err) {
+      // A unique temp name is no longer self-limiting the way the old fixed `${file}.tmp` was
+      // (the next persist overwrote it), so a failed write must clean up after itself or every
+      // interruption leaves another full-size orphan next to the cache.
+      await fs.rm(tmp, { force: true });
+      throw err;
+    }
     this.dirty = false;
   }
 }

@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { type Ticket } from '../../shared/constants.js';
 import { getTicketsDir } from '../../server/tickets.js';
@@ -31,16 +32,31 @@ export function embedUsage(): RunUsage {
 
 // Explicit path > EMBED_CACHE_PATH > the board default. Exported so the resolution order is
 // asserted directly rather than inferred from embedding behaviour.
+// `||`, not `??`: a BLANK EMBED_CACHE_PATH must fall through to the default. `??` would return
+// '' — a path EmbeddingStore.load swallows but rename() rejects, turning every intake request
+// into a 503. Blank now means "use the default"; there is no cache-free mode any more.
 export function resolveCachePath(cachePath?: string): string {
-  return cachePath ?? process.env.EMBED_CACHE_PATH ?? defaultCachePath();
+  return cachePath || process.env.EMBED_CACHE_PATH || defaultCachePath();
 }
 
-// Lazily-loaded persistent embedding cache, keyed by path (a path change reloads).
-let storeCache: { path: string; store: Promise<EmbeddingStore> } | null = null;
-function embeddingStore(cachePath?: string): Promise<EmbeddingStore> {
+async function fileMtime(p: string): Promise<number> {
+  try {
+    return (await fs.stat(p)).mtimeMs;
+  } catch {
+    return 0; // absent (or unreadable) — treat as "no file yet", never throw on a cache probe
+  }
+}
+
+// Lazily-loaded persistent embedding cache. Keyed by path AND mtime: the server and the CLI now
+// share one file, so a long-running server holding its boot-time map would re-embed — and then
+// overwrite — whatever a CLI run persisted in the meantime. Re-reading on mtime change costs a
+// ~55ms parse (measured, tkt-a74040f7cbed) and only when another writer actually moved.
+let storeCache: { path: string; mtimeMs: number; store: Promise<EmbeddingStore> } | null = null;
+async function embeddingStore(cachePath?: string): Promise<EmbeddingStore> {
   const p = resolveCachePath(cachePath);
-  if (!storeCache || storeCache.path !== p) {
-    storeCache = { path: p, store: EmbeddingStore.load(p) };
+  const mtimeMs = await fileMtime(p);
+  if (!storeCache || storeCache.path !== p || storeCache.mtimeMs !== mtimeMs) {
+    storeCache = { path: p, mtimeMs, store: EmbeddingStore.load(p) };
   }
   return storeCache.store;
 }
@@ -104,7 +120,15 @@ async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
   // Prune to bound growth — but NOT when the corpus is empty: a transiently unreadable board must not wipe the cache and force a cold re-embed next build.
   const keep = caching.corpusHashes();
   if (keep.size > 0) store.prune(keep);
-  await store.persist();
+  // Best-effort, like EmbeddingStore.load: the cache is an optimization, so an unwritable
+  // .cache/ (read-only mount, EACCES, ENOSPC) must not take intake down with a 503. Before this
+  // ticket the server path performed no disk writes at all, so no disk condition could break it.
+  try {
+    await store.persist();
+    if (storeCache) storeCache.mtimeMs = await fileMtime(storeCache.path); // our own write isn't a foreign one
+  } catch (err) {
+    console.warn(`[intake] embedding cache not persisted: ${err instanceof Error ? err.message : String(err)}`);
+  }
   cache = { index, sig };
   return index;
 }

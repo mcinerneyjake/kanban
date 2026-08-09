@@ -84,12 +84,14 @@ export async function search(_req: Request, res: Response, input: IntakeSearchRe
 
 export async function propose(_req: Request, res: Response, input: IntakeProposeRequest): Promise<void> {
   const result = await requireRuntime(async () => {
-    // Baseline BEFORE the index build, not after: a build triggered by this request is a cost
-    // this request really paid (it is the ~79s burst this ticket is about), so it belongs on
-    // the run. Deliberately unlike agent/recordRun.ts, which baselines AFTER the build because
-    // a one-shot CLI recording wants marginal cost only.
-    const embedBaseline = embedUsage();
     const index = await getTicketIndex();
+    // Baseline AFTER the build, matching agent/recordRun.ts: a run is charged its own MARGINAL
+    // embeds (the search_board query embeds), never the shared index build. getTicketIndex
+    // coalesces concurrent callers onto one `pending` build, so baselining before it billed the
+    // same burst in full to every waiter — two simultaneous drafts logged ~2x the embed time
+    // that was actually spent, over-reporting the very figure this ticket exists to correct.
+    // The build itself is no longer a per-draft cost anyway now that it is cached.
+    const embedBaseline = embedUsage();
     const chat = RuntimeChatClient.fromEnv();
     const proposed = await proposeIntake(input.report, { chat, index });
     // Meter the spend NOW so never-applied proposes still reach the run log; an
