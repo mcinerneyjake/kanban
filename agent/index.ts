@@ -82,6 +82,11 @@ async function main(): Promise<void> {
     console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}${createOnly ? ' (create-only)' : ''}…`);
     const result = await runIntake(input, { chat, index, approve, createOnly });
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
+    // Deterministic, not read off the model's summary — a weak local model narrates the tickets it
+    // made and omits the ones it was blocked from making (tkt-dd22f37d1c60).
+    if (result.cappedCreates > 0) {
+      console.warn(`\n! ${result.cappedCreates} further create_ticket call(s) were blocked by the per-run limit. The report covered too much — re-file the remainder as separate single-issue runs.`);
+    }
 
     // Per-run cost & economics via the shared meterRun (usage from both runtime clients). Best-effort — the tickets are already written, so a run-log failure won't fail the run.
     const usage = mergeUsage(chat.getUsage(), embedder.getUsage());

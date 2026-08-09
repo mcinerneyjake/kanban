@@ -5,6 +5,7 @@ import {
   AGENT_TOOL_NAMES,
   CREATE_ONLY_TOOL_NAMES,
   dispatchTool,
+  textResult,
 } from './tools.js';
 import { type ChatClient, type ChatMessage } from './llm.js';
 import { type DocumentIndex } from '../retrieval/retrieval.js';
@@ -23,13 +24,10 @@ When finished, you MUST reply with a 1-3 sentence plain-text summary that names 
 // Create-only variant (the Claude-delegated path, tkt-2492e26a277a): update_ticket is not in the
 // toolset, so search_board is for REFERENCE only — never to modify an existing ticket. Steers toward a
 // new ticket every time, citing any related id in the body instead of updating it.
-// Step 1 is a CORRECTION, not a nudge (tkt-dd22f37d1c60): this prompt used to open with "create a NEW
-// ticket for each concrete issue" and "ALWAYS call create_ticket for each issue", which instructed the
-// very decomposition the delegating session then had to clean up — one prose sentence enumerating
-// three untested rules produced three thin tickets on 2026-07-26.
+// Step 1 inverts what this prompt used to say (tkt-dd22f37d1c60) — it is a correction, not a nudge.
 export const SYSTEM_PROMPT_CREATE_ONLY = `You are an intake agent for a kanban board. Given a raw report (a bug, a request, or a note), file it as a ticket:
 1. Prefer ONE ticket for the whole report. Several symptoms of one problem, or several parts of one piece of work, are ONE ticket — put the extra parts in that ticket's body as detail, do not split them out. A list inside the report is not a reason to split. Only file separate tickets when the issues are genuinely independent: different causes that could be fixed, shipped, or closed on their own.
-2. Call search_board FIRST — but ONLY to find related tickets to REFERENCE (cite the related id in the new ticket's body). You cannot modify existing tickets in this mode.
+2. Before filing a ticket, call search_board — but ONLY to find related tickets to REFERENCE (cite the related id in that ticket's body). Search again for each further ticket you file. You cannot modify existing tickets in this mode.
 3. Then call create_ticket. Even if a duplicate or closely related ticket already exists, create a new ticket and name the related id in the body rather than trying to update it.
 When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created (its id and title). Never reply with an empty message.`;
 
@@ -43,11 +41,10 @@ const READ_ONLY_TOOLS = new Set(['search_board', 'list_tickets', 'get_ticket']);
 // Shown if the model returns an empty final answer — the CLI should never print a blank result.
 const EMPTY_SUMMARY_FALLBACK = 'The agent finished but did not return a summary.';
 
-// Runaway guard (tkt-dd22f37d1c60): bounds TICKETS CREATED per run, which maxSteps does not — an
-// 8-step budget can be spent entirely on create_ticket, and that is the observed runaway shape.
-// 3, not 1: suppressing over-decomposition is the prompt's job (a genuinely multi-issue report must
-// still land); this only stops the spray. Counts SUCCESSFUL creates, since a failed create put no
-// ticket on the board and must not consume the budget.
+// Runaway guard for the UNATTENDED create-only path (tkt-dd22f37d1c60): bounds tickets created,
+// which maxSteps does not. 3, not 1 — suppressing over-decomposition is the prompt's job; this only
+// stops the spray. Full mode is excluded: there the human approval gate is the bound, and capping
+// ahead of it would silently drop a create the human never got to see.
 const DEFAULT_MAX_CREATES = 3;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -75,10 +72,7 @@ function declined(name: string): ToolResult {
 // Same contract as declined(): the loop forwards only the text, so this must tell the model the cap
 // is a hard stop rather than a transient failure — otherwise it retries and burns the step budget.
 function creationCapped(max: number): ToolResult {
-  return {
-    content: [{ type: 'text', text: `Ticket creation limit reached: this run has already created ${max} ticket(s), which is the maximum allowed. Do not call create_ticket again. Summarize the tickets you created and state plainly anything you could not file.` }],
-    isError: true,
-  };
+  return textResult(`Ticket creation limit reached: this run has already created ${max} ticket(s), which is the maximum allowed. Do not call create_ticket again. Summarize the tickets you created and state plainly anything you could not file.`, true);
 }
 
 // A human approval gate for a proposed mutating action. Return false to skip it.
@@ -93,13 +87,18 @@ export interface IntakeResult {
   runId: string;
   createdIds: string[];
   updatedIds: string[];
+  // create_ticket calls the cap blocked. The ONLY deterministic signal that work was dropped —
+  // the outcome cannot carry it (a capped run is not created/declined/errored), and the model's
+  // own summary is not trustworthy for this: propose.ts:18 records that exact lesson.
+  cappedCreates: number;
 }
 
 export interface IntakeDeps {
   chat: ChatClient;
   index: DocumentIndex;
   maxSteps?: number;
-  // Hard cap on tickets CREATED by this run (default DEFAULT_MAX_CREATES). Independent of maxSteps.
+  // Hard cap on tickets CREATED by a create-only run (default DEFAULT_MAX_CREATES). Independent of
+  // maxSteps; ignored in full mode. A non-positive or non-integer value falls back to the default.
   maxCreates?: number;
   // Gate for non-read-only tools. Omit to auto-approve (programmatic use); the
   // CLI always supplies a prompting gate.
@@ -157,13 +156,20 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     { role: 'user', content: input },
   ];
   const maxSteps = deps.maxSteps ?? 8;
-  const maxCreates = deps.maxCreates ?? DEFAULT_MAX_CREATES;
+  // Fail toward the STRICTER value. `?? DEFAULT` alone lets NaN through (it isn't nullish), and
+  // `created >= NaN` is false forever — the runaway guard would silently switch itself off, which is
+  // the fail-open shape this repo rejects. 0 and negatives fall back too rather than blocking every create.
+  const requestedMaxCreates = deps.maxCreates ?? DEFAULT_MAX_CREATES;
+  const maxCreates = Number.isInteger(requestedMaxCreates) && requestedMaxCreates > 0
+    ? requestedMaxCreates
+    : DEFAULT_MAX_CREATES;
   const runId = deps.runId ?? randomUUID();
   const createdIds: string[] = [];
   const updatedIds: string[] = [];
   let created = 0;
   let updated = 0;
   let declinedCount = 0;
+  let cappedCreates = 0;
 
   for (let step = 1; step <= maxSteps; step++) {
     const assistant = await deps.chat.complete(messages, tools);
@@ -173,7 +179,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     if (calls.length === 0) {
       const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
       const outcome = buildOutcome(created, updated, declinedCount, false);
-      return { final, messages, steps: step, outcome, runId, createdIds, updatedIds };
+      return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
     }
 
     for (const call of calls) {
@@ -185,12 +191,14 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
       if (deps.onCapture && kind) {
         const final = deps.onCapture(name, args);
         const outcome = buildOutcome(created, updated, declinedCount, false, false);
-        return { final, messages, steps: step, outcome, runId, createdIds, updatedIds };
+        return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
       }
       // Over the create budget: short-circuit BEFORE runCall, so the write never reaches the service.
       // Falls through to the shared tally/push — isError keeps it out of `created`, and it is not a
       // human `declined` either, so the outcome records exactly the tickets that landed.
-      const { result, declined: wasDeclined } = kind === 'create' && created >= maxCreates
+      const overCap = createOnly && kind === 'create' && created >= maxCreates;
+      if (overCap) cappedCreates += 1;
+      const { result, declined: wasDeclined } = overCap
         ? { result: creationCapped(maxCreates), declined: false }
         : await runCall(name, args, deps, runId, allowedNames);
       // Accepted ONLY when neither declined nor errored — a failed create/update (missing title → 400 → isError) produced no ticket, so crediting it would make economics.ts claim manual value for work never done.
@@ -212,5 +220,5 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   const outcome = buildOutcome(created, updated, declinedCount, true);
   const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
     `${created + updated} mutation(s) were applied before the step budget ran out.`;
-  return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds };
+  return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds, cappedCreates };
 }
