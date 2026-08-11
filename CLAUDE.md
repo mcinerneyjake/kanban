@@ -39,6 +39,8 @@ This project has a kanban MCP server. When asked to work on a ticket:
 The implementation summary **must** include a test line — either:
 - `Tests: N added — <brief description of what they cover>`
 - `Tests: none — <reason, e.g. "pure UI change" or "no new logic">`
+- Bug tickets record the red-first repro inline (see **Testing → Bug tickets (failing repro first)**):
+  `Tests: 1 added — <test name> (written first, observed red)`
 
 It **must** also include a risk line stating blast radius + how to roll back — either:
 - `Risk: <what could break + how to roll back, e.g. "touches the propose→apply seam; revert the squash commit and re-run the round-trip test">`
@@ -89,6 +91,18 @@ One reinforcement beyond the global rule (prefer it over piling on more test cas
 - **Review:** for integration-heavy PRs, run a **flow-scoped** review angle — "trace this value from source to sink; list every transformation or drop" — not only the default diff-scoped pass.
 
 > **Why this rule exists:** the in-app intake feature shipped ~8 real bugs (silent no-op saves, update→duplicate-create misrouting, dropped agent-proposed fields, stripped provenance, untracked spend) that all lived in the propose→apply seam and survived a green unit suite + per-ticket reviews. They were built as separate tickets and reviewed diff-by-diff, so nothing exercised the whole path. See the agentic-rag-demo round-trip harness ticket (`tkt-345255727ffe`).
+
+### Bug tickets (failing repro first) — MANDATORY
+
+**The general rule is `~/.claude/CLAUDE.md` → *A passing test proves nothing until you know it can fail*.** That tenet stops at diagnosis — grep the tests and read the test *name*, because a green test may be pinning the very defect. This section is the repo's binding instance and carries it through to action: **write the failing reproduction first, watch it go red, then write the fix.**
+
+**A repro that PASSES before the fix is the finding** — the test misses the defect. It does not mean the bug is absent.
+
+**Scope.** Bug tickets touching a layer the Testing table covers. UI/CSS-only bugs are already skipped by that table, and a **seam bug is already covered by the round-trip rule above** — there the round-trip test *is* the repro. What this adds is single-module, non-UI bugs.
+
+Record it on the existing `Tests:` line (see **Ticket workflow**) — there is no separate line and no extra Definition-of-Done box, because the `Risk:` line (the newest mandatory line) runs ~13 points below its control on post-rule summaries. The marker `written first, observed red` is load-bearing: it is what makes adoption countable for the machine-wide promotion (`tkt-a98723f627df`).
+
+> **Honest limit:** nothing enforces this. Authoring order is unobservable, and `tickets/` is gitignored so CI can never read the `Tests:` line. It is honor-system prose, exactly like the seam rule above — do not report it as enforced.
 
 When asked to create a ticket, **delegate authoring to the local intake agent** (below) — never call `create_ticket` yourself. When asked what's on the board or what's left to do, call `list_tickets`.
 
