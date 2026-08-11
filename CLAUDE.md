@@ -168,7 +168,12 @@ fails the required `branch-name` check when the PR opens. Fix it immediately aft
   the branch deletion and local sync were skipped. **Do not retry** — that runs against an
   already-merged PR. Confirm with `gh pr view <n> --json state` (expect `MERGED`), then
   `git push origin --delete <branch>` and `git pull --ff-only` in the *primary* checkout
-  (`tkt-fb558add3a17`).
+  (`tkt-fb558add3a17`). **The local branch survives this, and nothing an agent can run will remove
+  it**: a squash-merge leaves its commits non-ancestors of `main`, so `git branch -d` refuses, and
+  `guard-bash` blocks `-D`. Measured 2026-08-11: 13 such branches had accumulated. Sweeping them is a
+  human `-D`, and `gh pr view <n> --json state` returning `MERGED` is what makes it safe — the guard
+  is right to block the agent, because "I already checked" is exactly the reasoning it exists to stop
+  (`tkt-6321b5b79986`).
 - **The embedded terminal is not isolated by this.** Its container mounts the *host* checkout, so an
   in-container `git switch` still moves the host branch — worktrees isolate Claude sessions, not
   terminal sessions.
@@ -278,7 +283,12 @@ No `--admin` needed: the active `main` ruleset requires the `gate` / `branch-nam
 
 When the workflow runs **from inside the embedded terminal**, the session has **push + open-PR authority only** — a repo-scoped GitHub PAT with **no merge permission**, seeded via the container's mounted HOME (see README → *GitHub-in-terminal*, `tkt-fc6f493e2033`). At the merge gate the agent must therefore **not** attempt `gh pr merge` (it would fail on the token scope). Instead: capture the PR URL from `gh pr create` (or `gh pr view --json url -q .url`), state plainly that merging to `main` is the human's decision — the container is the least-guarded context and `guard-bash` does not run there — and print the URL for a manual merge from the host. The human-in-the-loop merge gate is deliberate; narrate it rather than hitting a permission error.
 
-This squashes the branch to a single commit on `main` and deletes the branch locally and remotely. After the merge completes, call `update_ticket` to set `status: "done"` — this is the moment the ticket is officially closed.
+This squashes the branch to a single commit on `main` and deletes the **remote** branch. The local branch usually goes with it, but **not from a worktree** — see the `gh pr merge --delete-branch` bullet under **Concurrent sessions**, which is where local branches accumulate and why an agent cannot clear them.
+
+Then, in order:
+
+1. **`ExitWorktree`, if the ticket ran in one.** This is a step of the merge, not a courtesy — a worktree carries its own full copy of `CLAUDE.md`, so an abandoned one leaves stale project instructions on disk that `grep` keeps finding. Stale prose is harmless; a stale `CLAUDE.md` **instructs**. One left behind for 20 days was returning a phantom hit on every repo-wide grep (`tkt-6321b5b79986`), and the same shape in another repo left two CLAUDE.md files asserting the opposite of each other about TypeScript strictness (`tkt-af10174bec77`).
+2. **`update_ticket` to set `status: "done"`** — this is the moment the ticket is officially closed.
 
 ## MCP unavailable: the `npm run ticket` fallback
 
