@@ -1,9 +1,10 @@
 import { memo, useState } from 'react';
-import type { Ticket, TicketType } from '../../shared/constants.js';
+import type { Ticket, BoardTicket, TicketType } from '../../shared/constants.js';
 import CardProgress from './CardProgress.js';
 import ProvenanceBadge from './ProvenanceBadge.js';
 import { ticketProvenance } from '../lib/provenance.js';
 import { staleAge } from '../lib/ticketAge.js';
+import { formatCompleted } from '../lib/completedDate.js';
 import { formatIso } from '../lib/formatDate.js';
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' };
@@ -34,7 +35,10 @@ type DropMode = 'before' | 'child' | null
 let _dragSrcStatus = '';
 
 type Props = {
-  ticket: Ticket
+  ticket: BoardTicket
+  // Board-wide clock, re-issued at local midnight so "Today" stops being wrong overnight
+  // (tkt-17dbc816e247). Not a per-card mountedAt, which would freeze at first render.
+  now: number
   onOpen: (ticket: Ticket) => void
   columnId?: Ticket['status']
   depth?: number
@@ -47,7 +51,7 @@ type Props = {
   onToggleCollapse?: (id: string) => void
 }
 
-function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlockerCount = 0, staleBlockerCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
+function Card({ ticket, now, onOpen, columnId, depth = 0, childCount = 0, activeBlockerCount = 0, staleBlockerCount = 0, isCollapsed = false, onDrop, onReparent, onToggleCollapse }: Props) {
   const draggable = !!(columnId && onDrop);
   const [dropMode, setDropMode] = useState<DropMode>(null);
   // Lazy init, not a bare Date.now(): reading the clock during render violates react-hooks/purity.
@@ -177,6 +181,19 @@ function Card({ ticket, onOpen, columnId, depth = 0, childCount = 0, activeBlock
           return (
             <span className="badge stale" title={`Last updated ${last} — ${plural(stale.days, 'day')} ago`}>
               ⏳ {stale.label}
+            </span>
+          );
+        })()}
+        {(() => {
+          // Absent completedAt means no `done` event was ever recorded — render nothing rather than
+          // falling back to `updated`, which restamps on any edit (tkt-17dbc816e247).
+          const at = ticket.completedAt;
+          if (!at || (ticket.status !== 'done' && ticket.status !== 'archived')) return null;
+          const label = formatCompleted(at, now);
+          if (label === null) return null;
+          return (
+            <span className="badge completed" title={`Completed ${formatIso(at, (d) => d.toLocaleString())}`}>
+              ✅ {label}
             </span>
           );
         })()}

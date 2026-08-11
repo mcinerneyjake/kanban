@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BOARD_STATUSES, type Ticket, type Priority } from '../../shared/constants.js';
+import { BOARD_STATUSES, type Ticket, type BoardTicket, type Priority } from '../../shared/constants.js';
 import Column from './Column.jsx';
 import type { SortBy } from './FilterPopover.jsx';
 import { computeDropOrder } from '../lib/orderMath.js';
@@ -8,7 +8,10 @@ import { doneParentsWithChildren, reconcileDoneCollapse } from '../lib/collapseD
 const PRIO_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
 type Props = {
-  tickets: Ticket[]
+  tickets: BoardTicket[]
+  now: number
+  todayCount: number
+  onShowToday: () => void
   allTickets: Ticket[]    // full list for drag-drop math — hidden cards excluded from collisions (see handleDrop)
   sort: SortBy
   childCounts: Record<string, number>
@@ -20,7 +23,7 @@ type Props = {
   onArchiveAll: () => void
 }
 
-export default function Board({ tickets, allTickets, sort, childCounts, activeBlockerCounts, staleBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
+export default function Board({ tickets, now, todayCount, onShowToday, allTickets, sort, childCounts, activeBlockerCounts, staleBlockerCounts, onMove, onReparent, onOpen, onArchiveAll }: Props) {
   const [collapsed, setCollapsed] = useState(new Set<string>());
   // Subset of `collapsed` we auto-collapsed for done parents — so a manual expand isn't undone and leaving `done` reverts it (see reconcileDoneCollapse).
   const autoCollapsedRef = useRef(new Set<string>());
@@ -107,6 +110,9 @@ export default function Board({ tickets, allTickets, sort, childCounts, activeBl
             key={col.id}
             column={col}
             tickets={ordered}
+            now={now}
+            todayCount={col.id === 'done' ? todayCount : undefined}
+            onShowToday={col.id === 'done' ? onShowToday : undefined}
             depths={depths}
             childCounts={childCounts}
             activeBlockerCounts={activeBlockerCounts}

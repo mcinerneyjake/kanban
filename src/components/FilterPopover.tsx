@@ -1,12 +1,13 @@
 import { useState, useRef } from 'react';
 import { useDismiss } from '../useDismiss.js';
 import { TYPES, PRIORITIES, isPriority, type TicketType, type Priority } from '../../shared/constants.js';
+import { todayLocal } from '../lib/completedDate.js';
 
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
-export type DateField = 'created' | 'updated'
+export type DateField = 'created' | 'updated' | 'completedAt'
 
 export const SORT_BY_VALUES: readonly SortBy[] = ['order', 'priority', 'created', 'title'];
-export const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated'];
+export const DATE_FIELD_VALUES: readonly DateField[] = ['created', 'updated', 'completedAt'];
 
 function makeIs<T extends string>(arr: readonly T[]) {
   return (val: string): val is T => arr.find((s) => s === val) !== undefined;
@@ -137,6 +138,22 @@ export default function FilterPopover({ filter, projects, assignees, onChange }:
           )}
 
           <div className="fp-row">
+            <span className="fp-label">Quick</span>
+            <button
+              type="button"
+              className="fp-quick"
+              onClick={() => {
+                // Date.now() in a handler, not in render — react-hooks/purity bans the render form,
+                // and reading it at click is also what keeps "today" from freezing at mount.
+                const today = todayLocal(Date.now());
+                onChange({ ...filter, dateField: 'completedAt', dateFrom: today, dateTo: today });
+              }}
+            >
+              Completed today
+            </button>
+          </div>
+
+          <div className="fp-row">
             <span className="fp-label">Date</span>
             <select
               value={filter.dateField}
@@ -145,6 +162,7 @@ export default function FilterPopover({ filter, projects, assignees, onChange }:
             >
               <option value="created">Created</option>
               <option value="updated">Updated</option>
+              <option value="completedAt">Completed</option>
             </select>
             <input
               type="date"

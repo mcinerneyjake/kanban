@@ -92,6 +92,13 @@ export type Ticket = {
   runId?: string | null
 }
 
+// Read-time view model. `completedAt` is derived from the ticket's `done` event and NEVER persisted,
+// so it must not sit on `Ticket` — constants.test.ts pins that type structurally identical to the
+// package's stored schema, and the guard correctly rejected putting a derived field there
+// (tkt-17dbc816e247). Absent means "not recorded" (no telemetry when the ticket was finished); it
+// must never fall back to `updated`, which restamps on any edit.
+export type BoardTicket = Ticket & { completedAt?: string | null }
+
 // --- Dashboard aggregation -------------------------------------------------
 // Shared server/client so they can't drift; counts exclude archived, canonical enum order.
 

@@ -1,8 +1,9 @@
-import type { Ticket } from '../../shared/constants.js';
+import type { Ticket, BoardTicket } from '../../shared/constants.js';
 import Card from './Card.jsx';
 
 type Props = {
-  tickets: Ticket[]
+  tickets: BoardTicket[]
+  now: number
   // Unfiltered archived count, so an empty lane can distinguish "none archived" from "none match the filter".
   totalCount: number
   activeBlockerCounts: Record<string, number>
@@ -11,7 +12,7 @@ type Props = {
   onOpen: (ticket: Ticket) => void
 }
 
-export default function ArchiveLane({ tickets, totalCount, activeBlockerCounts, show, onToggle, onOpen }: Props) {
+export default function ArchiveLane({ tickets, now, totalCount, activeBlockerCounts, show, onToggle, onOpen }: Props) {
   return (
     <div className="archive-lane">
       <button className="archive-toggle" onClick={onToggle} aria-expanded={show}>
@@ -28,7 +29,7 @@ export default function ArchiveLane({ tickets, totalCount, activeBlockerCounts, 
             </span>
           ) : (
             tickets.map((t) => (
-              <Card key={t.id} ticket={t} activeBlockerCount={activeBlockerCounts[t.id] ?? 0} onOpen={onOpen} />
+              <Card key={t.id} ticket={t} now={now} activeBlockerCount={activeBlockerCounts[t.id] ?? 0} onOpen={onOpen} />
             ))
           )}
         </div>

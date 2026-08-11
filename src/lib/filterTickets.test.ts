@@ -77,3 +77,17 @@ describe('filterTickets', () => {
     expect(filterTickets(tickets, defaultFilter, '')).toHaveLength(2);
   });
 });
+
+// tkt-17dbc816e247 — `completedAt` is absent on tickets completed before telemetry existed
+// (73 done + 212 archived on the live board), so the date branch must never assume a value.
+describe('completedAt date filtering', () => {
+  it('does not throw when the ticket has no completedAt', () => {
+    expect(() =>
+      matchesFilter(mk(), f({ dateField: 'completedAt', dateFrom: '2026-08-11' }), '')
+    ).not.toThrow();
+  });
+
+  it('excludes a ticket with no completedAt from a completed-date range', () => {
+    expect(matchesFilter(mk(), f({ dateField: 'completedAt', dateFrom: '2026-08-11' }), '')).toBe(false);
+  });
+});

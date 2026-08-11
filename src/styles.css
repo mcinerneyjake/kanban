@@ -281,6 +281,32 @@ body {
   color: var(--muted);
   padding: 4px 6px 10px;
 }
+.column-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Reuses the neighbouring .count token so the two header numbers read as one family. Lowercase:
+   the header is uppercased, and "3 TODAY" shouts next to a label that is meant to shout. */
+.column-today {
+  background: var(--col-count-bg);
+  color: inherit;
+  border: none;
+  border-radius: 10px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.column-today:hover { filter: brightness(0.94); }
+.column-today:focus-visible { outline: 2px solid var(--accent, #0b66e4); outline-offset: 1px; }
+
 .column-header-right {
   display: flex;
   align-items: center;
@@ -592,6 +618,16 @@ body {
 [data-theme="dark"] .badge.stale-blocked {
   background: #3a2c14;
   color: #e0a44d;
+}
+
+/* Green reads "finished" against the amber attention badges; only ever on done/archived cards. */
+.badge.completed {
+  background: #e6f4ea;
+  color: #1e6b34;
+}
+[data-theme="dark"] .badge.completed {
+  background: #16301f;
+  color: #5cbf7f;
 }
 
 /* Same amber as .stale-blocked, and for the same reason: attention, not a blocker. */
