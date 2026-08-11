@@ -1,3 +1,7 @@
+// Pinned to a UTC-behind zone: CI runners are UTC, where a local-vs-UTC date bug is INVISIBLE because
+// the two agree. Set before importing anything that touches Date.
+process.env.TZ = 'America/New_York';
+
 import { describe, it, expect } from 'vitest';
 import { matchesFilter, filterTickets } from './filterTickets.js';
 import { defaultFilter, type FilterState } from '../components/FilterPopover.js';
@@ -89,5 +93,50 @@ describe('completedAt date filtering', () => {
 
   it('excludes a ticket with no completedAt from a completed-date range', () => {
     expect(matchesFilter(mk(), f({ dateField: 'completedAt', dateFrom: '2026-08-11' }), '')).toBe(false);
+  });
+});
+
+// tkt-cb6ee8e7fdd0 — created/updated compared UTC dates against local date inputs, so 186 of 887 real
+// `created` stamps (21%) matched the wrong day.
+describe('created/updated use the local calendar day', () => {
+  // Without this the whole block degrades to comparing UTC against UTC and passes while the bug is live.
+  it('control: the runner is in a UTC-behind zone, so local and UTC dates can differ', () => {
+    expect(new Date('2026-08-12T03:30:00.000Z').getHours()).not.toBe(3);
+  });
+
+  it('matches a late-evening creation under its LOCAL day, not the next UTC one', () => {
+    // 23:30 EDT on Aug 11 is 03:30Z on Aug 12 — a naive slice(0,10) yields '2026-08-12'.
+    const t = mk({ created: '2026-08-12T03:30:00.000Z' });
+    expect(t.created.slice(0, 10)).toBe('2026-08-12'); // the old behavior, for contrast
+    expect(matchesFilter(t, f({ dateFrom: '2026-08-11', dateTo: '2026-08-11' }), '')).toBe(true);
+    expect(matchesFilter(t, f({ dateFrom: '2026-08-12', dateTo: '2026-08-12' }), '')).toBe(false);
+  });
+
+  it('applies the same rule to updated', () => {
+    const t = mk({ updated: '2026-08-12T03:30:00.000Z' });
+    expect(matchesFilter(t, f({ dateField: 'updated', dateFrom: '2026-08-11', dateTo: '2026-08-11' }), ''))
+      .toBe(true);
+  });
+
+  // NOT a repro — a regression guard. It passes before AND after the fix, and that is the point: 72 of
+  // the 887 live tickets are bulk-seeded with `created` at exactly T00:00:00.000Z, a nominal calendar
+  // DATE rather than an instant. Converting those to local time would move all 72 back a day.
+  it('leaves a date-only stamp (exact UTC midnight) on its stated day', () => {
+    const t = mk({ created: '2026-07-31T00:00:00.000Z' });
+    expect(matchesFilter(t, f({ dateFrom: '2026-07-31', dateTo: '2026-07-31' }), '')).toBe(true);
+    expect(matchesFilter(t, f({ dateFrom: '2026-07-30', dateTo: '2026-07-30' }), '')).toBe(false);
+  });
+
+  it('treats a stamp one millisecond past midnight as a real instant', () => {
+    const t = mk({ created: '2026-07-31T00:00:00.001Z' });
+    expect(matchesFilter(t, f({ dateFrom: '2026-07-30', dateTo: '2026-07-30' }), '')).toBe(true);
+  });
+
+  // Frontmatter is hand-editable, so an unparseable date must drop out of the range rather than take
+  // the board render down with it.
+  it('excludes an unparseable stamp instead of throwing', () => {
+    const t = mk({ created: 'not-a-date' });
+    expect(() => matchesFilter(t, f({ dateFrom: '2026-07-30' }), '')).not.toThrow();
+    expect(matchesFilter(t, f({ dateFrom: '2026-07-30' }), '')).toBe(false);
   });
 });

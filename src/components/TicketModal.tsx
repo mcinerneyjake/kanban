@@ -14,6 +14,7 @@ import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
 import { daysSince, formatAge } from '../lib/ticketAge.js';
 import { formatIso } from '../lib/formatDate.js';
+import { formatCalendarDate } from '../lib/completedDate.js';
 import Spinner from './ui/Spinner.js';
 import Modal from './ui/Modal.jsx';
 
@@ -303,7 +304,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
             const age = daysSince(ticket.updated, mountedAt);
             return (
               <div className="ticket-dates">
-                <span title={ticket.created}>🕐 Created {formatIso(ticket.created, (d) => d.toLocaleDateString())}</span>
+                <span title={ticket.created}>🕐 Created {formatCalendarDate(ticket.created)}</span>
                 {age !== null && (
                   <span title={ticket.updated}>
                     · updated {age === 0 ? 'today' : `${formatAge(age)} ago`}

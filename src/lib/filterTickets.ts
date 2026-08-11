@@ -1,6 +1,6 @@
 import type { BoardTicket } from '../../shared/constants.js';
 import type { FilterState } from '../components/FilterPopover.js';
-import { localDateOf } from './completedDate.js';
+import { calendarDateOf } from './completedDate.js';
 
 // ONE filter predicate for both the board and the Archive lane, so their filtering can't drift
 // (tkt-d7919e9f1e9b). Status is intentionally NOT filtered here — callers pre-split archived vs
@@ -14,10 +14,9 @@ export function matchesFilter(ticket: BoardTicket, filter: FilterState, searchTe
     const raw = ticket[filter.dateField];
     // completedAt is absent for tickets finished before telemetry existed — excluded, never crashed.
     if (!raw) return false;
-    // completedAt compares LOCAL calendar dates; created/updated still slice the UTC string. The
-    // split is deliberate — converting those changes what existing saved filter URLs match
-    // (tkt-cb6ee8e7fdd0).
-    const d = filter.dateField === 'completedAt' ? localDateOf(raw) : raw.slice(0, 10);
+    // All three date fields resolve the same way (tkt-cb6ee8e7fdd0) — the date inputs are local, so
+    // the stamps must be too. calendarDateOf leaves date-only stamps alone; see its comment.
+    const d = calendarDateOf(raw);
     if (d === null) return false;
     if (filter.dateFrom && d < filter.dateFrom) return false;
     if (filter.dateTo && d > filter.dateTo) return false;
