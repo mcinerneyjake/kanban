@@ -1,7 +1,7 @@
 import type { BoardTicket } from '../../shared/constants.js';
 import type { FilterState } from '../components/FilterPopover.js';
 import { matchesFilter } from './filterTickets.js';
-import { localDateOf, todayLocal } from './completedDate.js';
+import { calendarDateOf, todayLocal } from './completedDate.js';
 
 // Backs the Done column's "N today" chip (tkt-17dbc816e247). Returns the tickets rather than a bare
 // count so the caller can also tell whether any of them are archived (and expand that lane).
@@ -18,7 +18,9 @@ export function completedToday(tickets: BoardTicket[], filter: FilterState, now:
   const withoutDateRange: FilterState = { ...filter, dateFrom: '', dateTo: '' };
   return tickets.filter((t) => {
     if (t.status !== 'done' && t.status !== 'archived') return false;
-    if (!t.completedAt || localDateOf(t.completedAt) !== today) return false;
+    // Same resolver the filter uses: clicking the chip applies a date range, so a count resolved any
+    // other way could disagree with the list it opens (tkt-cb6ee8e7fdd0).
+    if (!t.completedAt || calendarDateOf(t.completedAt) !== today) return false;
     return matchesFilter(t, withoutDateRange, '');
   });
 }

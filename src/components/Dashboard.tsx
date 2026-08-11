@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import ErrorBanner from './ui/ErrorBanner.jsx';
 import { usePolledSummary } from '../usePolledSummary.js';
 import { donutSegments } from '../lib/donutSegments.js';
+import { formatCalendarDate } from '../lib/completedDate.js';
 import { type WidgetVisibility } from '../useDashboardConfig.js';
 import {
   STATUSES,
@@ -158,7 +159,7 @@ export default function Dashboard({ project, visible, autoRefresh, refreshKey, o
                             <span className="recent-status" style={{ color: STATUS_COLOR[t.status] }}>
                               {STATUS_LABEL[t.status] ?? t.status}
                             </span>
-                            <span className="recent-date">{new Date(t.updated).toLocaleDateString()}</span>
+                            <span className="recent-date">{formatCalendarDate(t.updated)}</span>
                           </button>
                         </li>
                       ))}

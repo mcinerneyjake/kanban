@@ -4,7 +4,7 @@ import CardProgress from './CardProgress.js';
 import ProvenanceBadge from './ProvenanceBadge.js';
 import { ticketProvenance } from '../lib/provenance.js';
 import { staleAge } from '../lib/ticketAge.js';
-import { formatCompleted } from '../lib/completedDate.js';
+import { formatCompleted, formatCalendarDate } from '../lib/completedDate.js';
 import { formatIso } from '../lib/formatDate.js';
 
 const TYPE_ICON: Record<TicketType, string> = { bug: '🐞', feature: '✨', task: '📋', chore: '🧹' };
@@ -177,7 +177,7 @@ function Card({ ticket, now, onOpen, columnId, depth = 0, childCount = 0, active
         {(() => {
           const stale = staleAge(ticket, mountedAt);
           if (!stale) return null;
-          const last = formatIso(ticket.updated, (d) => d.toLocaleDateString());
+          const last = formatCalendarDate(ticket.updated);
           return (
             <span className="badge stale" title={`Last updated ${last} — ${plural(stale.days, 'day')} ago`}>
               ⏳ {stale.label}
