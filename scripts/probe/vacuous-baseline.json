@@ -1,13 +1,14 @@
 {
-  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). A count here is a CEILING, not a target: the gate fails when a repo exceeds it, and the number should only ever be revised DOWN. Regenerate a repo's row with `node scripts/probe/vacuous-tests.mjs <root>`. `enforced` marks the rows some gate actually checks — see the ticket: only kanban can enforce today, because the probe lives in this repo and another repo's CI cannot reach it.",
-  "_countsAreFloors": "Every number below is a FLOOR, not a total. The probe's isComputed only recognises an iterable computed INLINE in the loop header, so the common `const items = xs.filter(...); for (const item of items)` form is not detected (tkt-9c818426feb3). Do not read a 0 as 'clean'. Re-sweep and revise once that is fixed.",
+  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). `max` is a CEILING, not a target: the gate fails when a repo exceeds it, and it should only ever be revised DOWN. `path` is relative to the kanban repo root and BINDS the row to a tree, so the ratchet cannot sweep one repo and report another's ceiling. `files`/`blocks` are read as a breadth floor, so a collapsed sweep fails instead of scoring a clean 0. `enforced` marks rows some gate actually checks — only kanban today, because the probe lives in this repo and another repo's CI cannot reach it.",
+  "_regenerate": "Do not hand-edit the counts. Run: node -e 'import(\"./scripts/probe/vacuous-tests.mjs\").then(m=>{for(const [r,p] of Object.entries(require(\"./scripts/probe/vacuous-baseline.json\").repos).map(([k,v])=>[k,v.path])){const s=m.sweep(p);console.log(r,s.files,s.blocks,s.candidates.length)}})' — the numbers below were generated that way, not transcribed.",
+  "_countsAreFloors": "Every `max` below is a FLOOR on the real defect count, not a total. The probe's isComputed only recognises an iterable computed INLINE in the loop header, so the common `const items = xs.filter(...); for (const item of items)` form is not detected (tkt-9c818426feb3). Do not read a 0 as 'clean'. Re-sweep and revise once that is fixed.",
   "asOf": "2026-08-11",
   "repos": {
-    "kanban": { "max": 0, "files": 86, "blocks": 1333, "enforced": true },
-    "ticket-workflow": { "max": 0, "files": 8, "blocks": 330, "enforced": false },
-    "portfolio-site": { "max": 1, "files": 26, "blocks": 130, "enforced": false },
-    "copart-filter": { "max": 4, "files": 36, "blocks": 642, "enforced": false },
-    "job-tracker": { "max": 8, "files": 21, "blocks": 296, "enforced": false },
-    "equipment-schedule": { "max": 19, "files": 121, "blocks": 1927, "enforced": false }
+    "kanban": { "max": 0, "path": ".", "files": 91, "blocks": 1429, "enforced": true },
+    "ticket-workflow": { "max": 0, "path": "../ticket-workflow", "files": 9, "blocks": 368, "enforced": false },
+    "portfolio-site": { "max": 1, "path": "../portfolio-site", "files": 27, "blocks": 136, "enforced": false },
+    "copart-filter": { "max": 4, "path": "../copart-filter", "files": 37, "blocks": 674, "enforced": false },
+    "job-tracker": { "max": 8, "path": "../job-tracker", "files": 21, "blocks": 296, "enforced": false },
+    "equipment-schedule": { "max": 19, "path": "../hvac-projects/equipment-schedule", "files": 121, "blocks": 1927, "enforced": false }
   }
 }

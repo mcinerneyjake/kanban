@@ -378,7 +378,13 @@ export function assertInstruments() {
 }
 
 const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
-const SKIP_DIR = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.claude', '.next']);
+const SKIP_DIR = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next']);
+// `.claude` used to be skipped wholesale, which silently hid the four suites the
+// repo relies on most — guard-bash, guard-ticket, track-steps and
+// settings.audit. The thing that actually needs skipping is the nested full
+// checkouts under `.claude/worktrees`, so the skip is by PATH, not by basename
+// (`tkt-d88902f60f7c`).
+const SKIP_PATH = [join('.claude', 'worktrees')];
 
 export function testFiles(root) {
   const found = [];
@@ -392,6 +398,7 @@ export function testFiles(root) {
     for (const entry of entries) {
       if (SKIP_DIR.has(entry)) continue;
       const full = join(dir, entry);
+      if (SKIP_PATH.some((suffix) => full.endsWith(suffix))) continue;
       // `lstat`, so a symlinked directory is not followed — a self-referential link would otherwise
       // recurse until the path blows up. `throwIfNoEntry` keeps a dangling link from ending the walk.
       const stat = lstatSync(full, { throwIfNoEntry: false });
