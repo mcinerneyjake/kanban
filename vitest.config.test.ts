@@ -22,3 +22,12 @@ describe('vitest collection excludes', () => {
     for (const glob of worktreeGlobs) expect(glob.endsWith('/**')).toBe(true);
   });
 });
+
+// Eight suites spawn real subprocesses; at vitest's 5s default one of them failed as a
+// timeout purely from load elsewhere in the run, which reads as a guard-behaviour failure
+// rather than the false negative it is (tkt-0993b12650a1).
+describe('subprocess suites get a realistic timeout', () => {
+  it('raises testTimeout well above the 5s default', () => {
+    expect(config.test?.testTimeout).toBeGreaterThanOrEqual(15_000);
+  });
+});

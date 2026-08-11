@@ -3,6 +3,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    // Eight suites drive real subprocesses (git commits through the guard hooks, the probe
+    // CLIs, the terminal setup scripts). Vitest's 5s default is not a budget for that: the
+    // guard-bash end-to-end case measured 5232ms purely from added load elsewhere in the
+    // run, so it failed as a *timeout* while passing in isolation — a false negative about
+    // guard behaviour. 20s still catches a genuine hang (tkt-0993b12650a1).
+    testTimeout: 20_000,
     // Pins EMBED_CACHE_PATH away from the real board cache — see the file's comment.
     setupFiles: ['./test-support/vitest.setup.ts'],
     // `.claude/worktrees/**` holds full checkouts (CLAUDE.md tells concurrent sessions to make one),
