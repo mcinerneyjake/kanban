@@ -81,12 +81,11 @@ Vitest patterns to follow:
 
 ### Integration seams (end-to-end round-trip test) — MANDATORY for cross-module data flows
 
-The per-file table above catches per-**layer** regressions but **misses seam bugs** — defects in the *handoff* between modules, where a value is silently dropped, mangled, or misrouted as it crosses a boundary. These hide from isolated unit tests (every layer passes green) **and** from diff-scoped review (no single diff owns the whole path).
+**Why seam bugs hide, and the round-trip + fidelity-invariant shape that catches them, are in `~/.claude/CLAUDE.md` → *Cross-module changes need one round-trip test*.** This section is the repo's binding instance of it (`tkt-d2267fb6bac4`), and here the rule is **MANDATORY**, not a default.
 
-**Rule:** when a change threads data across **≥2 modules** — e.g. `model proposal → proposalToPrefill → form → changedFormFields → createTicket/updateTicket → provenance` — add (or extend) **one end-to-end round-trip test** that drives the *real* chain with stubbed I/O (a fake chat client, `TICKETS_DIR_OVERRIDE`/`RUNS_DIR_OVERRIDE`) and asserts **source input == persisted output** across the full path. Include a **fidelity invariant**: for a valid input `P`, `apply(P)` yields a result whose fields equal `P` (modulo server-forced defaults) — asserting "no field silently dropped/mangled at the boundary" as a *class*, not case-by-case. Write the round-trip test **first** and TDD the feature/fix against it.
+**This repo's seam** is `model proposal → proposalToPrefill → form → changedFormFields → createTicket/updateTicket → provenance`. Drive the *real* chain with this repo's stubs — a fake chat client plus `TICKETS_DIR_OVERRIDE`/`RUNS_DIR_OVERRIDE` — and write the round-trip test **first**, TDD-ing the feature or fix against it.
 
-Two reinforcements that make the seam load-bearing (prefer these over piling on more test cases):
-- **Types:** make a cross-layer mapping/DTO the *full* field set (or force an explicit, commented exclusion) so adding a field upstream fails to **compile** until the mapping handles it; derive shared validation sets (e.g. create-valid statuses) from **one** constant used on both sides.
+One reinforcement beyond the global rule (prefer it over piling on more test cases):
 - **Review:** for integration-heavy PRs, run a **flow-scoped** review angle — "trace this value from source to sink; list every transformation or drop" — not only the default diff-scoped pass.
 
 > **Why this rule exists:** the in-app intake feature shipped ~8 real bugs (silent no-op saves, update→duplicate-create misrouting, dropped agent-proposed fields, stripped provenance, untracked spend) that all lived in the propose→apply seam and survived a green unit suite + per-ticket reviews. They were built as separate tickets and reviewed diff-by-diff, so nothing exercised the whole path. See the agentic-rag-demo round-trip harness ticket (`tkt-345255727ffe`).
@@ -349,12 +348,12 @@ This **supersedes** any instinct to match the codebase's former high comment den
 
 ## Probe discipline
 
-When you need a fact you can't read directly — a repo's commit count, a PDF's text, a server's state — you write a probe (a regex, a grep flag, a script, an inference). **A broken probe fails silently and confidently: it returns a plausible value, so "I couldn't measure this" and "here's the answer" are the same output.** That produced ~12 confident false results in one 2026-07-15 session, including a case-sensitive `git log --grep` that undercounted AI-co-authored commits 3× and nearly got a *true* resume claim weakened (`tkt-ceebed633013`). Same shape as the fail-open guard and the transcribed trace — see memory `feedback_validate_probe_with_controls`.
+**The general rule — controls, the surprising-result tell, ranking by consequence — now lives in `~/.claude/CLAUDE.md` → *Prove the instrument before reporting its output*, and applies in every repo.** What follows is this repo's instance and its executable precedent (`tkt-d2267fb6bac4`).
 
-- **A surprising result is a hypothesis about the instrument, not a finding.** A 3× discrepancy or "every string absent" is the tell that the probe is broken — chase the instrument first.
-- **Prove the instrument with a control before reporting its output as fact.** Positive control: show it finds a known-present. Negative control (for any *absent* claim): show it doesn't match a known-absent. Purpose-built tools lie too (`git log --grep` is case-sensitive by default) — control them anyway.
-- **Rank by consequence.** A probe whose result would *cause an action* (weaken a claim, delete a file) gets validated first, not the one that's easiest to run.
+This is where the rule was paid for: **~12 confident false results in one 2026-07-15 session**, including a case-sensitive `git log --grep` that undercounted AI-co-authored commits 3× and nearly got a *true* resume claim weakened (`tkt-ceebed633013`). Same shape as the fail-open guard and the transcribed trace — see memory `feedback_validate_probe_with_controls`.
+
 - **Recurring, code-shaped probes get a tested probe with a built-in control that fails loud** — the executable precedent is `scripts/probe/repo-stats.mjs` (+ `.test.mjs`): trailer-aware commit counting whose `assertInstruments` throws rather than return a false zero, and whose test watches the reconstructed broken probe go red. It is also the source for the published repo stats (never hand-transcribe them — see `feedback_generate_dont_transcribe`).
+- **The cross-repo sweep is `scripts/probe/vacuous-tests.mjs <root>`** — it takes any repo's path, so run it rather than rebuilding it, and read a `0` only beside another repo's non-zero.
 
 ## Stack
 
