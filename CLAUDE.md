@@ -354,6 +354,7 @@ This is where the rule was paid for: **~12 confident false results in one 2026-0
 
 - **Recurring, code-shaped probes get a tested probe with a built-in control that fails loud** — the executable precedent is `scripts/probe/repo-stats.mjs` (+ `.test.mjs`): trailer-aware commit counting whose `assertInstruments` throws rather than return a false zero, and whose test watches the reconstructed broken probe go red. It is also the source for the published repo stats (never hand-transcribe them — see `feedback_generate_dont_transcribe`).
 - **The cross-repo sweep is `scripts/probe/vacuous-tests.mjs <root>`** — it takes any repo's path, so run it rather than rebuilding it, and read a `0` only beside another repo's non-zero.
+- **Merged-but-undeleted branches: `scripts/probe/merged-branches.mjs <repo-path>`** (`tkt-0993b12650a1`). Ancestry is the wrong instrument — a squash-merge makes a branch's commits non-ancestors of `main`, so `git rev-list main..<branch>` called 11 of 13 branches live when 3 were. This asks GitHub for merged PRs instead, and requires the branch tip to still *be* the merged head: a name matching a merged PR does not mean the commits do. It prints a paste-ready `git branch -D`, which stays a **human** action (`guard-bash` blocks the agent, correctly — see **Concurrent sessions**).
 
 ## Stack
 
