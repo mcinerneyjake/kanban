@@ -1,7 +1,6 @@
 import { useState, useRef } from 'react';
 import { useDismiss } from '../useDismiss.js';
 import { TYPES, PRIORITIES, isPriority, type TicketType, type Priority } from '../../shared/constants.js';
-import { todayLocal } from '../lib/completedDate.js';
 
 export type SortBy = 'order' | 'priority' | 'created' | 'title'
 export type DateField = 'created' | 'updated' | 'completedAt'
@@ -43,9 +42,12 @@ type Props = {
   projects: string[]
   assignees: string[]
   onChange: (f: FilterState) => void
+  // Shared with the Done column's chip so both paths also expand the Archive lane when today's work
+  // has been swept there — otherwise the popover would show an empty board (tkt-17dbc816e247).
+  onQuickToday: () => void
 }
 
-export default function FilterPopover({ filter, projects, assignees, onChange }: Props) {
+export default function FilterPopover({ filter, projects, assignees, onChange, onQuickToday }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -142,12 +144,7 @@ export default function FilterPopover({ filter, projects, assignees, onChange }:
             <button
               type="button"
               className="fp-quick"
-              onClick={() => {
-                // Date.now() in a handler, not in render — react-hooks/purity bans the render form,
-                // and reading it at click is also what keeps "today" from freezing at mount.
-                const today = todayLocal(Date.now());
-                onChange({ ...filter, dateField: 'completedAt', dateFrom: today, dateTo: today });
-              }}
+              onClick={() => { onQuickToday(); setOpen(false); }}
             >
               Completed today
             </button>

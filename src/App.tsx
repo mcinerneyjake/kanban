@@ -291,6 +291,11 @@ export default function App() {
       prev.map((t) => (t.id === id ? { ...t, status, order } : t)));
     try {
       await api.update(id, { status, order });
+      // A move into done/archived mints the `done` event that completedAt is derived from. The
+      // optimistic patch above has no completedAt and markLocalWrite() mutes the SSE echo, so
+      // without an explicit reload the pill and the "N today" chip would not appear until some
+      // unrelated write (tkt-17dbc816e247).
+      if (status === 'done' || status === 'archived') load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       load();
@@ -319,7 +324,7 @@ export default function App() {
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                 />
-                <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
+                <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} onQuickToday={handleShowToday} />
               </>
             ) : view === 'dashboard' ? (
               <DashboardConfigPopover projects={projects} dash={dash} />

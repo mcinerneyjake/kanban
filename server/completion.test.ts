@@ -88,6 +88,28 @@ describe('withCompletedAt', () => {
   });
 });
 
+// A read failure is "could not check", which must never be cached as "never completed" — the file's
+// mtime never changes again, so one transient EMFILE/EACCES would pin the ticket as not-recorded for
+// the life of the process, indistinguishable from a genuine pre-telemetry ticket.
+describe('unreadable events file', () => {
+  it('does not cache a failed read as "never completed"', async () => {
+    // chmod, not a dir-for-file swap: the mtime must be IDENTICAL across the failed and successful
+    // read, or the mtime key alone would force a re-read and the test would pass even if the failure
+    // were being cached — a control that cannot fail.
+    const file = path.join(dirs.events, 'tkt-1.jsonl');
+    await writeEvents('tkt-1', [ev()]);
+    const before = (await fs.stat(file)).mtimeMs;
+
+    await fs.chmod(file, 0o000);
+    expect((await withCompletedAt(mk())).completedAt).toBeNull(); // EACCES → "could not check"
+
+    await fs.chmod(file, 0o644);
+    expect((await fs.stat(file)).mtimeMs).toBe(before); // chmod does not move mtime
+    // Same mtime, so a cached null would still be served here. It must not be.
+    expect((await withCompletedAt(mk())).completedAt).toBe('2026-08-11T19:00:00.000Z');
+  });
+});
+
 describe('cache invalidation', () => {
   // A cache that never invalidates freezes every date on the board and looks perfectly correct.
   it('picks up a newly appended done event', async () => {

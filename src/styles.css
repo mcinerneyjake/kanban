@@ -224,6 +224,20 @@ body {
   color: #fff;
 }
 
+/* Matches .filter-select's box so the quick action doesn't render as native UA button chrome. */
+.fp-quick {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.fp-quick:hover { background: var(--col-count-bg); }
+.fp-quick:focus-visible { outline: 2px solid var(--accent, #0b66e4); outline-offset: 1px; }
+
 .filter-select {
   border: 1px solid var(--border);
   border-radius: 4px;
