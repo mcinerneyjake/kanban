@@ -1,13 +1,20 @@
 import { useState, useRef } from 'react';
 import { useDismiss } from '../useDismiss.js';
-import type { Ticket } from '../../shared/constants.js';
+import type { Ticket, BoardTicket } from '../../shared/constants.js';
 import Card from './Card.jsx';
 
 type Status = { id: Ticket['status']; label: string }
 
 type Props = {
   column: Status
-  tickets: Ticket[]
+  tickets: BoardTicket[]
+  now: number
+  // Done column only. Counts completions across done AND archived, so Archive all does not zero the
+  // day's record, and respects the active filter so the number predicts what clicking gives you —
+  // deliberately unlike ArchiveLane's totalCount, which is unfiltered for a different reason
+  // (distinguishing an empty lane from a filtered-out one). tkt-17dbc816e247.
+  todayCount?: number
+  onShowToday?: () => void
   depths: Record<string, number>
   childCounts: Record<string, number>
   activeBlockerCounts: Record<string, number>
@@ -21,7 +28,7 @@ type Props = {
 }
 
 // Drop on empty space appends; drop on a card (in Card) inserts above it.
-export default function Column({ column, tickets, depths, childCounts, activeBlockerCounts, staleBlockerCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse, onArchiveAll }: Props) {
+export default function Column({ column, tickets, now, todayCount, onShowToday, depths, childCounts, activeBlockerCounts, staleBlockerCounts, collapsed, onDrop, onReparent, onOpen, onToggleCollapse, onArchiveAll }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +47,20 @@ export default function Column({ column, tickets, depths, childCounts, activeBlo
       onDrop={onColumnDrop}
     >
       <div className="column-header">
-        <span>{column.label}</span>
+        <div className="column-header-left">
+          <span>{column.label}</span>
+          {todayCount !== undefined && onShowToday && (
+            // Rendered at zero too: hiding it would make "nothing finished yet" and "the count is
+            // broken" look identical.
+            <button
+              className="column-today"
+              onClick={onShowToday}
+              title="Show tickets completed today"
+            >
+              {todayCount} today
+            </button>
+          )}
+        </div>
         <div className="column-header-right">
           {onArchiveAll && (
             <div className="column-menu" ref={menuRef}>
@@ -73,6 +93,7 @@ export default function Column({ column, tickets, depths, childCounts, activeBlo
           <Card
             key={t.id}
             ticket={t}
+            now={now}
             columnId={column.id}
             depth={depths[t.id] ?? 0}
             childCount={childCounts[t.id] ?? 0}

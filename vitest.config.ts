@@ -34,6 +34,7 @@ export default defineConfig({
       include: [
         'server/index.ts',
         'server/stream.ts',
+        'server/completion.ts',
         'server/ticketWatcher.ts',
         'server/lib/**/*.ts',
         'server/middleware/**/*.ts',

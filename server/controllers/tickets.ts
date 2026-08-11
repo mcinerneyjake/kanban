@@ -9,6 +9,7 @@ import {
 } from '../tickets.js';
 import { parseSearchTerm } from '../schemas/query.js';
 import { ticketId } from '../schemas/params.js';
+import { withCompletedAt, withCompletedAtAll } from '../completion.js';
 
 // Thin orchestration: read request → service → response. :id narrowing in ticketId(); the service owns id-format validation.
 
@@ -19,11 +20,13 @@ import { ticketId } from '../schemas/params.js';
 export async function list(req: Request, res: Response): Promise<void> {
   const q = parseSearchTerm(req.query.q);
   const { tickets, unreadable } = await listBoard();
-  res.json({ tickets: q ? filterBySearch(tickets, q) : tickets, unreadable });
+  // Enrich after the search branch — only what is actually returned pays for the events join.
+  const shown = q ? filterBySearch(tickets, q) : tickets;
+  res.json({ tickets: await withCompletedAtAll(shown), unreadable });
 }
 
 export async function get(req: Request, res: Response): Promise<void> {
-  res.json(await getTicket(ticketId(req)));
+  res.json(await withCompletedAt(await getTicket(ticketId(req))));
 }
 
 export async function create(req: Request, res: Response): Promise<void> {

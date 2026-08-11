@@ -1,4 +1,4 @@
-import type { Ticket, DashboardSummary, EconomicsSummary, EconomicsRunDetail, TicketEventsResponse } from '../shared/constants.js';
+import type { Ticket, BoardTicket, DashboardSummary, EconomicsSummary, EconomicsRunDetail, TicketEventsResponse } from '../shared/constants.js';
 // Type-only, so it is erased before the bundle — the service's own shape, not a hand-copy
 // that could drift from the wire format (tkt-6cd916608a2f).
 import type { BoardListing } from 'ticket-workflow';
@@ -31,8 +31,10 @@ export interface IntakeProposal { action: string; args: Record<string, unknown> 
 export interface ProposeResult { proposal: IntakeProposal | null; summary: string; runId: string }
 
 export const api = {
-  list: (): Promise<BoardListing> => get('/api/tickets'),
-  get: (id: string): Promise<Ticket> => get(`/api/tickets/${id}`),
+  // The server enriches each done/archived ticket with a derived `completedAt`, so the wire shape is
+  // BoardListing with BoardTickets. `unreadable` is reused by indexed access rather than re-declared.
+  list: (): Promise<{ tickets: BoardTicket[]; unreadable: BoardListing['unreadable'] }> => get('/api/tickets'),
+  get: (id: string): Promise<BoardTicket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),
   economics: (opts: { from?: string; to?: string } = {}): Promise<EconomicsSummary> => {

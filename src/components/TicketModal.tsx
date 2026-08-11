@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { api } from '../api.js';
-import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type StatusId } from '../../shared/constants.js';
+import { STATUSES, BOARD_STATUSES, TYPES, PRIORITIES, type Ticket, type BoardTicket, type StatusId } from '../../shared/constants.js';
 import { useRelatedTickets } from '../useRelatedTickets.js';
 import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
@@ -20,7 +20,7 @@ import Modal from './ui/Modal.jsx';
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
 type Props = {
-  ticket: Ticket | null
+  ticket: BoardTicket | null
   allTickets: Ticket[]
   projects: string[]
   assignees: string[]
@@ -307,6 +307,11 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                 {age !== null && (
                   <span title={ticket.updated}>
                     · updated {age === 0 ? 'today' : `${formatAge(age)} ago`}
+                  </span>
+                )}
+                {ticket.completedAt && (
+                  <span title={ticket.completedAt}>
+                    · ✅ completed {formatIso(ticket.completedAt, (d) => d.toLocaleDateString())}
                   </span>
                 )}
               </div>

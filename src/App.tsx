@@ -9,6 +9,8 @@ import Sidebar, { type View } from './components/Sidebar.jsx';
 import ArchiveLane from './components/ArchiveLane.jsx';
 import TicketModal from './components/TicketModal.jsx';
 import FilterPopover, { type FilterState } from './components/FilterPopover.jsx';
+import { completedToday } from './lib/completedToday.js';
+import { todayLocal, msUntilNextLocalMidnight } from './lib/completedDate.js';
 import DashboardConfigPopover from './components/DashboardConfigPopover.jsx';
 import { type TerminalSession } from './components/TerminalWidget.jsx';
 // Lazy + DEV-gated so the xterm payload lands in its own chunk (loaded only in dev), never the prod main bundle.
@@ -22,7 +24,7 @@ import { filterTickets } from './lib/filterTickets.js';
 import { resolveTicket } from './lib/resolveTicket.js';
 import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
-import type { Ticket } from '../shared/constants.js';
+import type { Ticket, BoardTicket } from '../shared/constants.js';
 
 // The embedded terminal must survive a Vite full reload so it can REATTACH (tkt-dd308ec91efc):
 // React state resets on reload, so persist "a terminal is open (for which ticket)" in
@@ -44,10 +46,13 @@ function loadTerminalSession(): TerminalSession | null {
 
 export default function App() {
   const { theme, toggle } = useTheme();
-  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [tickets, setTickets] = useState<BoardTicket[]>([]);
+  // One board-wide clock, re-issued at local midnight. A per-component mountedAt would freeze, and a
+  // board left open overnight would keep calling yesterday's work "Today" (tkt-17dbc816e247).
+  const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [unreadable, setUnreadable] = useState<UnreadableTicketFile[]>([]);
-  const [editing, setEditing] = useState<Ticket | 'new' | null>(null);
+  const [editing, setEditing] = useState<BoardTicket | 'new' | null>(null);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   // Non-null → Save routes through intake-apply (provenance + metering), not the human route.
   const [draftRunId, setDraftRunId] = useState<string | null>(null);
@@ -109,12 +114,29 @@ export default function App() {
     [tickets],
   );
 
+  // Re-arms on each fire, so the board rolls over every midnight it stays open. A timer that fires
+  // late (laptop asleep) still fires, which is the behaviour we want.
+  useEffect(() => {
+    const id = setTimeout(() => setNow(Date.now()), msUntilNextLocalMidnight(now));
+    return () => clearTimeout(id);
+  }, [now]);
+
   const archivedTickets = useMemo(() => tickets.filter((t) => t.status === 'archived'), [tickets]);
 
   const filteredTickets = useMemo(
     () => filterTickets(tickets.filter((t) => t.status !== 'archived'), filter, searchTerm),
     [tickets, filter, searchTerm],
   );
+
+  const todaysCompletions = useMemo(() => completedToday(tickets, filter, now), [tickets, filter, now]);
+
+  const handleShowToday = useCallback(() => {
+    const today = todayLocal(now);
+    setFilter((f) => ({ ...f, dateField: 'completedAt', dateFrom: today, dateTo: today }));
+    // Expand the archive when today's work has been swept there, so the chip's number never exceeds
+    // what is actually on screen.
+    if (todaysCompletions.some((t) => t.status === 'archived')) setShowArchive(true);
+  }, [now, todaysCompletions]);
 
   // Archived tickets obey the same FilterPopover filters so the Archive lane narrows with the board
   // (tkt-d7919e9f1e9b) — one predicate via filterTickets, so board + archive can't drift. The board
@@ -269,6 +291,11 @@ export default function App() {
       prev.map((t) => (t.id === id ? { ...t, status, order } : t)));
     try {
       await api.update(id, { status, order });
+      // A move into done/archived mints the `done` event that completedAt is derived from. The
+      // optimistic patch above has no completedAt and markLocalWrite() mutes the SSE echo, so
+      // without an explicit reload the pill and the "N today" chip would not appear until some
+      // unrelated write (tkt-17dbc816e247).
+      if (status === 'done' || status === 'archived') load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       load();
@@ -297,7 +324,7 @@ export default function App() {
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                 />
-                <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} />
+                <FilterPopover filter={filter} projects={projects} assignees={assignees} onChange={setFilter} onQuickToday={handleShowToday} />
               </>
             ) : view === 'dashboard' ? (
               <DashboardConfigPopover projects={projects} dash={dash} />
@@ -322,8 +349,8 @@ export default function App() {
 
         {view === 'board' ? (
           <>
-            <Board tickets={filteredTickets} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} staleBlockerCounts={staleBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
-            <ArchiveLane tickets={filteredArchivedTickets} totalCount={archivedTickets.length} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
+            <Board tickets={filteredTickets} now={now} todayCount={todaysCompletions.length} onShowToday={handleShowToday} allTickets={tickets} sort={filter.sort} childCounts={childCounts} activeBlockerCounts={activeBlockerCounts} staleBlockerCounts={staleBlockerCounts} onMove={handleMove} onReparent={handleReparent} onOpen={openTicket} onArchiveAll={handleArchiveAll} />
+            <ArchiveLane tickets={filteredArchivedTickets} now={now} totalCount={archivedTickets.length} activeBlockerCounts={activeBlockerCounts} show={showArchive} onToggle={() => setShowArchive((v) => !v)} onOpen={openTicket} />
           </>
         ) : view === 'economics' ? (
           <EconomicsDashboard refreshKey={refreshKey} />
