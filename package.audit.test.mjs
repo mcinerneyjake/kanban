@@ -73,13 +73,34 @@ export function auditPin({ here, pkg, lock, fromUrl, resolver = resolveInstalled
   // auditing this manifest against an install it never produced, and a pin bumped here without
   // an install here would pass on the neighbour's copy.
   if (!samePath(found.owner, here)) {
-    const theirSpec = readJsonAt(found.owner, 'package.json')?.dependencies?.[DEP];
-    const theirResolved = readJsonAt(found.owner, 'package-lock.json')?.packages?.[LOCK_KEY]?.resolved;
-    if (theirSpec !== spec || theirResolved !== lock.packages?.[LOCK_KEY]?.resolved) {
+    const theirSpec = requireJsonAt(found.owner, 'package.json')?.dependencies?.[DEP];
+    // "Declares no such dependency" is not "pins a different version": reported as the latter it
+    // printed `pin (undefined) differs` and sent the reader to a lockfile line that does not exist.
+    // Reachable via a NESTED install, where `owner` is a package directory rather than a checkout.
+    if (typeof theirSpec !== 'string') {
+      throw new Error(
+        `Cannot verify the ${DEP} pin: ${DEP} resolved from ${found.owner}, whose package.json ` +
+          `declares no ${DEP} dependency, so that tree cannot vouch for this install. A nested ` +
+          `node_modules/<pkg>/node_modules/${DEP} has this shape — install ${DEP} at the repo root.`,
+      );
+    }
+    if (theirSpec !== spec) {
       throw new Error(
         `Cannot verify the ${DEP} pin: ${DEP} resolved from ${found.owner}, whose pin (${theirSpec}) ` +
           `differs from this tree's (${spec}). Run "npm install" HERE — otherwise this checks the ` +
           `neighbouring tree's install, not the one this lockfile describes.`,
+      );
+    }
+    // tkt-3e63b44f22c5. Checked SEPARATELY from the spec, because agreeing on the spec and
+    // disagreeing on the commit is the tkt-967f4150774b half-state, not a pin disagreement: folded
+    // into one condition it reported the wrong cause and printed the identical spec twice.
+    const theirResolved = requireResolved(requireJsonAt(found.owner, 'package-lock.json'), `${found.owner}'s lockfile`);
+    const ourResolved = requireResolved(lock, "this tree's lockfile");
+    if (theirResolved !== ourResolved) {
+      throw new Error(
+        `Cannot verify the ${DEP} pin: both trees pin ${spec}, but ${found.owner} installed ` +
+          `${theirResolved} while this lockfile describes ${ourResolved}. Run "npm install" HERE — ` +
+          `otherwise this checks the neighbouring tree's install, not the one this lockfile describes.`,
       );
     }
   }
@@ -93,12 +114,32 @@ export function auditPin({ here, pkg, lock, fromUrl, resolver = resolveInstalled
   return found.pkg.version;
 }
 
-function readJsonAt(dir, file) {
+// Throws rather than returning `undefined`: swallowing the read collapsed "could not check it" into
+// the same value as "it agrees", which is the permissive answer to a question that was never asked.
+function requireJsonAt(dir, file) {
+  const path = resolve(dir, file);
   try {
-    return JSON.parse(readFileSync(resolve(dir, file), 'utf8'));
-  } catch {
-    return undefined;
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new Error(
+      `Cannot verify the ${DEP} pin: ${DEP} resolved from ${dir}, but ${path} could not be read ` +
+        `(${e.message}). This is a FAILURE, not a skip — run "npm install" HERE.`,
+      { cause: e },
+    );
   }
+}
+
+// An absent `resolved` cannot be compared, and must not pass as a comparison: `undefined !==
+// undefined` is false, so two trees that both lacked one were read as agreeing (tkt-3e63b44f22c5).
+function requireResolved(lock, source) {
+  const resolved = lock?.packages?.[LOCK_KEY]?.resolved;
+  if (typeof resolved !== 'string' || resolved === '') {
+    throw new Error(
+      `Cannot verify the ${DEP} pin: ${source} records no "resolved" commit for ${LOCK_KEY}, so the ` +
+        `two trees' installs cannot be compared. Run "npm install" HERE.`,
+    );
+  }
+  return resolved;
 }
 
 // realpath both sides: on macOS the temp dir is /var/... while resolution reports
@@ -147,6 +188,40 @@ describe(`${DEP} git-tag pin`, () => {
 
     beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'audit-')); });
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+    // Distinct shas per side: a fixture that gave both trees the same `resolved` is exactly how the
+    // cross-tree lock comparison went untested — it compared a value to itself.
+    const SPEC = 'github:mcinerneyjake/ticket-workflow#v9.9.9';
+    const OURS = 'git+ssh://x#' + 'a'.repeat(40);
+    const THEIRS = 'git+ssh://x#' + 'b'.repeat(40);
+    const lockWith = (resolved) => ({ packages: { [LOCK_KEY]: { resolved } } });
+
+    // `null` means "leave the file off disk" — NOT `undefined`, which fires the default parameter and
+    // silently writes the agreeing fixture instead, passing a test about an absent file.
+    function seedNeighbour({ pkg = { dependencies: { [DEP]: SPEC } }, lock = lockWith(OURS) } = {}) {
+      const put = (name, value) => writeFileSync(join(dir, name), typeof value === 'string' ? value : JSON.stringify(value));
+      if (pkg !== null) put('package.json', pkg);
+      if (lock !== null) put('package-lock.json', lock);
+    }
+
+    // Returns the message so the assertion can be about WHICH failure fired, not merely that one did.
+    // `toThrow()` alone passes on any throw, including a broken fixture — and the defect under test
+    // here is a correct-throw-with-the-wrong-cause, which `toThrow()` cannot see.
+    const messageFrom = (fn) => {
+      try {
+        fn();
+      } catch (e) {
+        return e.message;
+      }
+      throw new Error('expected auditPin to throw, but it returned — the guard passed having verified nothing');
+    };
+
+    const auditFromNested = (lock) => () => auditPin({
+      here: join(dir, 'nested'),
+      pkg: { dependencies: { [DEP]: SPEC } },
+      lock,
+      fromUrl: url('nested', 'probe.mjs'),
+    });
 
     // The regression itself: from a nested dir with no node_modules, resolution must reach
     // the parent's copy. Asserting the VERSION of a planted install is what makes this fail
@@ -220,6 +295,97 @@ describe(`${DEP} git-tag pin`, () => {
         here: join(dir, 'nested'), pkg: { dependencies: { [DEP]: spec } }, lock,
         fromUrl: url('nested', 'probe.mjs'),
       })).toBe('9.9.9');
+    });
+
+    // tkt-3e63b44f22c5. The half-state tkt-967f4150774b documents — `npm install` rewrote the SPEC
+    // and left `resolved` on the old commit — makes the two trees agree on the spec and disagree on
+    // the commit. That is the one shape the lock half of the comparison exists for, and the fixtures
+    // above handed both trees the SAME lock object, so it compared a value to itself: deleting the
+    // whole `theirResolved` half left 13/13 green.
+    it('refuses a cross-tree read when the trees pin one spec but installed different commits', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ lock: lockWith(THEIRS) });
+
+      const message = messageFrom(auditFromNested(lockWith(OURS)));
+      expect(message, 'must name the commit each tree actually installed').toContain('b'.repeat(40));
+      expect(message).toContain('a'.repeat(40));
+      // The misattribution: same spec both sides, so the pin-mismatch wording printed one value
+      // twice — "whose pin (X) differs from this tree's (X)" — sending the reader to the wrong file.
+      expect(message, 'the specs AGREE here, so this is not a pin disagreement').not.toMatch(/differs from this tree's/);
+    });
+
+    // "Could not read it" must not read as "it agrees". Before the fix both reads collapsed into
+    // `undefined`, so an unreadable lockfile fired the PIN-mismatch message instead.
+    it('names the neighbour lockfile it could not parse, rather than blaming the pin', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ lock: '{ this is not json' });
+
+      const message = messageFrom(auditFromNested(lockWith(OURS)));
+      expect(message).toContain('package-lock.json');
+      // "could not be read" is what distinguishes an unreadable file from the downstream guards,
+      // whose messages also name the file — without it this passes on the wrong failure.
+      expect(message).toContain('could not be read');
+      expect(message).not.toMatch(/differs from this tree's/);
+    });
+
+    // ABSENT, not corrupt: a corrupt neighbour manifest is rejected by Node's own resolver before
+    // this code runs (the effect at :175-180), so that fixture passed without ever reaching the read
+    // it claimed to test — a control that passes is the finding, not a success.
+    it('names the neighbour package.json it could not read, rather than blaming the pin', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ pkg: null });
+
+      const message = messageFrom(auditFromNested(lockWith(OURS)));
+      expect(message).toContain('package.json');
+      // Same reason as the lockfile case: the declares-no-dependency branch names package.json too,
+      // so without this the test passed on that guard instead of on the unreadable-file guard.
+      expect(message).toContain('could not be read');
+      expect(message).not.toMatch(/differs from this tree's/);
+    });
+
+    it('refuses when the neighbour lockfile is readable but carries no entry for the dep', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ lock: { packages: {} } });
+
+      const message = messageFrom(auditFromNested(lockWith(OURS)));
+      expect(message).toContain(LOCK_KEY);
+      expect(message).not.toMatch(/differs from this tree's/);
+    });
+
+    // The fail-open itself: `undefined !== undefined` is false, so with NEITHER side carrying a
+    // `resolved` the comparison passed and the cross-tree install was audited having checked nothing.
+    // `messageFrom` throws on a clean return, which is what makes this red before the fix.
+    //
+    // It asserts WHICH side it blames, not merely that it refused: the neighbour is read first and
+    // throws, so this path never evaluates our side. Without that assertion this case is a duplicate
+    // of the one above it and the our-side guard below stays unpinned (found in review).
+    it('refuses rather than passing when NEITHER tree records a resolved commit', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ lock: { packages: {} } });
+
+      const message = messageFrom(auditFromNested({ packages: {} }));
+      expect(message).toContain('records no "resolved" commit');
+      expect(message, 'the neighbour is checked first, so it is the side named').not.toContain("this tree's lockfile");
+    });
+
+    // The our-side guard, which the case above cannot reach. Removing it left 18/18 green.
+    it('refuses when THIS tree\'s lockfile records no resolved commit', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ lock: lockWith(OURS) });
+
+      const message = messageFrom(auditFromNested({ packages: {} }));
+      expect(message).toContain("this tree's lockfile");
+    });
+
+    // Finding 2: the spec half kept the misattribution the lock half just lost. A tree that declares
+    // no such dependency is not a tree pinning a different version.
+    it('says the neighbour declares no such dependency, rather than calling it a pin mismatch', () => {
+      seed({ version: '9.9.9' });
+      seedNeighbour({ pkg: { dependencies: {} } });
+
+      const message = messageFrom(auditFromNested(lockWith(OURS)));
+      expect(message).toContain('declares no');
+      expect(message).not.toMatch(/differs from this tree's/);
     });
 
     // The file's entire reason for existing: "could not check" must be a loud FAILURE. This was
