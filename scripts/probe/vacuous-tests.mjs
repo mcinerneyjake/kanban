@@ -379,11 +379,10 @@ export function assertInstruments() {
 
 const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 const SKIP_DIR = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next']);
-// `.claude` used to be skipped wholesale, which silently hid the four suites the
-// repo relies on most — guard-bash, guard-ticket, track-steps and
-// settings.audit. The thing that actually needs skipping is the nested full
-// checkouts under `.claude/worktrees`, so the skip is by PATH, not by basename
-// (`tkt-d88902f60f7c`).
+// `.claude` used to be skipped wholesale, which silently hid the suites the repo
+// relies on most — guard-bash, guard-ticket and settings.audit. The thing that
+// actually needs skipping is the nested full checkouts under `.claude/worktrees`,
+// so the skip is by PATH, not by basename (`tkt-d88902f60f7c`).
 const SKIP_PATH = [join('.claude', 'worktrees')];
 
 export function testFiles(root) {
