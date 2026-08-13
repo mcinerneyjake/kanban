@@ -66,13 +66,14 @@ After every feature or bug-fix ticket, evaluate **each touched file independentl
 
 | Layer touched | Test file | Framework |
 |---|---|---|
-| `server/tickets.ts` (service) | `server/tickets.test.ts` | Vitest |
+| `server/tickets.ts`, `server/events.ts`, `server/validation.ts`, `mcp/handlers.ts` (re-export shims) | **none** — covered upstream in `ticket-workflow` | — |
 | `server/index.ts` (API routes) | `server/index.test.ts` | Vitest |
 | `src/lib/` (shared utilities) | `src/lib/*.test.ts` next to the file | Vitest |
-| `mcp/handlers.ts` (MCP tool handlers) | `mcp/handlers.test.ts` | Vitest |
 | React components / CSS only | skip | — |
 
-> The MCP **logic** lives in `mcp/handlers.ts` (testable); `mcp/server.ts` is a thin transport-wiring entrypoint with no logic, so it needs no test.
+> **Do not re-create local suites for the shims** (`tkt-6aa717c1c9ec` deleted 188 such cases, every one a strict subset of the package's). Upstream's gate runs against upstream *source at its HEAD*, never the tag `package.json` pins, and the published package ships no tests — so `server/packageContract.test.ts` asserts the **pinned build** through the shim. Add to that file when a bump could regress behaviour kanban relies on; it is deliberately narrow, covering only what no other kanban test asserts.
+>
+> `mcp/server.ts` is a thin transport-wiring entrypoint with no logic, so it needs no test.
 
 Vitest patterns to follow:
 - Use `TICKETS_DIR_OVERRIDE` to redirect file I/O to a temp directory — never touch the real `tickets/` folder
