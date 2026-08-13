@@ -22,7 +22,11 @@ export async function list(req: Request, res: Response): Promise<void> {
   const { tickets, unreadable } = await listBoard();
   // Enrich after the search branch — only what is actually returned pays for the events join.
   const shown = q ? filterBySearch(tickets, q) : tickets;
-  res.json({ tickets: await withCompletedAtAll(shown), unreadable });
+  // `eventsSkipped` is the telemetry-side twin of `unreadable`: lines lost from the logs the
+  // completion join just read, reported for the same reason (tkt-3d6039df4076). Unlike `unreadable`
+  // it is NOT board-wide — only done/archived tickets are joined — so it is scoped to what was read.
+  const { tickets: enriched, eventsSkipped, eventsUnreadable } = await withCompletedAtAll(shown);
+  res.json({ tickets: enriched, unreadable, eventsSkipped, eventsUnreadable });
 }
 
 export async function get(req: Request, res: Response): Promise<void> {

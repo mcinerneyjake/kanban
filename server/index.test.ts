@@ -38,7 +38,40 @@ describe('GET /api/tickets', () => {
   it('returns an empty board when no tickets exist', async () => {
     const res = await request(app).get('/api/tickets');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ tickets: [], unreadable: [] });
+    expect(res.body).toEqual({ tickets: [], unreadable: [], eventsSkipped: 0, eventsUnreadable: 0 });
+  });
+
+  // `res.json` accepts anything, so the compiler cannot see this envelope's shape: when
+  // withCompletedAtAll started returning an object, nothing but a request-level assertion could
+  // catch `tickets` becoming one level deeper (tkt-3d6039df4076).
+  describe('eventsSkipped', () => {
+    const seedDone = async (id: string, lines: string[]) => {
+      await fs.writeFile(path.join(dirs.tickets, `${id}.md`), [
+        '---', "title: 'Done one'", 'type: task', 'priority: medium', 'status: done', 'order: 1',
+        "created: '2026-01-01T00:00:00.000Z'", "updated: '2026-01-01T00:00:00.000Z'", '---', '',
+      ].join('\n'), 'utf8');
+      await fs.writeFile(path.join(dirs.events, `${id}.jsonl`), lines.join('\n') + '\n', 'utf8');
+    };
+
+    it('reports lines lost from the logs the completion join read', async () => {
+      await seedDone('tkt-damaged01', [
+        'not json',
+        JSON.stringify({ ticketId: 'tkt-damaged01', step: 'done', state: 'reached', at: '2026-07-01T00:00:00.000Z' }),
+      ]);
+      const res = await request(app).get('/api/tickets');
+      expect(res.status).toBe(200);
+      expect(res.body.eventsSkipped).toBe(1);
+      expect(Array.isArray(res.body.tickets)).toBe(true); // not nested one level deeper
+      expect(res.body.tickets[0].completedAt).toBe('2026-07-01T00:00:00.000Z');
+    });
+
+    it('reports 0 on a clean board', async () => {
+      await seedDone('tkt-clean0001', [
+        JSON.stringify({ ticketId: 'tkt-clean0001', step: 'done', state: 'reached', at: '2026-07-01T00:00:00.000Z' }),
+      ]);
+      const res = await request(app).get('/api/tickets');
+      expect(res.body.eventsSkipped).toBe(0);
+    });
   });
 
   it('returns all tickets', async () => {
