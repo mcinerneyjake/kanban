@@ -47,16 +47,30 @@ export function latestDoneAt(events: readonly StepAt[]): string | null {
   return best;
 }
 
-function parseEvents(raw: string): StepAt[] {
-  const out: StepAt[] = [];
-  for (const line of raw.split('\n')) {
+// `skipped` rides with the events so no caller here can read the log without it in scope. Note this
+// reader's `isStepAt` is far looser than the package's validator — it wants only string `step`/`at`
+// — so a step id from a NEWER writer parses fine and is never counted. That is deliberate: these
+// discards are structural only, and there is no skew-vs-loss split to mirror (tkt-3d6039df4076).
+function parseEvents(raw: string): { events: StepAt[]; skipped: number } {
+  const events: StepAt[] = [];
+  let skipped = 0;
+  const lines = raw.split('\n');
+  for (const [i, line] of lines.entries()) {
     if (!line.trim()) continue;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (isStepAt(parsed)) out.push(parsed);
-    } catch { /* a torn final line must not discard the events before it */ }
+      if (isStepAt(parsed)) { events.push(parsed); continue; }
+      skipped++;
+    } catch {
+      // A torn line must not discard the events before it, and a torn LAST line is not counted at
+      // all: appendEvent terminates every complete record with \n, so a non-empty final chunk is a
+      // write in flight. The package reader exempts it for the same reason, and these are the same
+      // files — diverging made the two readers contradict each other and left the ticket
+      // permanently uncacheable, re-read on every board load forever.
+      if (i !== lines.length - 1) skipped++;
+    }
   }
-  return out;
+  return { events, skipped };
 }
 
 // Read here rather than via the package's readEvents. That USED to be because readEvents swallowed
@@ -67,36 +81,52 @@ function parseEvents(raw: string): StepAt[] {
 // Caching a false negative would pin the ticket as "not recorded" for the life of the process,
 // since its event file never changes again.
 //
-// Known gap, deliberately not fixed here: it does NOT count discarded lines the way readEvents does
-// since v0.10.0, and this path runs for every ticket on every board load — so the widest reader of
-// these files is the only blind one. No ticket ref: an unresolvable id is worse than none.
-async function readDoneAt(id: string): Promise<{ determined: boolean; at: string | null }> {
+// `skipped` = lines lost from a log that WAS read. `unreadable` = the log could not be read at all,
+// which a line count can never express: zero lines read means zero lines lost, so folding the two
+// together reports total loss as a perfectly healthy board.
+type Completion = { at: string | null; skipped: number; unreadable: boolean }
+
+async function readDoneAt(id: string): Promise<Completion & { determined: boolean }> {
   const file = path.join(eventsDir(), `${id}.jsonl`);
   let raw: string;
   try {
     raw = await fs.readFile(file, 'utf8');
   } catch (err) {
-    if (isNotFound(err)) return { determined: true, at: null }; // genuinely no telemetry
+    if (isNotFound(err)) return { determined: true, at: null, skipped: 0, unreadable: false }; // no telemetry
     console.error('[completion] could not read events for', id, err);
-    return { determined: false, at: null };
+    return { determined: false, at: null, skipped: 0, unreadable: true };
   }
-  return { determined: true, at: latestDoneAt(parseEvents(raw)) };
+  const { events, skipped } = parseEvents(raw);
+  // A discarded line makes this answer untrustworthy in the one direction that matters: if the lost
+  // line WAS the done event, `at` is null and the board renders "not recorded" for a ticket that
+  // was. So it is not `determined` — not wrong, just not cacheable.
+  return { determined: skipped === 0, at: latestDoneAt(events), skipped, unreadable: false };
 }
 
-async function completedAtFor(id: string): Promise<string | null> {
+async function completedAtFor(id: string): Promise<Completion> {
   const file = path.join(eventsDir(), `${id}.jsonl`);
   let mtimeMs: number;
   try {
     mtimeMs = (await fs.stat(file)).mtimeMs;
-  } catch {
-    return null; // no events file: pre-telemetry, and cheap enough to re-stat each time
+  } catch (err) {
+    // Split the errnos exactly as readDoneAt does. Only ENOENT is pre-telemetry; an unconditional
+    // catch here turned a directory that lost its execute bit — or an EMFILE storm across the 32
+    // concurrent stats this file already anticipates — into "never completed" for every done ticket,
+    // board-wide and silent.
+    if (isNotFound(err)) return { at: null, skipped: 0, unreadable: false };
+    console.error('[completion] could not stat events for', id, err);
+    return { at: null, skipped: 0, unreadable: true };
   }
   const hit = cache.get(id);
-  if (hit && hit.mtimeMs === mtimeMs) return hit.completedAt;
+  // A hit can only exist for a determined read, so reporting 0/false here is accurate rather than
+  // assumed — the two facts are coupled, and a test pins the count across a cache-warm second load.
+  if (hit && hit.mtimeMs === mtimeMs) return { at: hit.completedAt, skipped: 0, unreadable: false };
 
-  const { determined, at } = await readDoneAt(id);
+  const { determined, at, skipped, unreadable } = await readDoneAt(id);
+  // Caching an undetermined answer would pin it forever: this file's mtime never changes again once
+  // written, so the memo would outlive the process's only chance to notice.
   if (determined) cache.set(id, { mtimeMs, completedAt: at });
-  return at;
+  return { at, skipped, unreadable };
 }
 
 function isCompleted(status: Ticket['status']): boolean {
@@ -104,7 +134,16 @@ function isCompleted(status: Ticket['status']): boolean {
 }
 
 export async function withCompletedAt(ticket: BoardTicket): Promise<BoardTicket> {
-  return isCompleted(ticket.status) ? { ...ticket, completedAt: await completedAtFor(ticket.id) } : ticket;
+  return (await withCompletedAtCounted(ticket)).ticket;
+}
+
+async function withCompletedAtCounted(
+  ticket: BoardTicket,
+): Promise<{ ticket: BoardTicket; skipped: number; unreadable: boolean }> {
+  // Never read, so never counted — the counts describe what was inspected, not the whole board.
+  if (!isCompleted(ticket.status)) return { ticket, skipped: 0, unreadable: false };
+  const { at, skipped, unreadable } = await completedAtFor(ticket.id);
+  return { ticket: { ...ticket, completedAt: at }, skipped, unreadable };
 }
 
 async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -117,7 +156,15 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T
   return out;
 }
 
-// Only done/archived tickets are joined — 691 of 882 on the live board, not all of them.
-export async function withCompletedAtAll(tickets: BoardTicket[]): Promise<BoardTicket[]> {
-  return mapLimited(tickets, CONCURRENCY, (t) => withCompletedAt(t));
+// Only done/archived tickets are joined — 691 of 882 on the live board, not all of them. So
+// `eventsSkipped` covers the logs actually READ, and must not be read as a board-wide audit.
+export async function withCompletedAtAll(
+  tickets: BoardTicket[],
+): Promise<{ tickets: BoardTicket[]; eventsSkipped: number; eventsUnreadable: number }> {
+  const results = await mapLimited(tickets, CONCURRENCY, (t) => withCompletedAtCounted(t));
+  return {
+    tickets: results.map((r) => r.ticket),
+    eventsSkipped: results.reduce((n, r) => n + r.skipped, 0),
+    eventsUnreadable: results.filter((r) => r.unreadable).length,
+  };
 }

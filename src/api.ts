@@ -33,7 +33,10 @@ export interface ProposeResult { proposal: IntakeProposal | null; summary: strin
 export const api = {
   // The server enriches each done/archived ticket with a derived `completedAt`, so the wire shape is
   // BoardListing with BoardTickets. `unreadable` is reused by indexed access rather than re-declared.
-  list: (): Promise<{ tickets: BoardTicket[]; unreadable: BoardListing['unreadable'] }> => get('/api/tickets'),
+  // eventsSkipped counts telemetry lines lost from the logs the completion join read — the reason
+  // a completion date can be missing on a ticket that has one (tkt-3d6039df4076). Declared here or
+  // it is invisible to every client consumer, which is how the last such field went missing.
+  list: (): Promise<{ tickets: BoardTicket[]; unreadable: BoardListing['unreadable']; eventsSkipped: number; eventsUnreadable: number }> => get('/api/tickets'),
   get: (id: string): Promise<BoardTicket> => get(`/api/tickets/${id}`),
   dashboard: (project?: string): Promise<DashboardSummary> =>
     get(`/api/dashboard${project ? `?project=${encodeURIComponent(project)}` : ''}`),

@@ -52,6 +52,8 @@ export default function App() {
   const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [unreadable, setUnreadable] = useState<UnreadableTicketFile[]>([]);
+  const [eventsSkipped, setEventsSkipped] = useState(0);
+  const [eventsUnreadable, setEventsUnreadable] = useState(0);
   const [editing, setEditing] = useState<BoardTicket | 'new' | null>(null);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   // Non-null → Save routes through intake-apply (provenance + metering), not the human route.
@@ -95,6 +97,8 @@ export default function App() {
       .then((board) => {
         setTickets(board.tickets);
         setUnreadable(board.unreadable);
+        setEventsSkipped(board.eventsSkipped);
+        setEventsUnreadable(board.eventsUnreadable);
         setRefreshKey((k) => k + 1);
       })
       .catch((e: Error) => setError(e.message));
@@ -344,6 +348,19 @@ export default function App() {
             {unreadable.length} ticket file(s) could not be read and are missing from this board:{' '}
             {unreadable.map((u) => u.file).join(', ')} — fix the frontmatter (an unquoted title
             containing a colon is the usual cause).
+          </div>
+        )}
+
+        {/* Same rule as above, on the telemetry side: a completion date that is simply absent looks
+            exactly like a ticket that was never completed (tkt-3d6039df4076). Two counts, because a
+            log that could not be OPENED yields no lines — so a line count alone reports the total
+            loss as a healthy board. */}
+        {(eventsSkipped > 0 || eventsUnreadable > 0) && (
+          <div className="error persistent" role="alert">
+            {eventsUnreadable > 0 && <>{eventsUnreadable} telemetry log(s) could not be read at all. </>}
+            {eventsSkipped > 0 && <>{eventsSkipped} telemetry line(s) could not be parsed. </>}
+            A completion date may therefore be missing, or out of date, on tickets that do have one.
+            Check events/ for a truncated line or a permissions problem.
           </div>
         )}
 
