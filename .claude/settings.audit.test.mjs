@@ -94,4 +94,13 @@ describe('.claude/settings.json permission allowlist', () => {
     const commands = createGuards.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
     expect(commands.some((c) => c.includes('guard-ticket'))).toBe(true);
   });
+
+  // Guards are per-repo (duplicates decide identically); WRITERS are per-machine — a second track-steps
+  // double-writes every milestone (1,889 rows, 2026-07-17..08-13; tkt-af4669ce9a0d).
+  // Detects OVER-wiring only: the surviving writer is machine-local, so its removal is silent here.
+  it('wires NO PostToolUse track-steps hook (the writer belongs at user scope, exactly once)', () => {
+    const matchers = settings.hooks?.PostToolUse ?? [];
+    const commands = matchers.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
+    expect(commands.filter((c) => c.includes('track-steps'))).toEqual([]);
+  });
 });
