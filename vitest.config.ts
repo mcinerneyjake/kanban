@@ -28,9 +28,10 @@ export default defineConfig({
       // mcp/handlers.ts are excluded: they are thin re-export shims over the
       // ticket-workflow package (tkt-66f0e22efd5e), which covers that logic in
       // its own CI gate. As shims they declare no functions, so the perFile
-      // thresholds below would fail them for having nothing to cover. Their
-      // BEHAVIOUR is still asserted here — the suites that used to test them now
-      // drive the package through the shim as contract tests.
+      // thresholds below would fail them for having nothing to cover. Upstream's
+      // gate runs against upstream SOURCE, never the pinned tag, so
+      // server/packageContract.test.ts asserts the pinned build through the shim
+      // (tkt-6aa717c1c9ec).
       include: [
         'server/index.ts',
         'server/stream.ts',
