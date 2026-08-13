@@ -161,10 +161,15 @@ export function isStepState(val: string): val is StepState {
 }
 
 // GET /api/tickets/:id/events payload. Shared server/client to prevent drift.
+// `skipped` = event lines lost (the pipeline above is missing history). `unrecognized` = lines a
+// newer ticket-workflow wrote that this pin can't parse — version skew, not damage. Both required:
+// an optional field invites `?? 0`, which reports a damaged log as healthy (tkt-355581f9dab3).
 export type TicketEventsResponse = {
   ticketId: string
   pipeline: PipelineStep[]
   events: TicketEvent[]
+  skipped: number
+  unrecognized: number
 }
 
 // Trimmed ticket for the "recently updated" widget — avoids shipping every body.

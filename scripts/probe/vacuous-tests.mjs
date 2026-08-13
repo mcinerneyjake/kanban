@@ -148,7 +148,12 @@ export function testBlocks(src) {
     let open = cursor;
     let close = matchingParen(stripped, open);
     if (close === -1) continue;
-    if (/\.\s*each\b/.test(match[0]) && stripped[cursor] === '(') {
+    // `.each` takes a table, `.skipIf`/`.runIf` take a condition — all three are CURRIED, so the
+    // real block is the call after the first paren group. Without skipIf/runIf here the probe reads
+    // `(condition)` as the body and reports NO-ASSERTION on a fully-asserted test. That false
+    // positive pushed authors away from `skipIf` toward an early `return`, which vitest reports as
+    // PASSED — the probe would have been driving tests toward the fail-open shape it exists to find.
+    if (/\.\s*(each|skipIf|runIf)\b/.test(match[0]) && stripped[cursor] === '(') {
       const next = /^\s*\(/.exec(stripped.slice(close + 1));
       if (next) {
         open = close + next[0].length;
@@ -320,12 +325,20 @@ export const CONTROLS = {
     ['division after a call', "it('divides', () => { const r = width() / rows.length; expect(r).toBe(2); });"],
     ['jsx closing tag', "it('renders', () => { render(<div>{fmt(x)}</div>); expect(screen.getByText('a')).toBeVisible(); });"],
     ['supertest chained expect', "it('deletes', async () => { await request(app).delete(url).expect(204); expect(after()).toBe(0); });"],
+    // Curried like it.each. Screening `(cond)` instead of the callback reported NO-ASSERTION on a
+    // fully-asserted test, which pushed authors toward an early `return` — reported PASSED, the very
+    // fail-open this probe hunts.
+    ['it.skipIf condition', "it.skipIf(process.platform === 'win32')('chmods', () => { expect(mode()).toBe(0); });"],
+    ['it.runIf condition', "it.runIf(hasDocker)('starts', async () => { expect(await up()).toBe(true); });"],
   ],
   /** Sources that must parse to EXACTLY one block — a shape silently parsing to zero vanishes. */
   oneBlock: [
     ['plain it', "it('adds', () => { expect(1).toBe(1); });"],
     ['jsx in the body', "it('renders', () => { render(<div>{fmt(x)}</div>); expect(el).toBeVisible(); });"],
     ['it.each array table', "it.each([['a', 1]])('handles %s', (n, v) => { expect(f(n)).toBe(v); });"],
+    // The curried forms must resolve to the CALLBACK block, not the condition — parsing to zero
+    // blocks would make the file vanish from the sweep entirely, which reads as a clean result.
+    ['it.skipIf condition', "it.skipIf(isRoot())('chmods', () => { expect(mode()).toBe(0); });"],
     ['it.each tagged template', "it.each`\n  a    | b\n  ${1} | ${2}\n`('adds $a', ({ a, b }) => { expect(a).toBe(b); });"],
     ['it.each with a type argument', "it.each<Case>([['a', 1]])('handles %s', (n, v) => { expect(f(n)).toBe(v); });"],
     ['multi-line jsx', "it('renders a row', () => {\n  const el = <div>{fmt(x)}</div>;\n  expect(el).toBeTruthy();\n});"],

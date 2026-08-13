@@ -28,12 +28,18 @@ function isTicketEvent(value: unknown): value is TicketEvent {
     && (detail === undefined || typeof detail === 'string');
 }
 
+// skipped/unrecognized are checked, not ignored: this guard destructured only the first three
+// fields, so v0.10.0's counts passed it and vanished — the payload satisfied `is
+// TicketEventsResponse` while carrying neither (tkt-355581f9dab3). A guard that admits a payload
+// missing a required field is the narrower half of the same fail-open it exists to prevent.
 export function isTicketEventsResponse(value: unknown): value is TicketEventsResponse {
   if (!isRecord(value)) return false;
-  const { ticketId, pipeline, events } = value;
+  const { ticketId, pipeline, events, skipped, unrecognized } = value;
   return typeof ticketId === 'string'
     && Array.isArray(pipeline) && pipeline.every(isPipelineStep)
-    && Array.isArray(events) && events.every(isTicketEvent);
+    && Array.isArray(events) && events.every(isTicketEvent)
+    && typeof skipped === 'number'
+    && typeof unrecognized === 'number';
 }
 
 const isComplete = (state: PipelineStep['state']): boolean => state === 'reached' || state === 'passed';

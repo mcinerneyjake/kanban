@@ -59,10 +59,17 @@ function parseEvents(raw: string): StepAt[] {
   return out;
 }
 
-// Read here rather than via the package's readEvents, which swallows EVERY readFile error and
-// returns [] — indistinguishable from "no done event". Caching that would pin the ticket as
-// "not recorded" for the life of the process, since its event file never changes again.
-// `determined: false` means "could not check" and is never cached.
+// Read here rather than via the package's readEvents. That USED to be because readEvents swallowed
+// every readFile error and returned [] (fixed in package v0.9.0, tkt-fc7c6846903d); the reason now
+// is the opposite — it throws, and this caller needs a third answer. A 500 propagating from a board
+// render is worse than a cell that declines to claim a date, so an unreadable log must return
+// `determined: false` ("could not check", never cached) rather than either [] or an exception.
+// Caching a false negative would pin the ticket as "not recorded" for the life of the process,
+// since its event file never changes again.
+//
+// Known gap, deliberately not fixed here: it does NOT count discarded lines the way readEvents does
+// since v0.10.0, and this path runs for every ticket on every board load — so the widest reader of
+// these files is the only blind one. No ticket ref: an unresolvable id is worse than none.
 async function readDoneAt(id: string): Promise<{ determined: boolean; at: string | null }> {
   const file = path.join(eventsDir(), `${id}.jsonl`);
   let raw: string;
