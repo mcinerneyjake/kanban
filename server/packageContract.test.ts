@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
+import { readEvents } from './events.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
 // Contract tests for the PINNED ticket-workflow build, driven through kanban's shim.
@@ -97,5 +98,68 @@ describe('pinned ticket-workflow build: appendBody is non-destructive', () => {
     const after = await getTicket(t.id);
     expect(after.body).toContain('first');
     expect(after.body).toContain('second');
+  });
+});
+
+// readEvents' fail-closed rule (tkt-fc7c6846903d, package v0.9.0) and its lost-line counts
+// (tkt-355581f9dab3, v0.10.0). kanban imported both by bumping the pin and asserts neither:
+// server/index.test.ts drives the HTTP route, so a regression that restored `catch { return []; }`
+// would render an all-pending pipeline for a damaged log with the whole gate green — the fail-open
+// shape this repo rejects, arriving through a dependency rather than a diff.
+describe('pinned ticket-workflow build: unreadable event logs fail closed', () => {
+  const seed = (id: string, lines: string[]) =>
+    fs.writeFile(path.join(dirs.events, `${id}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+  const good = (id: string, step: string) =>
+    JSON.stringify({ ticketId: id, step, state: 'passed', at: '2026-07-01T00:00:00.000Z' });
+
+  it('returns [] for a genuinely absent log — only ENOENT may read as "no events"', async () => {
+    expect(await readEvents('tkt-noevents01')).toEqual({ events: [], skipped: 0, unrecognized: 0 });
+  });
+
+  // skipIf, not an early return: root bypasses the mode bits, and a test that reports PASSED where
+  // it never ran is the same fail-open it is here to detect.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'throws rather than returning [] when the log exists but cannot be read',
+    async () => {
+      await seed('tkt-noperm01', [good('tkt-noperm01', 'lint')]);
+      const file = path.join(dirs.events, 'tkt-noperm01.jsonl');
+      await fs.chmod(file, 0o000);
+      try {
+        const err: unknown = await readEvents('tkt-noperm01').catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(HttpError);
+        if (!(err instanceof HttpError)) throw new Error('expected HttpError');
+        expect(err.status).toBe(500);
+        // The absolute events dir must not ride along: asyncWrap sends HttpError messages verbatim.
+        expect(err.message).not.toContain(dirs.events);
+      } finally {
+        await fs.chmod(file, 0o644);
+      }
+    },
+  );
+
+  it('counts lost lines, and keeps unknown vocabulary out of that count', async () => {
+    await seed('tkt-counts001', [
+      'not json at all',
+      good('tkt-counts001', 'lint'),
+      JSON.stringify({ ticketId: 'tkt-counts001', step: 'deploy', state: 'passed', at: 'x' }),
+    ]);
+    const { events, skipped, unrecognized } = await readEvents('tkt-counts001');
+    expect(events.map((e) => e.step)).toEqual(['lint']);
+    expect(skipped).toBe(1);
+    expect(unrecognized).toBe(1);
+  });
+
+  // The one rule that SUPPRESSES a count, so a regression here is silently permissive.
+  it('does not count a torn final line, but does once a later event follows it', async () => {
+    await fs.writeFile(path.join(dirs.events, 'tkt-torn00001.jsonl'),
+      `${good('tkt-torn00001', 'lint')}\n{"ticketId":"tkt-torn00001","step":"co`, 'utf8');
+    expect((await readEvents('tkt-torn00001')).skipped).toBe(0);
+
+    await seed('tkt-torn00002', [
+      good('tkt-torn00002', 'lint'),
+      '{"ticketId":"tkt-torn00002","step":"co',
+      good('tkt-torn00002', 'commit'),
+    ]);
+    expect((await readEvents('tkt-torn00002')).skipped).toBe(1);
   });
 });

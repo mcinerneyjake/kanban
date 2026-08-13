@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
+import { isTicketEventsResponse } from './lib/terminalRelay.js';
 import type { TicketEventsResponse } from '../shared/constants.js';
 
 const POLL_MS = 2000;
@@ -20,7 +21,19 @@ export function useTicketEvents(id: string, live: boolean, reloadKey = 0): Ticke
 
     const tick = () => {
       api.events(id)
-        .then((data) => { if (!cancelled) setState({ data, loading: false, error: false }); })
+        // Validated HERE, not per-consumer: api.events types res.json() without checking it, and
+        // only TerminalPipelinePhase ran the guard — so a payload missing the required counts
+        // reached CardProgress and PipelineTracker as `undefined` behind a type promising a number,
+        // where `data.skipped > 0` is silently false and renders a damaged log as healthy
+        // (tkt-355581f9dab3). One check at the boundary covers all three.
+        .then((data) => {
+          if (cancelled) return;
+          if (!isTicketEventsResponse(data)) {
+            setState((s) => ({ data: s.data, loading: false, error: true }));
+            return;
+          }
+          setState({ data, loading: false, error: false });
+        })
         .catch(() => { if (!cancelled) setState((s) => ({ data: s.data, loading: false, error: true })); })
         .finally(() => { if (!cancelled && live) timer = setTimeout(tick, POLL_MS); });
     };

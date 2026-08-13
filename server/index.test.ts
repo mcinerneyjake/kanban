@@ -13,6 +13,7 @@ import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runL
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
+import { isTicketEventsResponse } from '../src/lib/terminalRelay.js';
 
 const dirs = setupTempTicketDirs('kanban-index-test');
 
@@ -989,6 +990,61 @@ describe('GET /api/tickets/:id/events', () => {
   it('rejects an id that fails the path-traversal guard with 400', async () => {
     const res = await request(app).get('/api/tickets/bad.id/events');
     expect(res.status).toBe(400);
+  });
+
+  // Round-trip across the seam (tkt-355581f9dab3): a corrupt line seeded on disk must reach the
+  // HTTP body as a count and survive the client's runtime guard. Per-layer tests all passed while
+  // these fields were being dropped — the package returned them and kanban's type never declared them.
+  //
+  // Each case pairs a positive check with a DISCRIMINATING one. `isTicketEventsResponse(res.body)`
+  // alone is inert: the body already carries both counts, so it passes against the old loose guard
+  // too. Stripping a count from the real body is what fails if the guard is ever re-loosened.
+  describe('lost-line counts survive service → HTTP → client guard', () => {
+    const seedEvents = (id: string, lines: string[]) =>
+      fs.writeFile(path.join(dirs.events, `${id}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+
+    const good = (id: string, step: string) =>
+      JSON.stringify({ ticketId: id, step, state: 'passed', at: '2026-07-01T00:00:00.000Z' });
+
+    it('reports lost lines as skipped, and the client guard accepts the payload', async () => {
+      await seedTicket('tkt-damaged');
+      await seedEvents('tkt-damaged', ['not json at all', good('tkt-damaged', 'lint'), '{"torn']);
+      const res = await request(app).get('/api/tickets/tkt-damaged/events');
+      expect(res.status).toBe(200);
+      expect(res.body.skipped).toBe(2);
+      expect(res.body.unrecognized).toBe(0);
+      expect(isTicketEventsResponse(res.body)).toBe(true);
+      // Discriminating: a real body minus a count must be REJECTED. Without this, the guard could
+      // be re-loosened to three fields and every assertion here would stay green.
+      expect(isTicketEventsResponse({ ...res.body, skipped: undefined })).toBe(false);
+      expect(isTicketEventsResponse({ ...res.body, unrecognized: undefined })).toBe(false);
+    });
+
+    // The half that would have shipped as a false positive: a newer machine-wide hook writing a
+    // step id this pin doesn't know is skew, not loss.
+    it('reports a newer writer as unrecognized, NOT as lost history', async () => {
+      await seedTicket('tkt-skewed');
+      await seedEvents('tkt-skewed', [
+        good('tkt-skewed', 'lint'),
+        JSON.stringify({ ticketId: 'tkt-skewed', step: 'deploy', state: 'passed', at: '2026-07-01T00:00:00.000Z' }),
+      ]);
+      const res = await request(app).get('/api/tickets/tkt-skewed/events');
+      expect(res.body.unrecognized).toBe(1);
+      expect(res.body.skipped).toBe(0);
+      expect(isTicketEventsResponse(res.body)).toBe(true);
+    });
+
+    // The control: without it, a body hard-coding zeros would satisfy both cases above.
+    it('reports 0/0 for a clean log, and the fields are present rather than absent', async () => {
+      await seedTicket('tkt-healthy');
+      await seedEvents('tkt-healthy', [good('tkt-healthy', 'lint'), good('tkt-healthy', 'commit')]);
+      const res = await request(app).get('/api/tickets/tkt-healthy/events');
+      expect(res.body.skipped).toBe(0);
+      expect(res.body.unrecognized).toBe(0);
+      expect(Object.keys(res.body)).toContain('skipped');
+      expect(Object.keys(res.body)).toContain('unrecognized');
+      expect(res.body.events).toHaveLength(2);
+    });
   });
 });
 

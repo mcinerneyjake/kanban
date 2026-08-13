@@ -103,5 +103,22 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     expectTypeOf<local.StepState>().toEqualTypeOf<pkg.StepState>();
     expectTypeOf<local.Ticket>().toEqualTypeOf<pkg.Ticket>();
     expectTypeOf<local.Provenance>().toEqualTypeOf<pkg.Provenance>();
+    // Every remaining type duplicated on both sides. The response types were absent from this
+    // block, which is exactly how v0.10.0's `skipped`/`unrecognized` reached the wire while this
+    // copy stayed silent: routes return the PACKAGE's object verbatim (`res.json(await
+    // getTicketEvents(...))`, `res.json(await summarizeBoard(...))`), so a field missing here is
+    // dropped from the client's view with typecheck green (tkt-355581f9dab3).
+    //
+    // Listed exhaustively rather than spot-checked: this list is the mechanism, so a type left off
+    // it is a silent hole, and the dashboard types sit behind the identical `res.json(pkg object)`
+    // shape that just failed for telemetry.
+    expectTypeOf<local.TicketEvent>().toEqualTypeOf<pkg.TicketEvent>();
+    expectTypeOf<local.PipelineStep>().toEqualTypeOf<pkg.PipelineStep>();
+    expectTypeOf<local.TicketEventsResponse>().toEqualTypeOf<pkg.TicketEventsResponse>();
+    expectTypeOf<local.DashboardSummary>().toEqualTypeOf<pkg.DashboardSummary>();
+    expectTypeOf<local.RecentTicket>().toEqualTypeOf<pkg.RecentTicket>();
+    expectTypeOf<local.StatusCount>().toEqualTypeOf<pkg.StatusCount>();
+    expectTypeOf<local.PriorityCount>().toEqualTypeOf<pkg.PriorityCount>();
+    expectTypeOf<local.TypeCount>().toEqualTypeOf<pkg.TypeCount>();
   });
 });

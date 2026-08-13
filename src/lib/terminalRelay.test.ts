@@ -15,6 +15,8 @@ const response = (over: Record<string, unknown> = {}) => ({
   ticketId: 'tkt-abc',
   pipeline: [step()],
   events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed', at: '2026-07-22T10:00:00.000Z' }],
+  skipped: 0,
+  unrecognized: 0,
   ...over,
 });
 
@@ -53,8 +55,18 @@ describe('isTicketEventsResponse', () => {
     // 'pending' is valid on a PipelineStep but never on a raw event.
     ['a pending event state', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'pending', at: '2026-07-22T10:00:00.000Z' }] })],
     ['an event missing its timestamp', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed' }] })],
+    // A pre-v0.10.0 payload. Admitting it would let the counts be `undefined` behind a type that
+    // declares them required — the guard would vouch for a field that isn't there.
+    ['a missing skipped count', response({ skipped: undefined })],
+    ['a missing unrecognized count', response({ unrecognized: undefined })],
+    ['a non-numeric skipped count', response({ skipped: '3' })],
+    ['a non-numeric unrecognized count', response({ unrecognized: null })],
   ])('rejects %s', (_label, value) => {
     expect(isTicketEventsResponse(value)).toBe(false);
+  });
+
+  it('accepts non-zero counts — a damaged log is still a valid payload, just a reporting one', () => {
+    expect(isTicketEventsResponse(response({ skipped: 3, unrecognized: 2 }))).toBe(true);
   });
 });
 
