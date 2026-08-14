@@ -169,6 +169,19 @@ describe(`${DEP} git-tag pin`, () => {
     expect(auditPin({ here: HERE, pkg: PKG, lock: LOCK, fromUrl: import.meta.url })).toBe(pinnedVersion(spec));
   });
 
+  // The hook launchers in .claude/hooks/ import the package by SUBPATH, which only exists from
+  // v0.11.0 — earlier tags throw ERR_PACKAGE_PATH_NOT_EXPORTED, and the launchers fail closed, so
+  // every Bash command is blocked. Reverting the pin alone therefore wedges the repo, and the
+  // stderr's `npm ci` advice reinstalls the version that cannot be imported. Roll back both or
+  // neither (tkt-6e4c55c81208).
+  it('pins a version whose hooks are importable by subpath (>= 0.11.0)', () => {
+    const [major, minor] = (pinnedVersion(spec) ?? '').split('.').map(Number);
+    expect(
+      major > 0 || minor >= 11,
+      `the .claude/hooks launchers need subpath exports (>= 0.11.0), but the pin is ${pinnedVersion(spec)}`,
+    ).toBe(true);
+  });
+
   // tkt-1ea3e3c6eb16. Fixtures are built in a temp tree rather than pointed at a synthetic
   // `.claude/worktrees/` path: the real directory may or may not exist with its own
   // node_modules, and a test whose result depends on ambient filesystem state proves nothing.
