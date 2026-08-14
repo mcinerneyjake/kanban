@@ -1,5 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+// Git exports an ABSOLUTE GIT_DIR in a worktree and it is inherited by `npm test`, so a temp-repo
+// command would silently drive the REAL repository and grade the wrong branch (tkt-cf1e0c0b3dda).
+const GIT_CONTEXT_VARS = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX'];
+function hermeticEnv() {
+  const env = { ...process.env };
+  for (const key of GIT_CONTEXT_VARS) delete env[key];
+  return env;
+}
+
+/**
+ * Every wired PreToolUse hook file that lives in this repo, resolved to a real path.
+ * A wired-but-ABSENT file is asserted, never filtered out: the hook then does not run at all, which
+ * is the silent no-guard this whole design exists to prevent — quietly dropping it from the list
+ * would let every assertion below pass while the guard is missing.
+ */
+function wiredLocalHooks() {
+  const matchers = settings.hooks?.PreToolUse ?? [];
+  const commands = matchers.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
+  const rels = commands
+    .map((c) => /\$CLAUDE_PROJECT_DIR\/(\.claude\/hooks\/[\w.-]+\.mjs)/.exec(c)?.[1])
+    .filter(Boolean);
+  for (const rel of rels) {
+    expect(existsSync(join(REPO_ROOT, rel)), `${rel} is wired in settings.json but missing on disk`).toBe(true);
+  }
+  return rels.map((rel) => join(REPO_ROOT, rel));
+}
 
 // Audits the checked-in permission allowlist (.claude/settings.json). This reads rule
 // STRINGS, so safety is layered: git rules are broad but guard-bash-backed (asserted below);
@@ -93,6 +126,84 @@ describe('.claude/settings.json permission allowlist', () => {
     const createGuards = matchers.filter((m) => (m.matcher ?? '').includes('create_ticket'));
     const commands = createGuards.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
     expect(commands.some((c) => c.includes('guard-ticket'))).toBe(true);
+  });
+
+  // Wiring says a guard-shaped path is configured; it cannot say the file behind it still guards. A
+  // vendored copy truncated to a no-op keeps the substring and passes the two assertions above — the
+  // same fail-open shape one level up. These two close it (tkt-6e4c55c81208).
+
+  // The local hooks must stay LAUNCHERS delegating to the pinned package, never re-vendored copies:
+  // the copy this replaced drifted and left every repo outside kanban failing OPEN for ~24h in
+  // 2026-07. A re-vendored guard-bash is 333 lines, so the cap is what makes re-vendoring go red.
+  it('wires only launchers that delegate to the pinned package, not vendored copies', () => {
+    const local = wiredLocalHooks();
+    expect(local.length).toBeGreaterThan(0); // else every assertion below is vacuous
+    for (const file of local) {
+      const src = readFileSync(file, 'utf8');
+      expect(src, `${file} does not import the package hook`).toContain('ticket-workflow/hooks/');
+      expect(src.split('\n').length, `${file} is too long to be a launcher`).toBeLessThan(40);
+    }
+  });
+
+  // Verify the EFFECT, not the wiring: drive the actually-wired file and watch it block. The package
+  // ships no tests, so with the duplicated local suites gone this is kanban's only executable proof
+  // that the PINNED hook build still guards — the hook analogue of server/packageContract.test.ts.
+  it('blocks a commit on main through the wired launcher, and allows one on a branch', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'audit-guard-'));
+    try {
+      const git = (...args) => execFileSync('git', args, { cwd: repo, env: hermeticEnv(), encoding: 'utf8' });
+      git('init', '-q', '-b', 'main', '.');
+      git('config', 'user.email', 't@t');
+      git('config', 'user.name', 't');
+      writeFileSync(join(repo, 'a.txt'), 'x');
+      git('add', 'a.txt');
+      git('commit', '-qm', 'init');
+
+      const hook = wiredLocalHooks().find((f) => f.includes('guard-bash'));
+      expect(hook, 'no guard-bash launcher is wired').toBeTruthy();
+      const fire = (env = {}) =>
+        spawnSync('node', [hook], {
+          input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git commit -m x' } }),
+          cwd: repo,
+          env: { ...hermeticEnv(), ...env },
+          encoding: 'utf8',
+        });
+
+      const onMain = fire();
+      expect(onMain.status, `expected a block on main, got ${onMain.status}: ${onMain.stderr}`).toBe(2);
+
+      // The on-branch half removes the alternative explanation — a guard that blocks everything would
+      // pass the assertion above while guarding nothing in particular.
+      git('switch', '-qc', 'feat/tkt-abcdef123456-x');
+      expect(fire().status, 'the same command must be allowed on a feature branch').toBe(0);
+
+      // The highest-consequence rule in the guard: an unresolvable branch must BLOCK, because every
+      // way of breaking `git rev-parse` would otherwise be a commit-to-main bypass (tkt-fbc74a3252fe).
+      // Run on the feature branch, where the case above proves the command is otherwise allowed.
+      const blinded = fire({ GIT_CEILING_DIRECTORIES: repo, GIT_CONFIG_PARAMETERS: "'garbage'" });
+      expect(blinded.status, `an unresolvable branch must fail CLOSED, got ${blinded.status}`).toBe(2);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // guard-ticket needs its own behavioural case: the shape test above is satisfied by a path in a
+  // COMMENT, so a launcher hollowed out to `process.exit(0)` would leave create_ticket unguarded —
+  // defeating the metered-intake gate — with every other assertion here still green.
+  it('blocks create_ticket through the wired launcher, and allows an unrelated tool', () => {
+    const hook = wiredLocalHooks().find((f) => f.includes('guard-ticket'));
+    expect(hook, 'no guard-ticket launcher is wired').toBeTruthy();
+    const fire = (tool_name) =>
+      spawnSync('node', [hook], {
+        input: JSON.stringify({ tool_name, tool_input: { title: 'x' } }),
+        env: hermeticEnv(),
+        encoding: 'utf8',
+      });
+
+    const blockedCall = fire('mcp__kanban__create_ticket');
+    expect(blockedCall.status, `expected a block, got ${blockedCall.status}: ${blockedCall.stderr}`).toBe(2);
+    // Removes the "blocks everything, including on a failed import" explanation.
+    expect(fire('mcp__kanban__get_ticket').status, 'an unrelated tool must be allowed').toBe(0);
   });
 
   // Guards are per-repo (duplicates decide identically); WRITERS are per-machine — a second track-steps
