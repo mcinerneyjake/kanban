@@ -3,12 +3,13 @@
   "_regenerate": "Do not hand-edit the counts. Run: node -e 'import(\"./scripts/probe/vacuous-tests.mjs\").then(m=>{for(const [r,p] of Object.entries(require(\"./scripts/probe/vacuous-baseline.json\").repos).map(([k,v])=>[k,v.path])){const s=m.sweep(p);console.log(r,s.files,s.blocks,s.candidates.length)}})' — the numbers below were generated that way, not transcribed.",
   "_countsAreFloors": "Counts are STILL FLOORS, not totals (tkt-9c818426feb3 narrowed the gap, it did not close it). isComputed now resolves a variable declared in the SAME test block and sees through [...spread], but these remain undetected: a collection declared in the enclosing describe/beforeEach or at module scope; two-level indirection (const b = a); reassignment (let xs = []; xs = compute()); an out-param filled by a call (const rows = []; collect(rows)); and .forEach on a chained call, where the receiver regex mis-captures. Do not read a 0 as proof of clean.",
   "_attribution": "How the 08-11 numbers moved (tkt-9c818426feb3), measured by running the PRE-FIX probe against today trees so the two causes are separable. ticket-workflow 0 -> 6: only +1 is the fix, +5 are NEW vacuous tests added since 08-11 (its test files went 9 -> 17) and are tracked, not excused. equipment-schedule 19 -> 25: +4 fix, +2 new. copart-filter 4 -> 5: +1 fix. kanban stayed 0 because its one candidate was FIXED, not ceilinged (server/terminalAuth.test.ts asserted a container mount boundary entirely inside an unpinned loop). Raising a ceiling is a debt record, never an excuse: the split above is what says which part still needs fixing.",
+  "_lowered": "2026-08-16, tkt-898aaec13fb1: ticket-workflow 6 -> 0. The repo was re-swept before the fix and reported 8, not the 6 recorded here — two more had landed since (an audit control, and the byte-for-byte template drift check whose IDENTICAL list is matched by targetPath, so renaming an entry silenced it entirely). All eight are fixed upstream, each pin sitting outside its loop; see ticket-workflow#53. Breadth floors in every row below were regenerated in the same run, because a floor left behind is a collapsed sweep this ratchet would not notice.",
   "asOf": "2026-08-16",
   "repos": {
-    "kanban": { "max": 0, "path": ".", "files": 91, "blocks": 1349, "enforced": true },
-    "ticket-workflow": { "max": 6, "path": "../ticket-workflow", "files": 17, "blocks": 609, "enforced": false },
+    "kanban": { "max": 0, "path": ".", "files": 94, "blocks": 1413, "enforced": true },
+    "ticket-workflow": { "max": 0, "path": "../ticket-workflow", "files": 21, "blocks": 681, "enforced": false },
     "portfolio-site": { "max": 1, "path": "../portfolio-site", "files": 27, "blocks": 138, "enforced": false },
-    "copart-filter": { "max": 5, "path": "../copart-filter", "files": 48, "blocks": 964, "enforced": false },
+    "copart-filter": { "max": 5, "path": "../copart-filter", "files": 48, "blocks": 982, "enforced": false },
     "job-tracker": { "max": 8, "path": "../job-tracker", "files": 21, "blocks": 296, "enforced": false },
     "equipment-schedule": { "max": 25, "path": "../hvac-projects/equipment-schedule", "files": 135, "blocks": 2216, "enforced": false }
   }
