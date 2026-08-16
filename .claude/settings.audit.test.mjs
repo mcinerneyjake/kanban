@@ -153,6 +153,11 @@ describe('.claude/settings.json permission allowlist', () => {
     try {
       const git = (...args) => execFileSync('git', args, { cwd: repo, env: hermeticEnv(), encoding: 'utf8' });
       git('init', '-q', '-b', 'main', '.');
+      // The remote is load-bearing: as of ticket-workflow v0.12.0 the protected-branch rules only
+      // apply to repos that have one, because "land it on a branch and open a PR" is meaningless
+      // with nowhere to push (tkt-f32915b3e858). Without this the fixture is exempt and this test
+      // passes while asserting nothing.
+      git('remote', 'add', 'origin', 'https://example.invalid/r.git');
       git('config', 'user.email', 't@t');
       git('config', 'user.name', 't');
       writeFileSync(join(repo, 'a.txt'), 'x');
