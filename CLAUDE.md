@@ -209,6 +209,21 @@ The workflow commands run **prompt-free**: `.claude/settings.json` allowlists th
 - **`delete_ticket` and destructive shapes stay excluded** — they still prompt.
 - **`create_ticket` is allowlisted but blocked at runtime by the `guard-ticket` hook** — ticket authoring is delegated to the local agent (see **Ticket creation flow**), parallel to the broad git rules being `guard-bash`-backed. The allow entry only avoids a re-prompt if that policy is ever relaxed; the hook is the real gate.
 
+**A subagent cannot cross the three gates at all** (`tkt-8e291b058706`, ticket-workflow v0.16.0). A
+user-scope `PreToolUse(Bash)` guard, `guard-subagent-gates`, blocks `git commit`, `git push`,
+`gh pr create` and `gh pr merge` when the call comes from a **subagent** — keyed on the payload's
+`agent_id`, which is present only inside one. It was paid for by a `/code-review` subagent that
+committed, pushed, opened a PR and merged it to `main` unapproved, with none of it in the review's own
+report. Reading and reporting (`git log`/`diff`, `gh pr view`/`diff`/`list`, `gh pr comment`) are
+untouched, and the main thread is unaffected — the three human gates above are still yours to cross.
+
+Two things about it that are easy to get wrong. It keys on `agent_id`, **not** `agent_type`: the review
+agents' types are undocumented, so a guessed list that never matches would be a guard that silently
+never fires. And **it lives only in `~/.claude/settings.json`** — like the `track-steps` writer, it is
+machine-local, so a fresh clone elsewhere has no such protection and nothing in this repo can detect
+that. It also does not stop a subagent *editing* files (blocking `Edit` for every subagent would break
+coding subagents); that half is `tkt-63e3c3cc962a` and needs one observed review run.
+
 `.claude/settings.audit.test.mjs` enforces this in the gate: it pins the non-git allows to a reviewed set, rejects explicit dangerous tokens, keeps `delete_ticket` gated, and asserts both the `guard-bash` and `guard-ticket` backstops are wired — **failing CI** if any of those drift. (It does not — and cannot — prove a broad git glob is safe at runtime; that is the hook's job, which is why the two are coupled.)
 
 ### 1. Branch (at `start_ticket`)
