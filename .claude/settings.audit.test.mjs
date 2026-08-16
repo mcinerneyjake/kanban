@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -209,6 +210,36 @@ describe('.claude/settings.json permission allowlist', () => {
     expect(blockedCall.status, `expected a block, got ${blockedCall.status}: ${blockedCall.stderr}`).toBe(2);
     // Removes the "blocks everything, including on a failed import" explanation.
     expect(fire('mcp__kanban__get_ticket').status, 'an unrelated tool must be allowed').toBe(0);
+  });
+
+  // `gh pr merge` lands a commit on main SERVER-SIDE with no `git push`, so guard-bash's pushesMain
+  // rule is never consulted and the merge sails past it — watched on the previously pinned build:
+  // exit 0 (tkt-e508ad42a68a). v0.16.0's guard-subagent-gates closes the half that has no human at the
+  // keyboard. Asserted here because it is the pin that decides whether the file exists at all.
+  //
+  // Scope, stated so this is not read as more than it is: this drives the hook out of the PINNED
+  // PACKAGE, not out of `.claude/settings.json`. guard-subagent-gates is wired at USER scope
+  // (machine-local, unversioned), so nothing in this repo can assert it is armed — only that the build
+  // kanban pins still refuses. Hence no wiredLocalHooks() lookup.
+  it('refuses a subagent `gh pr merge` through the pinned build, and allows the main thread', () => {
+    const hook = join(dirname(createRequire(import.meta.url).resolve('ticket-workflow')), '..', 'hooks', 'guard-subagent-gates.mjs');
+    expect(existsSync(hook), `the pinned build ships no guard-subagent-gates (${hook})`).toBe(true);
+    const fire = (command, extra) =>
+      spawnSync('node', [hook], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, ...extra }),
+        env: hermeticEnv(),
+        encoding: 'utf8',
+      });
+
+    const sub = { agent_id: 'agent_audit', agent_type: 'code-reviewer' };
+    const merge = fire('gh pr merge 40 --squash --delete-branch', sub);
+    expect(merge.status, `expected a block, got ${merge.status}: ${merge.stderr}`).toBe(2);
+
+    // Two controls, because there are two ways this could block for the wrong reason. Without the
+    // first it could be a block-all-`gh` guard; without the second, a guard that blocks the command
+    // rather than the CALLER — which would wedge this repo's own merge gate.
+    expect(fire('gh pr view 40 --json state', sub).status, 'a gh READ must stay allowed').toBe(0);
+    expect(fire('gh pr merge 40 --squash', {}).status, 'the main thread must stay allowed').toBe(0);
   });
 
   // Guards are per-repo (duplicates decide identically); WRITERS are per-machine — a second track-steps
