@@ -29,26 +29,34 @@ function realRunArgs(): string[] {
 // A fake docker whose `run` replays a scripted sequence of results and records every argv it saw.
 function fakeDocker(results: RunResult[]) {
   const calls: string[][] = [];
+  const envs: Array<Record<string, string> | undefined> = [];
   let i = 0;
   return {
     calls,
+    envs,
     // Every `docker` invocation — including the pre-retry `rm -f` — goes through run(), so `calls`
     // records the true ORDER. That ordering is the point: an unsequenced remove could land after the
     // retry's create.
     docker: {
-      run: (args: string[]): Promise<RunResult> => {
+      run: (args: string[], opts?: { env?: Record<string, string> }): Promise<RunResult> => {
         calls.push(args);
+        envs.push(opts?.env);
         return Promise.resolve(results[i++] ?? { code: 0, stderr: '' });
       },
     },
   };
 }
 
-function start(docker: ReturnType<typeof fakeDocker>['docker'], stripAlias = false, disposed = false) {
+function start(
+  docker: ReturnType<typeof fakeDocker>['docker'],
+  stripAlias = false,
+  disposed = false,
+  env: Record<string, string> = {},
+) {
   const notices: string[] = [];
   const promise = startContainer({
-    docker, runArgs: realRunArgs(), containerName: 'kanban-term-1',
-    env: {}, stripAlias, notify: (m) => notices.push(m), isDisposed: () => disposed,
+    docker, command: { runArgs: realRunArgs(), env }, containerName: 'kanban-term-1',
+    stripAlias, notify: (m) => notices.push(m), isDisposed: () => disposed,
   });
   return { promise, notices };
 }
@@ -96,8 +104,8 @@ describe('startContainer — host-gateway fallback round trip', () => {
       },
     };
     const promise = startContainer({
-      docker, runArgs: realRunArgs(), containerName: 'kanban-term-1',
-      env: {}, stripAlias: false, notify: () => {}, isDisposed: () => false,
+      docker, command: { runArgs: realRunArgs(), env: {} }, containerName: 'kanban-term-1',
+      stripAlias: false, notify: () => {}, isDisposed: () => false,
     });
     await vi.waitFor(() => expect(pendingRm).toHaveLength(1));
     expect(order).toEqual(['first', 'rm:start']); // the retry has NOT been issued yet
@@ -135,6 +143,22 @@ describe('startContainer — host-gateway fallback round trip', () => {
     expect(await promise).toEqual({ code: 125, aliasDropped: false });
     expect(f.calls).toHaveLength(1); // no rm, no retry
     expect(notices).toEqual([]);
+  });
+
+  // tkt-281272b5ef77: endpoint URLs are now `-e NAME` in the argv with the VALUE riding the docker
+  // CLI's own env, so the two are only equivalent if this env reaches every run — including the
+  // alias-stripped retry, which is the path a Linux daemon always takes.
+  it('hands the caller\'s env to docker on the first run AND on the retry', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = { LLM_BASE_URL: 'http://host.docker.internal:9999/v1', LLM_API_KEY: 'sk-secret' };
+    const f = fakeDocker([{ code: 125, stderr: REAL_REJECTION }, { code: 0, stderr: '' }, { code: 0, stderr: '' }]);
+    await start(f.docker, false, false, env).promise;
+
+    expect(f.calls).toHaveLength(3);
+    // Indices 0 and 2 are the runs; 1 is the `rm -f`. A retry spawned with a bare/default env would
+    // start a container whose `-e LLM_BASE_URL` inherits nothing — the silent drop this pins.
+    for (const i of [0, 2]) expect(f.envs[i], `run ${i} lost the env`).toEqual(env);
+    err.mockRestore();
   });
 
   it('does not retry or notify on a clean first start', async () => {

@@ -9,10 +9,11 @@ import { TERMINAL_STARTUP_FAILURE_CODE, TERMINAL_REATTACH_FAILED_CODE } from '..
 import { projectRoots, kanbanRoot } from './terminalProjects.js';
 import { terminalToken } from './terminalToken.js';
 import {
-  authorizeUpgrade, authorizeReattach, buildAttachArgs, buildSessionEnv, CONTAINER_NAME_PREFIX,
+  authorizeUpgrade, authorizeReattach, buildReattachCommand, buildSessionEnv, CONTAINER_NAME_PREFIX,
   dtachSocket, filterAdoptable, isHostGatewayRejection, isValidSessionId, parseClientFrame,
   parseSessionParam, parseTicketParam, resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY,
   SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY, withoutHostGateway,
+  type RunCommand, type AttachCommand,
 } from './terminalAuth.js';
 import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
 import { spawnDockerCli, type DockerCli } from './terminalDocker.js';
@@ -98,20 +99,21 @@ const NO_ALIAS_NOTICE =
 // owns the latch.
 export async function startContainer(opts: {
   docker: Pick<DockerCli, 'run'>;
-  runArgs: string[];
+  // The argv/env PAIR, not two parameters — see RunCommand. A caller cannot hand this the argv from
+  // resolveSessionCommand and an env from anywhere else.
+  command: RunCommand;
   containerName: string;
-  env: NodeJS.ProcessEnv;
   stripAlias: boolean;                 // a previous session already learned this daemon rejects it
   notify: (message: string) => void;   // user-visible, in the terminal pane — not just the server log
   isDisposed: () => boolean;           // re-checked before the retry — the client can vanish mid-run
 }): Promise<{ code: number | null; aliasDropped: boolean }> {
   if (opts.stripAlias) {
-    const pre = await opts.docker.run(withoutHostGateway(opts.runArgs), { env: opts.env, context: 'run (session container, no host alias)' });
+    const pre = await opts.docker.run(withoutHostGateway(opts.command.runArgs), { env: opts.command.env, context: 'run (session container, no host alias)' });
     if (pre.code === 0) opts.notify(NO_ALIAS_NOTICE);
     return { code: pre.code, aliasDropped: true };
   }
 
-  const first = await opts.docker.run(opts.runArgs, { env: opts.env, context: 'run (session container)' });
+  const first = await opts.docker.run(opts.command.runArgs, { env: opts.command.env, context: 'run (session container)' });
   if (first.code === 0 || !isHostGatewayRejection(first.stderr)) return { code: first.code, aliasDropped: false };
 
   // The client went away during the failed run — dispose has already deleted the session HOME, so
@@ -125,7 +127,7 @@ export async function startContainer(opts: {
   // through run() precisely because it returns a promise; no context, since "no such container" is
   // the normal case and is not a failure worth logging.
   await opts.docker.run(['rm', '-f', opts.containerName]);
-  const retry = await opts.docker.run(withoutHostGateway(opts.runArgs), { env: opts.env, context: 'run (session container, no host alias)' });
+  const retry = await opts.docker.run(withoutHostGateway(opts.command.runArgs), { env: opts.command.env, context: 'run (session container, no host alias)' });
   if (retry.code === 0) opts.notify(NO_ALIAS_NOTICE);
   return { code: retry.code, aliasDropped: true };
 }
@@ -338,9 +340,8 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   // lands, an Express restart).
   const { code: runCode, aliasDropped } = await startContainer({
     docker,
-    runArgs: command.runArgs,
+    command,
     containerName,
-    env: buildSessionEnv(process.env),
     stripAlias: hostGatewayRejected,
     // Same "write to the CURRENT socket" rule as fail() — a reload may have reattached during setup.
     notify: (message) => {
@@ -363,18 +364,20 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   if (entry.disposed) { docker.remove(containerName); return; }
   if (!ready) { fail(`session container did not become ready (see: docker logs ${containerName})`); return; }
 
-  if (!spawnAttach(id, entry, command.attachArgs, containerName, command.prefill)) { fail('failed to start terminal'); return; }
+  if (!spawnAttach(id, entry, command, containerName, command.prefill)) { fail('failed to start terminal'); return; }
   bindMessages(id, entry, ws);
 }
 
 // Spawn a fresh `docker exec … dtach -a` pty and wire it to the entry. Returns the pty, or null if
 // node-pty can't spawn — the CALLER decides what a failure means (a new session fails; an adopted
 // reattach leaves the container for a retry). Prefill runs on the new-session path only.
-function spawnAttach(id: string, entry: TerminalEntry, attachArgs: string[], containerName: string, prefill?: string): pty.IPty | null {
+function spawnAttach(id: string, entry: TerminalEntry, command: AttachCommand, containerName: string, prefill?: string): pty.IPty | null {
   let term: pty.IPty;
   try {
-    term = pty.spawn('docker', attachArgs, {
-      name: 'xterm-256color', cols: 80, rows: 24, env: buildSessionEnv(process.env),
+    // The argv and env come from one AttachCommand: `docker exec -e NAME` for a name the spawn env
+    // lacks BLANKS the variable inside the container (unlike `run`, which skips it).
+    term = pty.spawn('docker', command.attachArgs, {
+      name: 'xterm-256color', cols: 80, rows: 24, env: command.env,
     });
   } catch (err) {
     // Log the real cause (e.g. spawn-helper lost +x → posix_spawnp/EACCES); the caller shows the
@@ -447,7 +450,7 @@ async function reattachSession(id: string, ws: WebSocket): Promise<void> {
     // it for the reaper's grace timer and surface the failure to the user.
     if (!ready) { closeCurrent(); return; }
     // Transient spawn failure → same: leave the container for a manual retry, surface the failure (F4).
-    if (!spawnAttach(id, entry, buildAttachArgs(entry.containerName, id), entry.containerName)) closeCurrent();
+    if (!spawnAttach(id, entry, buildReattachCommand(entry.containerName, id), entry.containerName)) closeCurrent();
   } finally {
     entry.attaching = false;
   }
