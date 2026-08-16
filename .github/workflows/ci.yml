@@ -39,3 +39,9 @@ jobs:
       - run: npm run lint
       - run: npm run test:coverage
       - run: npm run build
+      # Guardrail conformance against the pinned ticket-workflow standard (epic tkt-4e789ef6202a).
+      # GH_TOKEN lets the branch-protection check ask the API — without it that check is BLOCKED
+      # and the audit exits 1.
+      - run: npx ticket-workflow audit .
+        env:
+          GH_TOKEN: ${{ github.token }}

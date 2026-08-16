@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
@@ -161,5 +162,16 @@ describe('pinned ticket-workflow build: unreadable event logs fail closed', () =
       good('tkt-torn00002', 'commit'),
     ]);
     expect((await readEvents('tkt-torn00002')).skipped).toBe(1);
+  });
+});
+
+// ci.yml's gate runs `npx ticket-workflow audit .` (tkt-9342280b2536, v0.15.0). No other kanban
+// test touches the pinned CLI, so a bump to a build that dropped or renamed the subcommand would
+// pass every local gate and only fail in CI.
+describe('pinned ticket-workflow build: CLI ships the audit subcommand', () => {
+  it('usage names audit', () => {
+    const bin = path.resolve('node_modules/.bin/ticket-workflow');
+    const r = spawnSync(bin, [], { encoding: 'utf8' });
+    expect(`${r.stdout}${r.stderr}`).toMatch(/\baudit\b/);
   });
 });
