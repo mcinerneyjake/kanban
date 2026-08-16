@@ -29,16 +29,29 @@ const PROJECT_DIRS = [
   join(HOME, '.claude', 'projects', encodeCwd(KANBAN_REPO) + '-agent'),
 ];
 
-// Per-1M-token USD list pricing. cacheWrite5m = 1.25x input, cacheWrite1h = 2x input, cacheRead = 0.1x input.
-// NOTE: assumes standard rates with no >200K "1M-context" premium (per Anthropic docs for Opus 4.x).
+// Per-1M-token USD list pricing, verified against platform.claude.com/docs/en/about-claude/pricing on
+// 2026-08-16. cacheWrite5m = 1.25x input, cacheWrite1h = 2x input, cacheRead = 0.1x input.
+// NOTE: assumes standard rates with no >200K "1M-context" premium, and STANDARD SPEED — fast mode on
+// Opus 5 / 4.8 is $10/$50, and the transcripts do not record `speed`, so a fast-mode session is
+// under-priced here. That direction is conservative for a savings claim; the reverse would not be.
+//
+// An UNKNOWN model is a hard error, not a $0 row — see unpricedUsage below. `claude-opus-5` was
+// missing, so 36,296 messages and 7,797M tokens (80% of all tokens) priced at zero and the published
+// cumulative cost FELL from $2485.30 to $1670.95 while merged PRs rose 155 -> 301 (tkt-feb341a5c699).
 const PRICES = {
+  'claude-opus-5': { in: 5, out: 25 },
   'claude-opus-4-8': { in: 5, out: 25 }, 'claude-opus-4-7': { in: 5, out: 25 },
   'claude-opus-4-6': { in: 5, out: 25 }, 'claude-opus-4-5': { in: 5, out: 25 },
-  'claude-fable-5': { in: 10, out: 50 }, 'claude-sonnet-5': { in: 3, out: 15 },
+  'claude-opus-4-1': { in: 15, out: 75 }, 'claude-opus-4': { in: 15, out: 75 },
+  'claude-fable-5': { in: 10, out: 50 }, 'claude-mythos-5': { in: 10, out: 50 },
+  // $2/$10, not $3/$15: the launch introductory rate became the standard price and the scheduled
+  // 2026-09-01 increase was cancelled. The old value was in this table and simply wrong.
+  'claude-sonnet-5': { in: 2, out: 10 },
   'claude-sonnet-4-6': { in: 3, out: 15 }, 'claude-sonnet-4-5': { in: 3, out: 15 },
-  'claude-haiku-4-5': { in: 1, out: 5 },
+  'claude-sonnet-4': { in: 3, out: 15 },
+  'claude-haiku-4-5': { in: 1, out: 5 }, 'claude-haiku-3-5': { in: 0.8, out: 4 },
 };
-const priceKey = model => {
+export const priceKey = model => {
   if (!model) return null;
   let m = model.replace(/\[1m\]$/, '');
   if (PRICES[m]) return m;
@@ -47,9 +60,21 @@ const priceKey = model => {
   if (m.startsWith('claude-haiku-4-5')) return 'claude-haiku-4-5';
   return null;
 };
-const costOf = (model, u) => {
+
+// `<synthetic>` is Claude Code's marker for a locally-generated message that was never billed — the one
+// model string whose true price IS zero. Listed explicitly so it stays distinguishable from a model we
+// merely failed to recognise.
+const UNBILLED_MODELS = new Set(['<synthetic>']);
+
+/**
+ * Cost, or null when the model cannot be priced. NULL, never 0 — a zero is indistinguishable from a
+ * genuinely free response and is exactly how this analysis under-reported 80% of its own token spend.
+ * Callers must route null into unpricedUsage rather than adding it.
+ */
+export const costOf = (model, u) => {
+  if (UNBILLED_MODELS.has(model)) return 0;
   const k = priceKey(model);
-  if (!k) return 0;
+  if (!k) return null;
   const p = PRICES[k];
   return (u.input * p.in + u.output * p.out + u.w5 * p.in * 1.25 + u.w1 * p.in * 2 + u.read * p.in * 0.1) / 1e6;
 };
@@ -92,6 +117,35 @@ export const isMain = invokedReal === realpathSync(fileURLToPath(import.meta.url
 export const shouldWrite = (argv) => argv.includes('--write');
 
 /**
+ * Unpriced usage blocks the write (tkt-feb341a5c699). The published figure is a cost FLOOR and a
+ * savings claim is computed against it, so a model this table does not know must stop the snapshot
+ * rather than quietly shrink the denominator: an unpriced model reads as free work, which inflates ROI.
+ *
+ * `--allow-unpriced` is the deliberate override, and it is not silent — the count rides into the
+ * snapshot either way, so a reader of the JSON can see the hole without re-running anything.
+ *
+ * Returns a reason string (why the write must stop) or null (proceed). A string, not a boolean, so the
+ * caller cannot print a generic message that fails to name which model is missing.
+ */
+export function unpricedBlocksWrite(unpriced, argv = []) {
+  const models = Object.entries(unpriced ?? {});
+  if (models.length === 0) return null;
+  if (argv.includes('--allow-unpriced')) return null;
+  const detail = models
+    .sort((a, b) => b[1].tokens - a[1].tokens)
+    .map(([m, v]) => `  ${m}: ${v.messages} responses, ${(v.tokens / 1e6).toFixed(0)}M tokens`)
+    .join('\n');
+  return (
+    `REFUSING TO WRITE: ${models.length} model(s) have no entry in PRICES, so their spend is missing ` +
+    `from the total:\n${detail}\n` +
+    'Priced at zero, an unknown model reads as free work and inflates the savings/ROI figures — the ' +
+    'defect this guard exists to stop. Add the rate to PRICES (verify it at ' +
+    'platform.claude.com/docs/en/about-claude/pricing), or pass --allow-unpriced to publish a snapshot ' +
+    'that openly declares the gap.'
+  );
+}
+
+/**
  * The gate, and the WIRING of it — separate from main() so a test can reach the write without the
  * transcript-dependent analysis in front of it. Mutating the condition here has to turn a test red;
  * when this lived inline, `if (shouldWrite(argv))` → `if (true)` left the suite green because no test
@@ -101,8 +155,16 @@ export const shouldWrite = (argv) => argv.includes('--write');
  * frozen snapshot is protected.
  */
 export function emitSnapshot(argv, outPath, payload) {
+  // Checked BEFORE the --write gate so a dry run reports the gap too. A blocked write exits non-zero:
+  // the console line alone would scroll past in a pipeline and read as success.
+  const blocked = unpricedBlocksWrite(payload?.measured?.unpricedUsage, argv);
+  if (blocked) {
+    console.error(blocked);
+    process.exitCode = 2;
+    return false;
+  }
   if (!shouldWrite(argv)) {
-    console.log('DRY RUN — nothing written. Pass --write to regenerate', outPath, `(currently asOf ${payload.asOf})`);
+    console.log('DRY RUN — nothing written. Pass --write to regenerate', outPath, `(this run computed asOf ${payload.asOf})`);
     return false;
   }
   writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n');
@@ -177,12 +239,26 @@ export function main(argv = process.argv.slice(2)) {
   const topTs = [];
   let topLevelMessages = 0, subagentMessages = 0, firstTs = null, lastTs = null;
   const excludedLeak = { cost: 0, count: 0, byProject: {} };
+  // Responses whose model has no price. Collected rather than silently zeroed, and reported per model
+  // with its token volume so the size of the hole is visible before anyone reads the total.
+  const unpriced = {};
   for (const u of records.values()) {
-    const cost = costOf(u.model, u);
+    const rawCost = costOf(u.model, u);
+    // Unpriced records still count everywhere EXCEPT cost. Their tokens and timestamps are measured
+    // facts; only the rate is unknown, and dropping them outright would quietly deflate
+    // supervisedHours and the token total too — a second wrong number chasing the first.
+    if (rawCost === null) {
+      const un = (unpriced[u.model ?? '(no model field)'] ??= { messages: 0, tokens: 0 });
+      un.messages++; un.tokens += u.input + u.output + u.w5 + u.w1 + u.read;
+    }
+    const cost = rawCost ?? 0;
     const proj = branchProject(u.branch);
     if (proj && OUT_OF_SCOPE.has(proj)) { excludedLeak.cost += cost; excludedLeak.count++; excludedLeak.byProject[proj] = (excludedLeak.byProject[proj] || 0) + cost; continue; }
-    const bm = (byModel[u.model] ??= { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, cost: 0, messages: 0 });
+    const bm = (byModel[u.model] ??= { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, cost: 0, messages: 0, unpriced: false });
     bm.input += u.input; bm.output += u.output; bm.cacheWrite5m += u.w5; bm.cacheWrite1h += u.w1; bm.cacheRead += u.read; bm.cost += cost; bm.messages++;
+    // Marks the row whose `cost` is a floor of 0 rather than a measurement, so byModel cannot be read
+    // as "this model was free" without the flag beside it.
+    if (rawCost === null) bm.unpriced = true;
     const bb = (byBranch[u.branch] ??= { cost: 0, closed: null });
     bb.cost += cost;
     if (u.isTop) topLevelMessages++; else subagentMessages++;
@@ -247,6 +323,9 @@ export function main(argv = process.argv.slice(2)) {
       calendarSpan: { first: firstTs ? new Date(firstTs).toISOString() : null, last: lastTs ? new Date(lastTs).toISOString() : null, days: +days.toFixed(1) },
       supervisedHoursUnion: +activeHours.toFixed(1), idleCapSeconds: IDLE_CAP_S,
       totals, byModel,
+      // Always present, `{}` when clean — an absent field reads as "not measured", which is the same
+      // ambiguity as pricing an unknown model at zero.
+      unpricedUsage: unpriced,
     },
     dedup: { rawAssistantRecords: rawRecords, uniqueBilledResponses: records.size, method: 'one record per message.id (max-output); streaming partials collapsed' },
     scope: { inScope: 'kanban repo + ticket-workflow (incl. agent/agentic-rag-demo)', excludedProjects: [...OUT_OF_SCOPE], excludedLeak: { cost: +excludedLeak.cost.toFixed(2), responses: excludedLeak.count, byProject: Object.fromEntries(Object.entries(excludedLeak.byProject).map(([k, v]) => [k, +v.toFixed(2)])) }, unattributedNote: '~45% of cost is unattributed main-branch work (planning/board/reviews) — kept as in-repo, not splittable by project' },
