@@ -266,11 +266,13 @@ The PR body must reference the ticket id and include the `## Implementation summ
 
 So what is actually enforced today is the floor: a PR is required (**0 approvals**), deletion and force-push are blocked, and `gate` + `branch-name` must pass — with no bypass for anyone, including admins. **`review` is required by nothing right now**: the only ruleset naming it is parked, and everything else that ruleset declares (`pull_request`, `deletion`, `non_fast_forward`) merely duplicates the floor.
 
-It is parked on purpose. The `review` job **reports success without running** when `ANTHROPIC_API_KEY` is unset — it logs *"ANTHROPIC_API_KEY secret not configured — skipping code review"* and exits green (observed on PR #173). A required check that passes without running is the fail-open shape this repo rejects, so requiring it would be worse than not requiring it. Configure the secret (or make the skip path fail loudly) before re-enabling `18084578`. `e2e` likewise reports on the PR but does not block merge.
+It is parked because `ANTHROPIC_API_KEY` is still unset. The **fail-open half is fixed** (`tkt-5f28061cb3bf`): the `review` job used to log *"secret not configured — skipping code review"* and exit **green**, so a green check meant either "reviewed, clean" or "never ran". It now **fails closed** — `scripts/review-preconditions.mjs` exits 2 when the key is missing, and the filter widened from `.ts|.tsx` to also cover `.mjs`/`.yml`, which had made the guard hooks, every workflow and this workflow itself invisible.
 
-When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment — **but only when `ANTHROPIC_API_KEY` is configured**; without it the job skips and still reports green (see **Branch protection** above), so a green `review` is not evidence that a review happened.
+**Consequence to expect: `review` is RED on every ordinary PR until the secret is set.** That is the intended state, not a regression — it blocks nothing, because the active ruleset requires only `gate` + `branch-name`. **Dependabot and fork PRs SKIP the job instead**, because Actions secrets are structurally unavailable to them, so failing there would be ~5 red checks a week carrying no signal; a skipped check reads as absent rather than as passing. Re-enabling `18084578` still needs the secret first (`tkt-f9782ff3fdf5`); requiring a check that always fails would be its own trap. `e2e` likewise reports on the PR but does not block merge.
 
-### 4. Merge (after CI is green)
+When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. The `code-review` CI job also runs automatically and posts its findings as a PR comment — **but only when `ANTHROPIC_API_KEY` is configured**. Without it the job now goes **red** rather than green (`tkt-5f28061cb3bf`), so a red `review` on an otherwise-green PR means "no key", not "findings". A *green* `review` is now real evidence a review ran; that is the point of the change.
+
+### 4. Merge (after CI is green — `review` excepted while the key is unset)
 
 Before asking **"Ready to merge?"**, check the code review comment posted to the PR by the `code-review` CI job:
 
@@ -282,7 +284,7 @@ If there are significant findings, present them to the user and ask: **"Fix thes
 - **Fix now** — implement, commit, push; wait for CI to go green again, then return to this step
 - **Follow-up tickets** — file each finding via the local agent (`npm run agent -- --yes --create-only "<finding>"`, per **Ticket creation flow**), then proceed to merge. If the local runtime is down, say so and let the user decide (fix-now, or hold the merge until it's back) — don't hand-author the ticket.
 
-If the review found no significant issues (or the secret wasn't configured), proceed directly.
+If the review found no significant issues, proceed directly. **If `review` is red with no comment, read the job log before treating it as the no-key case** — that is the expected state today, but "red because unconfigured" and "red because the API call failed" look identical from the checks list, and only one of them is fine to merge past.
 
 Ask **"Ready to merge?"** — never merge without explicit approval. Then:
 
