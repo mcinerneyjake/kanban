@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installSeed } from './terminal-setup-cred.mjs';
+import { PassThrough } from 'node:stream';
+import { installSeed, readToken, assemblePastedLines } from './terminal-setup-cred.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./terminal-setup-cred.mjs', import.meta.url));
 const GOOD = `sk-ant-oat01-${'a'.repeat(97)}`; // 110 chars, the observed live length
@@ -143,5 +144,97 @@ describe('installSeed atomicity', () => {
     installSeed(`${seedHome}${path.sep}`, CREDS);
     expect(JSON.parse(readFileSync(credentialsFile(), 'utf8')).claudeAiOauth.accessToken).toBe(GOOD);
     expect(readdirSync(seedHome)).toEqual(['.claude']);
+  });
+});
+
+// tkt-dba03a3b6bda. `rl.question` resolves on the FIRST newline, so a token pasted across lines was
+// silently truncated there — and the remainder was long enough to clear the validator's length floor,
+// so the seeder reported success and wrote an unusable credential. Nothing caught it because the
+// interactive branch needed a TTY; `terminal: true` on a plain stream is what makes it drivable here.
+describe('interactive paste (TTY branch)', () => {
+  const feed = async (text) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume(); // drain the muted prompt, or the writes back up
+    const pending = readToken({ input, output, isTTY: true });
+    input.end(text);
+    return pending;
+  };
+
+  it('keeps every line of a multi-line paste (written first, observed red)', async () => {
+    // Two lines, each on its own well past the 50-char floor — so the truncated first line alone
+    // still VALIDATES. That is the whole defect: a silent partial credential, not a rejection.
+    const pasted = `sk-ant-oat01-${'a'.repeat(60)}\n${'b'.repeat(40)}`;
+    expect(await feed(pasted)).toBe(pasted);
+  });
+
+  it('is unchanged for the ordinary single-line paste', async () => {
+    expect(await feed(`${GOOD}\n`)).toBe(GOOD);
+  });
+
+  it('trims the edges but never the middle, exactly as the piped branch does', async () => {
+    // The validator deliberately tolerates INTERNAL whitespace (tkt-7b21fb0b3307), so the reader must
+    // not quietly normalise it away — that would make the two intake paths disagree.
+    expect(await feed(`  ${GOOD}  \n`)).toBe(GOOD);
+  });
+});
+
+describe('assemblePastedLines (the pure half)', () => {
+  const from = async (...lines) => assemblePastedLines((async function* () { yield* lines; })());
+
+  it('joins the lines it was given and reports how many there were', async () => {
+    expect(await from('one', 'two', 'three')).toEqual({ token: 'one\ntwo\nthree', lineCount: 3 });
+  });
+
+  it('counts lines the trim removes, so a trailing blank line is still visible to the caller', async () => {
+    // lineCount is NOT derived from the token: `'x\n\n'.trim()` loses the evidence that the user's
+    // paste had a trailing blank, which is exactly the shape worth reporting back.
+    expect(await from('x', '', '')).toEqual({ token: 'x', lineCount: 3 });
+  });
+
+  it('returns an empty token for empty input rather than throwing', async () => {
+    expect(await from()).toEqual({ token: '', lineCount: 0 });
+  });
+});
+
+describe('the two intake paths agree', () => {
+  // The defect was one branch reading to EOF and the other stopping at a newline. This is the
+  // property that was violated, asserted directly rather than inferred from the two separately.
+  // Delivered in THREE chunks, not one. A single `end(text)` arrives as one chunk, so a piped branch
+  // mutated to `break` after the first chunk still read everything and stayed green — the test could
+  // not see the accumulation it was supposed to be checking. A real paste arrives in several reads.
+  // AWAITING between writes is load-bearing, not decoration: three synchronous `write()` calls are
+  // coalesced into a single chunk before the reader sees them, so a piped branch mutated to `break`
+  // after the first chunk still read everything and the suite stayed green. Yielding the event loop
+  // is what makes them arrive as separate reads — the thing this is supposed to be checking.
+  const inChunks = async (input, text) => {
+    const third = Math.ceil(text.length / 3);
+    for (const part of [text.slice(0, third), text.slice(third, third * 2), text.slice(third * 2)]) {
+      input.write(part);
+      await new Promise((r) => setImmediate(r));
+    }
+    input.end();
+  };
+  const viaTTY = async (text) => {
+    const input = new PassThrough(); const output = new PassThrough(); output.resume();
+    const pending = readToken({ input, output, isTTY: true });
+    await inChunks(input, text);
+    return pending;
+  };
+  const viaPipe = async (text) => {
+    const input = new PassThrough();
+    const pending = readToken({ input, output: new PassThrough(), isTTY: false });
+    await inChunks(input, text);
+    return pending;
+  };
+
+  it.each([
+    ['single line', `${GOOD}\n`],
+    ['no trailing newline', GOOD],
+    ['wrapped across lines', `sk-ant-oat01-${'a'.repeat(60)}\n${'b'.repeat(40)}`],
+    ['padded edges', `  ${GOOD}  \n`],
+    ['internal spaces, which real tokens have', `sk-ant-oat01-${'a'.repeat(50)} ${'b'.repeat(50)}`],
+  ])('produce the same token for %s', async (_name, text) => {
+    expect(await viaTTY(text)).toBe(await viaPipe(text));
   });
 });

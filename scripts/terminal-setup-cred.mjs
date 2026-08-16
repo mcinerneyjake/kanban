@@ -5,8 +5,11 @@
 //
 // Usage (keep the token off your shell history / this repo):
 //   claude setup-token            # in your own terminal; copy the printed token
-//   node scripts/terminal-setup-cred.mjs   # paste when prompted (input is hidden)
+//   node scripts/terminal-setup-cred.mjs   # paste when prompted (hidden), then Ctrl-D
 // or pipe it:  printf '%s' "$TOKEN" | node scripts/terminal-setup-cred.mjs
+//
+// Ctrl-D, not Enter, ends the interactive paste (tkt-dba03a3b6bda): Enter used to submit, which
+// meant a token pasted across lines was cut at the first newline and the rest silently dropped.
 //   --force    accept a token whose prefix isn't recognized (see validateSetupToken)
 //
 // Seeds <seed home>/.claude/.credentials.json (mode 0600, dir 0700). That home dir is the read-only
@@ -23,22 +26,44 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { seedHomePath, validateSetupToken, SEED_HOME_KEEP, SEED_CLAUDE_KEEP } from '../shared/terminalSeed.mjs';
 
-async function readToken() {
-  if (!process.stdin.isTTY) {
+export async function readToken({ input = process.stdin, output = process.stdout, isTTY = process.stdin.isTTY } = {}) {
+  if (!isTTY) {
     // piped input
     const chunks = [];
-    for await (const c of process.stdin) chunks.push(c);
+    for await (const c of input) chunks.push(c);
     return Buffer.concat(chunks).toString('utf8').trim();
   }
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  // Best-effort hide: mute the output stream while typing.
-  const answer = await new Promise((resolve) => {
-    rl.question('Paste your `claude setup-token` token (hidden): ', resolve);
-    rl._writeToOutput = () => {}; // suppress echo
-  });
+  const rl = readline.createInterface({ input, output, terminal: true });
+  rl._writeToOutput = () => {}; // suppress echo — set before the prompt, which is written directly
+  output.write('Paste your `claude setup-token` token, then press Ctrl-D (input is hidden): ');
+  const { token, lineCount } = await assemblePastedLines(rl);
   rl.close();
-  process.stdout.write('\n');
-  return answer.trim();
+  // Line count + length, never the token: a paste that arrived wrapped is otherwise INVISIBLE — the
+  // old failure was a credential that looked fine, validated, and did not work.
+  output.write(`\nRead ${lineCount} line(s), ${token.length} characters.\n`);
+  return token;
+}
+
+/**
+ * Assemble a paste that may span several lines. EOF is the terminator, which is what makes this
+ * symmetric with the piped branch above; `rl.question` stopped at the first newline and discarded
+ * everything after it (tkt-dba03a3b6bda).
+ *
+ * Joined with '\n' — the lines are preserved, not silently welded together. Stripping the newlines
+ * would "repair" a wrapped paste, but it would also corrupt a token whose own internal whitespace is
+ * a newline, and that cannot be ruled out: the measurement behind `tkt-7b21fb0b3307` established
+ * real tokens contain internal whitespace but never identified WHICH character, and its own summary
+ * records that the confirming read was blocked. So this preserves the input and lets the validator
+ * judge it; a reader must not invent a repair it cannot verify.
+ *
+ * Pure over any async iterable of lines, so it is testable without a TTY — the reason this defect
+ * survived is that nothing could drive the interactive branch. `lineCount` is returned rather than
+ * derived from the token, because the trim can drop trailing blank lines the user did type.
+ */
+export async function assemblePastedLines(lines) {
+  const collected = [];
+  for await (const line of lines) collected.push(String(line));
+  return { token: collected.join('\n').trim(), lineCount: collected.length };
 }
 
 // Replace the credential FILE atomically, then prune everything around it. There is deliberately no
