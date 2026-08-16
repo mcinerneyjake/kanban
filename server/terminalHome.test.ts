@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
-import { seedHomeDir, sessionsRoot, sessionHomeDir, seedSessionHome, removeSessionHome } from './terminalHome.js';
+import { seedHomeDir, sessionsRoot, sessionHomeDir, seedSessionHome, removeSessionHome, readHostModel, applyHostModel, claudeSettingsPath } from './terminalHome.js';
 
 // Two valid v4 UUID session ids (isValidSessionId shape) — the isolation must key on these.
 const ID_A = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
@@ -12,11 +12,17 @@ describe('terminalHome (per-session HOME isolation, S4)', () => {
   let base: string;
   let seed: string;
   let env: NodeJS.ProcessEnv;
+  let hostConfig: string;
 
   beforeEach(() => {
     base = mkdtempSync(path.join(tmpdir(), 'kanban-home-'));
     seed = path.join(base, 'kanban-terminal', 'home');
-    env = { KANBAN_TERMINAL_HOME: seed };
+    // CLAUDE_CONFIG_DIR is pinned to a temp dir, empty by default. Without it the model lookup falls
+    // back to the DEVELOPER'S real ~/.claude/settings.json, so these tests would assert one thing on
+    // this machine and another in CI — where no such file exists (tkt-f0288c839503).
+    hostConfig = path.join(base, 'host-claude');
+    mkdirSync(hostConfig, { recursive: true });
+    env = { KANBAN_TERMINAL_HOME: seed, CLAUDE_CONFIG_DIR: hostConfig };
     // Seed a pre-authenticated template: a credentials file + a claude.json, as setup-cred would leave.
     mkdirSync(path.join(seed, '.claude'), { recursive: true });
     writeFileSync(path.join(seed, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"tok"}}');
@@ -95,5 +101,129 @@ describe('terminalHome (per-session HOME isolation, S4)', () => {
       expect(() => seedSessionHome(bad, env)).toThrow(/invalid session id/);
     }
     expect(existsSync(outside)).toBe(true); // nothing above sessions/ was touched
+  });
+});
+
+// tkt-f0288c839503. The container found no `model` key in its HOME, so `claude` started on its own
+// built-in default instead of the one the user's own sessions use. Deterministic, not random: the
+// seed keeps settings.json, but nothing ever wrote a model into it.
+describe('host model preference', () => {
+  let base: string;
+  let seed: string;
+  let hostConfig: string;
+  let env: NodeJS.ProcessEnv;
+  const ID = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
+  const hostSettings = (json: string) => writeFileSync(path.join(hostConfig, 'settings.json'), json);
+  const sessionSettings = () =>
+    JSON.parse(readFileSync(path.join(sessionHomeDir(ID, env) ?? '', '.claude', 'settings.json'), 'utf8'));
+
+  beforeEach(() => {
+    base = mkdtempSync(path.join(tmpdir(), 'kanban-model-'));
+    seed = path.join(base, 'kanban-terminal', 'home');
+    hostConfig = path.join(base, 'host-claude');
+    mkdirSync(path.join(seed, '.claude'), { recursive: true });
+    mkdirSync(hostConfig, { recursive: true });
+    writeFileSync(path.join(seed, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"tok"}}');
+    env = { KANBAN_TERMINAL_HOME: seed, CLAUDE_CONFIG_DIR: hostConfig };
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  it('carries the host model into the session HOME (the whole bug)', () => {
+    // A value no real settings file would hold. `opus[1m]` — the actual host value on the machine
+    // this was written on — would have passed even if CLAUDE_CONFIG_DIR were ignored and the real
+    // ~/.claude/settings.json were read instead, so it could not tell the pin from the confound.
+    hostSettings('{"model":"test-model-not-a-real-alias"}');
+    seedSessionHome(ID, env);
+    expect(sessionSettings().model).toBe('test-model-not-a-real-alias');
+  });
+
+  it('leaves the container on its own default when the host sets no model', () => {
+    // The control that makes the test above attributable to the HOST SETTING rather than to any
+    // model being written: without it, a hardcoded default would pass identically.
+    hostSettings('{"theme":"dark"}');
+    const mount = seedSessionHome(ID, env);
+    expect(existsSync(path.join(mount.hostHome, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  it('does not invent a model when there are no host settings at all', () => {
+    const mount = seedSessionHome(ID, env); // hostConfig is empty
+    expect(existsSync(path.join(mount.hostHome, '.claude', 'settings.json'))).toBe(false);
+    expect(readHostModel(env)).toEqual({ status: 'unset' });
+  });
+
+  it('preserves the seed\'s other settings instead of clobbering them to set one key', () => {
+    writeFileSync(path.join(seed, '.claude', 'settings.json'), '{"theme":"dark","statusLine":"x"}');
+    hostSettings('{"model":"opus"}');
+    seedSessionHome(ID, env);
+    expect(sessionSettings()).toEqual({ theme: 'dark', statusLine: 'x', model: 'opus' });
+  });
+
+  it('re-reads per session, so a host change lands without a re-seed', () => {
+    hostSettings('{"model":"sonnet"}');
+    seedSessionHome(ID, env);
+    expect(sessionSettings().model).toBe('sonnet');
+    hostSettings('{"model":"opus"}');
+    seedSessionHome(ID, env);
+    expect(sessionSettings().model).toBe('opus');
+  });
+
+  it('never writes to the seed — it is a read-only template', () => {
+    hostSettings('{"model":"opus"}');
+    seedSessionHome(ID, env);
+    expect(existsSync(path.join(seed, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  describe('the three outcomes stay distinguishable', () => {
+    // "No preference set" and "I could not read the settings" both leave the container on its own
+    // default, but only one is a fault. Collapsing them would make a corrupt settings.json look like
+    // a deliberate absence.
+    it('reports unreadable, not unset, for a corrupt or wrong-typed settings file', () => {
+      for (const [json, fragment] of [
+        ['{not json', 'JSON'],
+        ['[1,2,3]', 'not a JSON object'],
+        ['{"model":42}', 'not a non-empty string'],
+        ['{"model":"   "}', 'not a non-empty string'],
+      ] as const) {
+        hostSettings(json);
+        const result = readHostModel(env);
+        expect(result.status, json).toBe('unreadable');
+        expect(result.status === 'unreadable' && result.reason).toContain(fragment);
+      }
+    });
+
+    it('a session still starts when the host settings are unreadable', () => {
+      hostSettings('{oops');
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const mount = seedSessionHome(ID, env);
+      expect(existsSync(path.join(mount.hostHome, '.claude', '.credentials.json'))).toBe(true);
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('could not read the host model preference'));
+      err.mockRestore();
+    });
+
+    it('replaces a corrupt session settings.json rather than failing the session', () => {
+      writeFileSync(path.join(seed, '.claude', 'settings.json'), '{broken');
+      hostSettings('{"model":"opus"}');
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      seedSessionHome(ID, env);
+      expect(sessionSettings()).toEqual({ model: 'opus' });
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('unparseable'));
+      err.mockRestore();
+    });
+  });
+
+  it('honours CLAUDE_CONFIG_DIR, and falls back to ~/.claude without it', () => {
+    // The reason every 'unset' case above is evidence: if the env var were ignored, the lookup would
+    // hit the developer's REAL settings — which does carry a model — and those tests would go red
+    // here while still passing in CI, where no such file exists. Asserting the resolved PATH makes
+    // the pin verifiable on both.
+    expect(claudeSettingsPath(env)).toBe(path.join(hostConfig, 'settings.json'));
+    expect(claudeSettingsPath({})).toBe(path.join(homedir(), '.claude', 'settings.json'));
+  });
+
+  it('applyHostModel is callable on its own, so the decision is testable apart from the copy', () => {
+    const home = path.join(base, 'standalone');
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    applyHostModel(home, { status: 'set', model: 'haiku' });
+    expect(JSON.parse(readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))).toEqual({ model: 'haiku' });
   });
 });
