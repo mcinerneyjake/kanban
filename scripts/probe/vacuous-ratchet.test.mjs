@@ -126,9 +126,16 @@ describe('vacuous-baseline.json', () => {
     }
   });
 
-  it('carries an asOf date and the floors caveat', () => {
+  it('carries an asOf date, the floors caveat, and the attribution for every raised ceiling', () => {
     expect(baseline.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // The caveat STAYS. tkt-9c818426feb3 narrowed the gap but left describe/beforeEach scope,
+    // reassignment and chained-call forEach undetected, so a 0 still is not proof of clean — an
+    // earlier draft of that ticket deleted this key and claimed the counts were totals.
     expect(baseline._countsAreFloors).toContain('FLOOR');
+    // A raised ceiling must say how much was the instrument and how much was new debt. Without it,
+    // "the probe got better" silently launders defects that were added, which is the one thing a
+    // ratchet exists to prevent.
+    expect(baseline._attribution).toContain('tkt-9c818426feb3');
   });
 });
 

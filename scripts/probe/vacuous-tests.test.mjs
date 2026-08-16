@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   CONTROLS, assertInstruments, controlFailures, loopsIn, matcherlessExpects, naiveTestBlocks,
   screenBlock, stripNoise, sweep, testBlocks, testFiles,
@@ -46,8 +47,8 @@ describe('the controls', () => {
 
   /** An empty control set passes `controlFailures()` trivially. */
   it('has controls in every category', () => {
-    expect(CONTROLS.positive.length).toBeGreaterThanOrEqual(8);
-    expect(CONTROLS.negative.length).toBeGreaterThanOrEqual(14);
+    expect(CONTROLS.positive.length).toBeGreaterThanOrEqual(11);
+    expect(CONTROLS.negative.length).toBeGreaterThanOrEqual(19);
     expect(CONTROLS.oneBlock.length).toBeGreaterThanOrEqual(6);
     expect(CONTROLS.zeroBlock.length).toBeGreaterThanOrEqual(2);
   });
@@ -113,6 +114,42 @@ describe('stripNoise', () => {
   it('treats an unterminated slash as division, not a regex running off the line', () => {
     const source = 'const ratio = a / b;\nconst next = 1;\n';
     expect(stripNoise(source).split('\n')).toHaveLength(3);
+  });
+});
+
+/**
+ * The red control for `tkt-9c818426feb3`: reconstruct the pre-fix `isComputed` in a temp copy of the
+ * module and require the new controls — and ONLY those — to fail against it.
+ *
+ * Asserting the count is what makes this attributable. "Some control failed" would pass if the
+ * mutation happened to break something else, and a catch-all match is how a guard gets deleted with
+ * the suite green (`merged-branches.test.mjs`). The mutation asserts it applied before importing,
+ * because a regex that silently matches nothing reports a broken probe as a fixed one.
+ */
+describe('the pre-fix isComputed', () => {
+  it('misses exactly the four shapes this fix added, and nothing else', async () => {
+    const source = fs.readFileSync(new URL('./vacuous-tests.mjs', import.meta.url), 'utf8');
+    const broken = source.replace(
+      /function isComputed\(source, before = ''\) \{[\s\S]*?\n\}/,
+      "function isComputed(source) {\n  if (source.startsWith('[')) return false;\n  return /[.(]/.test(source);\n}",
+    );
+    expect(broken).not.toBe(source); // the mutation applied
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vacuous-broken-'));
+    try {
+      const file = path.join(dir, 'broken.mjs');
+      fs.writeFileSync(file, broken);
+      const { controlFailures: brokenFailures } = await import(pathToFileURL(file).href);
+      expect(brokenFailures().sort()).toEqual([
+        'positive "loop over a $-prefixed variable": did not fire',
+        'positive "loop over a spread of a computed collection": did not fire',
+        'positive "loop over a variable assigned from a call": did not fire',
+        'positive "loop over an array literal with a method applied": did not fire',
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect(controlFailures()).toEqual([]); // and the real module is untouched
   });
 });
 
