@@ -118,8 +118,10 @@ async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
   const caching = new CachingEmbedder(raw, store, cacheNamespace());
   const index = await DocumentIndex.build(caching, documents);
   // Prune to bound growth — but NOT when the corpus is empty: a transiently unreadable board must not wipe the cache and force a cold re-embed next build.
+  // Scoped to THIS embedder's namespace: another EMBED_MODEL's vectors live in the same file and are
+  // not ours to delete (tkt-aa73a535ec4a).
   const keep = caching.corpusHashes();
-  if (keep.size > 0) store.prune(keep);
+  if (keep.size > 0) store.prune(keep, caching.scope());
   // Best-effort, like EmbeddingStore.load: the cache is an optimization, so an unwritable
   // .cache/ (read-only mount, EACCES, ENOSPC) must not take intake down with a 503. Before this
   // ticket the server path performed no disk writes at all, so no disk condition could break it.
