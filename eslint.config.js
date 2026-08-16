@@ -17,7 +17,21 @@ export default tseslint.config(
   // parse error — 454 of them, enforcing nothing. CI never sees it (no worktree there), so without
   // this the breakage lands only on whoever followed CLAUDE.md and made one. Same root cause the
   // vitest exclude above fixes for the test runner (tkt-17d81c74b662).
-  { languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } } },
+  {
+    languageOptions: {
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname,
+        // Fail LOUDLY on a TypeScript version typescript-eslint does not support (tkt-fd8f0380f70a).
+        //
+        // The default is 'warn', and the warning is printed only when a loggerFn was passed or
+        // `process.stdout.isTTY` — see typescript-estree's warnAboutTSVersion.js. We pass no logger
+        // and CI has no TTY, so on an unsupported TypeScript the default lints every file with a
+        // compiler typescript-eslint disclaims, prints nothing at all, and reports the gate GREEN.
+        // A rule set that cannot be trusted is worse than one that refuses to run.
+        onUnsupportedTypeScriptVersion: 'error',
+      },
+    },
+  },
   {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
