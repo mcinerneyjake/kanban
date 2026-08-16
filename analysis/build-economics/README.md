@@ -72,7 +72,8 @@ git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.css' '*.scss' '*.html' 
 Full run (only on the machine whose `~/.claude` holds the sessions):
 
 ```sh
-node analyze-kanban-savings.mjs        # regenerates kanban-savings.json in place
+node analyze-kanban-savings.mjs          # DRY RUN — analyses and prints, writes nothing
+node analyze-kanban-savings.mjs --write  # regenerates kanban-savings.json in place
 # env overrides: KANBAN_REPO, TW_REPO, OUT
 ```
 
