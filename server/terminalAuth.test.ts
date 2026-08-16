@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAllowedOrigin, isAllowedTerminalHost, isValidToken, buildSessionEnv, allowedRootsFor,
-  buildDetachedRunArgs, buildAttachArgs, dtachSocket, filterAdoptable, resolveSessionCommand,
+  buildDetachedRunArgs, buildAttachArgs, buildReattachCommand, dtachSocket, filterAdoptable, resolveSessionCommand,
   isHostGatewayRejection, withoutHostGateway,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
   isValidSessionId, rootMountArgs, MAX_INPUT_CHARS, containerizeLoopbackUrl, llmEnvArgs, type CredMount,
@@ -281,7 +281,7 @@ describe('buildAttachArgs / dtachSocket', () => {
     // env pinned: attach now re-supplies the LLM endpoints, so an ambient process.env would
     // otherwise make this assertion environment-dependent (tkt-c0cf617fdcc4 review).
     expect(buildAttachArgs('kanban-term-1', SID, { LLM_BASE_URL: 'http://x/v1', EMBED_BASE_URL: 'http://x/v1' })).toEqual(
-      ['exec', '-it', '-e', 'LLM_BASE_URL=http://x/v1', '-e', 'EMBED_BASE_URL=http://x/v1',
+      ['exec', '-it', '-e', 'LLM_BASE_URL', '-e', 'EMBED_BASE_URL',
         'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch'],
     );
   });
@@ -341,8 +341,7 @@ describe('resolveSessionCommand', () => {
     // Attach re-supplies the LLM env; with an empty host env that's the containerized default.
     expect(attachArgs).toEqual([
       'exec', '-it',
-      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
-      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'LLM_BASE_URL', '-e', 'EMBED_BASE_URL',
       'kanban-term-1', 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch',
     ]);
     expect(socket).toBe(dtachSocket(SID));
@@ -573,44 +572,46 @@ describe('containerizeLoopbackUrl', () => {
 });
 
 describe('llmEnvArgs', () => {
-  it('passes both endpoints through, rewritten', () => {
-    expect(llmEnvArgs({ LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1' })).toEqual([
-      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
-      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
-    ]);
+  // tkt-281272b5ef77 moved the endpoint VALUES out of argv. The argv now names the variables and
+  // docker reads their values from its own environment (supplied by buildSessionEnv), because the
+  // host process table is world-readable via `ps aux` and a credential can ride in a URL.
+  it('names the endpoints without their values, so no URL reaches the argv', () => {
+    const args = llmEnvArgs({ LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1' });
+    // No LLM_API_KEY: the host set none, and naming a variable with no value BLANKS it on `exec`.
+    expect(args).toEqual(['-e', 'LLM_BASE_URL', '-e', 'EMBED_BASE_URL']);
+    expect(args.join(' ')).not.toContain('http');
   });
 
-  // The no-.env case is the DEFAULT install, so emitting nothing here would leave the container
-  // falling back to its own localhost — the one address it can never reach.
-  it('falls back to the containerized default when unset or empty, never to container-localhost', () => {
-    expect(llmEnvArgs({})).toEqual([
-      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
-      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
-    ]);
-    for (const blank of ['', '   ']) {
-      expect(llmEnvArgs({ LLM_BASE_URL: blank }).join(' ')).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+  // The no-.env case is the DEFAULT install, so omitting the endpoint would leave the container
+  // falling back to its own localhost — the one address it can never reach. The value now lives in
+  // buildSessionEnv, but the guarantee is unchanged.
+  it('still reaches the container when unset or empty, never container-localhost', () => {
+    expect(llmEnvArgs({})).toContain('LLM_BASE_URL');
+    for (const blank of ['', '   ', undefined]) {
+      const env = buildSessionEnv({ LLM_BASE_URL: blank });
+      expect(env.LLM_BASE_URL).toBe('http://host.docker.internal:1234/v1');
     }
-    expect(llmEnvArgs({}).join(' ')).not.toContain('localhost:1234');
+    expect(buildSessionEnv({}).LLM_BASE_URL).not.toContain('localhost:1234');
   });
 
   it('carries a custom remote endpoint through unchanged', () => {
-    const args = llmEnvArgs({ LLM_BASE_URL: 'https://llm.example.com/v1' });
-    expect(args).toContain('LLM_BASE_URL=https://llm.example.com/v1');
+    const env = buildSessionEnv({ LLM_BASE_URL: 'https://llm.example.com/v1' });
+    expect(env.LLM_BASE_URL).toBe('https://llm.example.com/v1');
     // The unset sibling still gets the containerized default, not the remote one.
-    expect(args).toContain('EMBED_BASE_URL=http://host.docker.internal:1234/v1');
+    expect(env.EMBED_BASE_URL).toBe('http://host.docker.internal:1234/v1');
   });
 
   // tkt-2c8af65c114e: forward the model ids so the container asks the server for the model it actually
   // has loaded, instead of the agent's code default. Unlike the endpoints, models are NOT rewritten and
   // are omitted entirely when unset (an unset model means host + container share the same code default).
+  // They keep `NAME=value` form: a model id is an opaque public string, not a credential.
   it('forwards LLM_MODEL / EMBED_MODEL verbatim when the host sets them', () => {
     const args = llmEnvArgs({
       LLM_BASE_URL: 'http://localhost:1234/v1', EMBED_BASE_URL: 'http://localhost:1234/v1',
       LLM_MODEL: 'openai/gpt-oss-20b', EMBED_MODEL: 'text-embedding-qwen3-embedding-0.6b',
     });
     expect(args).toEqual([
-      '-e', 'LLM_BASE_URL=http://host.docker.internal:1234/v1',
-      '-e', 'EMBED_BASE_URL=http://host.docker.internal:1234/v1',
+      '-e', 'LLM_BASE_URL', '-e', 'EMBED_BASE_URL',
       '-e', 'LLM_MODEL=openai/gpt-oss-20b',
       '-e', 'EMBED_MODEL=text-embedding-qwen3-embedding-0.6b',
     ]);
@@ -639,6 +640,77 @@ describe('llmEnvArgs', () => {
   });
 });
 
+// tkt-281272b5ef77. argv is world-readable (`ps aux`, `docker inspect`) and the container holds it for
+// its whole lifetime; the docker CLI's own environment is not. These pin the property, not the
+// mechanism, so a future refactor that reintroduces `-e NAME=value` fails here.
+describe('credentials never reach the docker argv (they still reach the container env)', () => {
+  const SECRET = 'sekret';
+
+  it.each([
+    ['userinfo', `http://user:${SECRET}@localhost:1234/v1`],
+    ['username only', `http://${SECRET}@localhost:1234/v1`],
+    ['credential in the query', `http://localhost:1234/v1?api_key=${SECRET}`],
+    ['both at once', `http://user:${SECRET}@localhost:1234/v1?token=${SECRET}`],
+    ['remote host, not just loopback', `https://llm.example.com/v1?api_key=${SECRET}`],
+  ])('keeps a %s out of every argv the session builds', (_name, url) => {
+    const env = { LLM_BASE_URL: url, EMBED_BASE_URL: url };
+    for (const args of [
+      llmEnvArgs(env),
+      buildAttachArgs('kanban-term-1', SID, env),
+      buildDetachedRunArgs({
+        roots: ['/repo'], sessionId: SID, rootLabel: '/repo', createdAt: 0,
+        credMount: CRED, image: 'img', containerName: 'kanban-term-1', env,
+      }),
+    ]) {
+      expect(args.join(' '), 'credential leaked into argv').not.toContain(SECRET);
+    }
+  });
+
+  it('still delivers the credential-bearing URL to the container, via the CLI env', () => {
+    // The other half: stripping the argv while dropping the value would "fix" the leak by breaking
+    // the endpoint. The whole URL — credential included — must survive out-of-band.
+    const url = `http://user:${SECRET}@localhost:1234/v1`;
+    expect(buildSessionEnv({ LLM_BASE_URL: url }).LLM_BASE_URL)
+      .toBe(`http://user:${SECRET}@host.docker.internal:1234/v1`);
+  });
+
+  it('forwards LLM_API_KEY, so a URL-embedded credential is no longer the only path', () => {
+    // The severity finding in the audit: the agent reads LLM_API_KEY but nothing ever sent it to the
+    // container, so the design funnelled users toward putting the credential in the URL.
+    expect(llmEnvArgs({ LLM_API_KEY: 'sk-secret' })).toContain('LLM_API_KEY');
+    expect(buildSessionEnv({ LLM_API_KEY: 'sk-secret' }).LLM_API_KEY).toBe('sk-secret');
+    expect(llmEnvArgs({ LLM_API_KEY: 'sk-secret' }).join(' ')).not.toContain('sk-secret');
+  });
+
+  it('emits NO -e LLM_API_KEY at all when the host has none', () => {
+    // Measured against docker 29.6.2, and the reason the flag is derived from the value rather than
+    // hardcoded: `run` SKIPS a bare `-e NAME` whose value is absent, but `exec` BLANKS it — the
+    // attach path would wipe a key the container was created with. Not symmetric, so not a no-op.
+    for (const host of [{}, { LLM_API_KEY: '   ' }]) {
+      expect(buildSessionEnv(host).LLM_API_KEY).toBeUndefined();
+      expect(llmEnvArgs(host)).not.toContain('LLM_API_KEY');
+    }
+  });
+
+  // The pairing invariant, and the reason `llmEnvArgs` derives its flags from `llmContainerEnv`
+  // rather than from a second hardcoded list: a name in the argv with no value behind it is exactly
+  // the silent-drop (on `run`) or blanking (on `exec`) above. Quantified over both argv, so a name
+  // added to either half without the other is a red test, not a runtime surprise.
+  it.each([
+    ['host sets nothing', {}],
+    ['host sets endpoints', { LLM_BASE_URL: 'http://127.0.0.9:9999/v1', EMBED_BASE_URL: 'https://e.example.com/v1' }],
+    ['host sets a key too', { LLM_API_KEY: 'sk-secret' }],
+  ])('every bare `-e NAME` it emits has a value in the CLI env — %s', (_name, env) => {
+    const cliEnv = buildSessionEnv(env);
+    const args = llmEnvArgs(env);
+    const bareNames = args.filter((a, i) => args[i - 1] === '-e' && !a.includes('='));
+    expect(bareNames.length).toBeGreaterThan(0); // pins the loop: an empty argv would assert nothing
+    for (const name of bareNames) {
+      expect(cliEnv[name], `-e ${name} is named in argv but has no value to inherit`).toBeDefined();
+    }
+  });
+});
+
 describe('buildDetachedRunArgs — LLM reachability', () => {
   const base = {
     roots: ['/repo'], sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', rootLabel: '/repo',
@@ -652,10 +724,14 @@ describe('buildDetachedRunArgs — LLM reachability', () => {
     expect(args).toContain('host.docker.internal:host-gateway');
   });
 
-  it('injects the host endpoints, rewritten for the container', () => {
-    const args = buildDetachedRunArgs({ ...base, env: { LLM_BASE_URL: 'http://localhost:1234/v1' } });
-    expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
-    expect(args).not.toContain('LLM_BASE_URL=http://localhost:1234/v1');
+  it('injects the host endpoints by NAME, with the rewritten value carried in the CLI env', () => {
+    // The rewrite still happens; it moved from the argv to buildSessionEnv (tkt-281272b5ef77), so the
+    // reachability guarantee is asserted across both halves rather than in the argv alone.
+    const env = { LLM_BASE_URL: 'http://localhost:1234/v1' };
+    const args = buildDetachedRunArgs({ ...base, env });
+    expect(args).toContain('LLM_BASE_URL');
+    expect(args.join(' ')).not.toContain('localhost:1234');
+    expect(buildSessionEnv(env).LLM_BASE_URL).toBe('http://host.docker.internal:1234/v1');
   });
 });
 
@@ -709,7 +785,7 @@ describe('buildAttachArgs — env repair on reattach', () => {
   // --add-host can't be changed on exec — but `-e` can, so every attach re-supplies current config.
   it('re-supplies the LLM env, before the container name where docker exec expects options', () => {
     const args = buildAttachArgs(NAME, SID, { LLM_BASE_URL: 'http://localhost:1234/v1' });
-    expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:1234/v1');
+    expect(args).toContain('LLM_BASE_URL');
     expect(args.indexOf('-e')).toBeLessThan(args.indexOf(NAME));
   });
 
@@ -717,6 +793,23 @@ describe('buildAttachArgs — env repair on reattach', () => {
     const args = buildAttachArgs(NAME, SID, {});
     expect(args.slice(0, 2)).toEqual(['exec', '-it']);
     expect(args.slice(-7)).toEqual([NAME, 'dtach', '-a', dtachSocket(SID), '-E', '-r', 'winch']);
+  });
+
+  // Reattach is the one path with no SessionCommand to read the pair off, so it is also the one that
+  // could source argv and env from different host envs. buildReattachCommand exists to remove that
+  // choice from the call site (tkt-281272b5ef77).
+  it('buildReattachCommand pairs the argv with the env docker will inherit, from ONE host env', () => {
+    const host = { LLM_BASE_URL: 'http://127.0.0.5:9999/v1', LLM_API_KEY: 'sk-secret' };
+    const { attachArgs, env } = buildReattachCommand(NAME, SID, host);
+    let checked = 0;
+    for (const [i, a] of attachArgs.entries()) {
+      if (attachArgs[i - 1] !== '-e' || a.includes('=')) continue;
+      expect(env[a], `-e ${a} is named but has no value to inherit`).toBeDefined();
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+    expect(env.LLM_BASE_URL).toBe('http://host.docker.internal:9999/v1'); // loopback rewritten for the container
+    expect(attachArgs.join(' ')).not.toContain('sk-secret');
   });
 });
 
@@ -729,15 +822,41 @@ describe('resolveSessionCommand — LLM config round-trip', () => {
     createdAt: 0, credMount: CRED, image: 'kanban-terminal', containerName: 'kanban-term-1',
   };
 
-  it('carries a custom host endpoint all the way into BOTH the run and attach argv', async () => {
-    const { runArgs, attachArgs } = await resolveSessionCommand({
-      ...common, ticket: null, env: { LLM_BASE_URL: 'http://127.0.0.9:9999/v1', EMBED_BASE_URL: 'https://embed.example.com/v1' },
-    });
-    // 127.0.0.9 is loopback → rewritten; the remote embed endpoint is reachable → untouched.
-    for (const args of [runArgs, attachArgs]) {
-      expect(args).toContain('LLM_BASE_URL=http://host.docker.internal:9999/v1');
-      expect(args).toContain('EMBED_BASE_URL=https://embed.example.com/v1');
+  it('carries a custom host endpoint all the way to the container — argv names it, CLI env values it', async () => {
+    // The seam now has two halves and BOTH must be asserted: an argv-only check would pass against a
+    // build that names the variable and never supplies it, which is exactly the silent-drop failure
+    // this round-trip was written for (tkt-c0cf617fdcc4). tkt-281272b5ef77 split the halves.
+    const env = { LLM_BASE_URL: 'http://127.0.0.9:9999/v1', EMBED_BASE_URL: 'https://embed.example.com/v1' };
+    const command = await resolveSessionCommand({ ...common, ticket: null, env });
+    for (const args of [command.runArgs, command.attachArgs]) {
+      expect(args).toContain('LLM_BASE_URL');
+      expect(args).toContain('EMBED_BASE_URL');
     }
+    // command.env, NOT buildSessionEnv(env) recomputed here: calling the value supplier directly
+    // would pass against a chain that names the variables in argv and hands the spawn a different
+    // env — the two halves sourced separately, which is the seam this pins.
+    // 127.0.0.9 is loopback → rewritten; the remote embed endpoint is reachable → untouched.
+    expect(command.env.LLM_BASE_URL).toBe('http://host.docker.internal:9999/v1');
+    expect(command.env.EMBED_BASE_URL).toBe('https://embed.example.com/v1');
+  });
+
+  it('pairs every bare `-e NAME` in BOTH argv with a value on the same command', async () => {
+    // The whole-chain form of the pairing invariant: resolveSessionCommand must be the single source
+    // of both halves. Sourcing the spawn env from anywhere else (e.g. buildSessionEnv(process.env)
+    // recomputed at the call site) drops a custom endpoint silently on `run` and blanks it on `exec`.
+    const env = { LLM_BASE_URL: 'http://127.0.0.9:9999/v1', LLM_API_KEY: 'sk-secret' };
+    const command = await resolveSessionCommand({ ...common, ticket: null, env });
+    let checked = 0;
+    for (const args of [command.runArgs, command.attachArgs]) {
+      for (const [i, a] of args.entries()) {
+        if (args[i - 1] !== '-e' || a.includes('=')) continue;
+        expect(command.env[a], `-e ${a} has no value on the command`).toBeDefined();
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0); // a rename that emptied both argv would otherwise pass
+    expect(command.env.LLM_API_KEY).toBe('sk-secret');
+    expect([...command.runArgs, ...command.attachArgs].join(' ')).not.toContain('sk-secret');
   });
 
   it('never lets a container-unreachable localhost endpoint reach either argv', async () => {

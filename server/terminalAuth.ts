@@ -44,8 +44,17 @@ export function isValidToken(provided: string | null | undefined, expected: stri
 
 // Allowlist for the env handed to the spawned `docker` CLI. An allowlist (not a
 // denylist) means a secret-shaped host var can't leak through by omission — nothing
-// enters unless named here. The container's own env is set separately in
-// buildContainerArgs (and carries no secrets).
+// enters unless named here.
+//
+// The container's own env is built by `containerBaseArgs` via `llmEnvArgs`. That argv used to carry
+// endpoint URLs as `-e NAME=value`, so a credential in the URL was readable by any process able to
+// list ours (`ps aux`) (tkt-281272b5ef77). It now carries NAMES ONLY, and the values ride this env —
+// which is why the LLM values below are deliberate secret-bearing additions, and why "carries no
+// secrets" is now true of the argv specifically, not of this env.
+//
+// LIMIT, so nobody reads more into the fix than it delivers: the value still lands in the container's
+// environment, so `docker inspect` and `/proc/1/environ` show it either way. What changes is that it
+// is no longer in the *host* process table for the container's whole lifetime.
 const ENV_ALLOWLIST = [
   'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL',
   // docker CLI daemon selection (colima/rootless/remote/Desktop) — not secrets. Without
@@ -59,6 +68,9 @@ export function buildSessionEnv(parentEnv: NodeJS.ProcessEnv): Record<string, st
     const value = parentEnv[key];
     if (value !== undefined) env[key] = value;
   }
+  // Values for the name-only `-e` flags. Same source as the flags themselves (`llmContainerEnv`), so
+  // a name can never be emitted without a value — which for `docker exec` would blank it.
+  Object.assign(env, llmContainerEnv(parentEnv));
   env.TERM = 'xterm-256color'; // correct color/rendering through the PTY → xterm.js
   return env;
 }
@@ -209,12 +221,47 @@ export function containerizeLoopbackUrl(url: string): string {
 // review): `.env` is optional, and falling through to the agent's own `localhost` default is the one
 // value guaranteed unreachable inside a container — so "emit nothing" would leave the default install,
 // the exact case this exists to fix, still broken.
+/**
+ * The LLM values the container should receive — the SINGLE source for both the `-e` flag names and
+ * the values `buildSessionEnv` hands the docker CLI (tkt-281272b5ef77).
+ *
+ * One function rather than two hardcoded lists tied by a comment: emitting a flag whose value nothing
+ * supplies is not harmless, because `docker exec -e NAME` with NAME unset **clears** it inside the
+ * container (verified on docker 29.6.2 — `run` skips it, `exec` blanks it). Deriving the flags from
+ * the values makes that state unreachable.
+ */
+export function llmContainerEnv(parentEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  // Always present: an unset endpoint still needs the containerized default, because the agent's own
+  // `localhost` fallback is the one address a container can never reach.
+  for (const key of ['LLM_BASE_URL', 'EMBED_BASE_URL'] as const) {
+    out[key] = containerizeLoopbackUrl(parentEnv[key]?.trim() || DEFAULT_HOST_ENDPOINT);
+  }
+  // Only when the host actually has one — see the exec-blanking note above.
+  const apiKey = parentEnv.LLM_API_KEY?.trim();
+  if (apiKey) out.LLM_API_KEY = apiKey;
+  return out;
+}
+
 export function llmEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
   const args: string[] = [];
-  for (const key of ['LLM_BASE_URL', 'EMBED_BASE_URL'] as const) {
-    const value = env[key]?.trim() || DEFAULT_HOST_ENDPOINT;
-    args.push('-e', `${key}=${containerizeLoopbackUrl(value)}`);
-  }
+  // Endpoint URLs and the API key are passed by NAME ONLY (`-e LLM_BASE_URL`, no `=value`), so docker
+  // reads the value from its own environment and it never enters the argv (tkt-281272b5ef77). argv is
+  // world-readable through `ps aux`; the CLI process environment is not.
+  //
+  // Name-only rather than sanitizing the URL, because a credential can hide in userinfo OR in a query
+  // parameter, and stripping the query would break the endpoint it was authenticating. Passing the
+  // whole value out-of-band needs no guess about which part is the secret.
+  //
+  // Scope, deliberately: this closes the HOST process table. The container's own `Config.Env` still
+  // holds the value and `docker inspect` still shows it — unavoidable while the agent reads it from
+  // the environment, and gated behind docker-daemon access rather than being readable by any local user.
+  //
+  // Forwarding LLM_API_KEY at all is the other half of the fix: the agent reads it
+  // (agent/runtime/llm.ts) but nothing ever sent it to the container, so embedding the credential in
+  // the URL was the ONLY way to reach an authenticated endpoint. Stripping the URL without this would
+  // break that use case rather than secure it.
+  for (const key of Object.keys(llmContainerEnv(env))) args.push('-e', key);
   // Model ids are opaque strings — no loopback rewrite, and no invented default (unlike the endpoints
   // above). An unset host model means both host and container fall through to the SAME agent code
   // default, so forwarding nothing keeps them in agreement; emitting a guessed id would be the drift
@@ -294,6 +341,17 @@ export function buildAttachArgs(containerName: string, sessionId: string, env: N
   return ['exec', '-it', ...llmEnvArgs(env), containerName, 'dtach', '-a', dtachSocket(sessionId), '-E', '-r', 'winch'];
 }
 
+// Reattach has no SessionCommand to read the pair off, so it builds both halves from ONE host env
+// here rather than at the call site — the `-e NAME` flags and the values docker inherits cannot be
+// sourced separately (tkt-281272b5ef77).
+export function buildReattachCommand(
+  containerName: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): AttachCommand {
+  return { attachArgs: buildAttachArgs(containerName, sessionId, env), env: buildSessionEnv(env) };
+}
+
 // ── Session resolution (id → validated ticket → seeded command) ──────────────
 
 const TICKET_ID_RE = /^tkt-[0-9a-f]{12}$/;
@@ -316,9 +374,19 @@ export function buildSeedPrompt(ticket: Ticket): string {
 // trailing newline → editable, not auto-submitted). Absent for a bare (no-ticket) session.
 // roots: the confinement roots — the transport pre-installs their node_modules before the
 // interactive session (so the install never delays claude / mistimes the prefill).
-export interface SessionCommand {
+// argv and the env docker inherits are ONE value, never two parameters. The `-e NAME` flags carry no
+// values (tkt-281272b5ef77), so a call site free to supply a different env drops a custom endpoint on
+// `run` and CLEARS it on `exec` — both halves separately correct, the pair silently wrong, and no
+// unit test able to see it. Bundling them is what makes that unexpressible rather than merely untested.
+export interface RunCommand {
   runArgs: string[];    // `docker run -d …` — start the detached session container
+  env: Record<string, string>;
+}
+export interface AttachCommand {
   attachArgs: string[]; // `docker exec -it … dtach -a …` — stream a fresh pty from it
+  env: Record<string, string>;
+}
+export interface SessionCommand extends RunCommand, AttachCommand {
   socket: string;       // the dtach socket path inside the container (for the ready-probe)
   prefill?: string;
   roots: string[];
@@ -474,6 +542,7 @@ export async function resolveSessionCommand(opts: {
   return {
     runArgs,
     attachArgs: buildAttachArgs(opts.containerName, opts.sessionId, opts.env),
+    env: buildSessionEnv(opts.env ?? process.env),
     socket: dtachSocket(opts.sessionId),
     prefill: ticket ? buildSeedPrompt(ticket) : undefined,
     roots,
