@@ -163,6 +163,9 @@ describe('buildDetachedRunArgs', () => {
   it('does not mount any non-allowed host path (roots, HOME, or named node_modules volumes only)', () => {
     const args = buildDetachedRunArgs(base);
     const mounts = args.filter((_: string, i: number) => args[i - 1] === '-v');
+    // Pins the loop: with no `-v` args this asserted nothing while reporting that no disallowed host
+    // path is mounted — a security boundary vouched for by an empty loop (tkt-9c818426feb3).
+    expect(mounts.length).toBeGreaterThan(0);
     for (const mount of mounts) {
       const src = mount.split(':')[0];
       // A host path must be an allowed root or the HOME dir; node_modules sources are named

@@ -216,16 +216,65 @@ export function matcherlessExpects(body) {
 const LENGTH_PINNED = /toHaveLength|\.length\s*\)|\.size\s*\)|toBeGreaterThan|toEqual\(\s*\[/;
 
 /**
+ * The declaration of `name` nearest above the loop, if it was assigned from a computed expression.
+ *
+ * `const items = source.filter(...); for (const i of items)` is exactly as emptiable as the inline
+ * form — naming the collection first changes nothing about whether the body runs, and it is the
+ * ordinary way this code gets written (`tkt-9c818426feb3`). Scoped to text BEFORE the loop, since a
+ * later declaration cannot be its source.
+ *
+ * One level only: `const a = q(); const b = a;` is not chased. Widening that needs a cycle guard, and
+ * an unbounded chase is how a screen starts reporting on shapes nobody can read back.
+ */
+function braceDepth(text, upTo) {
+  let depth = 0;
+  for (let i = 0; i < upTo; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') depth--;
+  }
+  return depth;
+}
+
+function assignedFromComputed(name, before) {
+  if (!/^[\w$]+$/.test(name)) return false;
+  // `$` is a legal identifier character AND a regex anchor, so interpolating `$items` raw builds
+  // `\s+$items`, which can never match — a silent false negative in the one place that must not have
+  // one. The name is already restricted to [\w$], so `$` is the only metacharacter reachable here.
+  const escaped = name.replace(/\$/g, '\\$');
+  // A declaration nested DEEPER than the loop is a different binding the loop never sees. Taking the
+  // textually-last match regardless of depth let an inner `const items = compute()` inside a callback
+  // decide for an outer `const items = FIXED`, firing on correct code — and with kanban's ceiling at 0
+  // a false positive is a red gate, which is the worse failure here.
+  const loopDepth = braceDepth(before, before.length);
+  let source = null;
+  for (const match of before.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*([^;\\n]+)`, 'g'))) {
+    if (braceDepth(before, match.index) > loopDepth) continue;
+    source = match[1].trim();
+  }
+  return source !== null && isComputed(source);
+}
+
+/**
  * A collection that could be empty at runtime.
  *
  * A bare identifier is a constant or a fixture the file controls (`ISSUE_STATES`); a literal array
  * cannot be empty by accident. Anything else — a call, or a member of something (`result.candidates`)
  * — is a value that a change elsewhere can empty out. The first version required a `(`, which let
  * `for (const c of result.candidates)` through; that was this probe's own vacuous test.
+ *
+ * A leading `[` used to return false outright, which also excused two emptiable shapes: `[1, 2, 3]
+ * .filter(f)`, where a *method* empties the literal, and `[...map.keys()]`, where the brackets only
+ * wrap a computed collection. So a literal is safe only when nothing is applied to it AND it spreads
+ * nothing computed — `[...BASE, extra]` stays quiet because its spread source is a bare constant.
  */
-function isComputed(source) {
-  if (source.startsWith('[')) return false;
-  return /[.(]/.test(source);
+function isComputed(source, before = '') {
+  if (source.startsWith('[')) {
+    if (/\]\s*\./.test(source)) return true;
+    const spread = /^\[\s*\.\.\.(.+?)\s*\]$/.exec(source);
+    return spread !== null && isComputed(spread[1], before);
+  }
+  if (/[.(]/.test(source)) return true;
+  return assignedFromComputed(source, before);
 }
 
 /** Every `for (… of …)` and `.forEach(…)` in the block, with the exact span of its body. */
@@ -283,7 +332,7 @@ export function screenBlock(block) {
    */
   const loops = loopsIn(body);
   const asserting = loops.filter((loop) => hasAssertion(loop.body));
-  if (asserting.length > 0 && asserting.some((loop) => isComputed(loop.iterable))) {
+  if (asserting.length > 0 && asserting.some((loop) => isComputed(loop.iterable, body.slice(0, loop.start)))) {
     let outside = body;
     for (const loop of loops) outside = outside.replace(loop.body, ' ');
     if (!hasAssertion(outside) && !LENGTH_PINNED.test(outside)) hits.push(HITS.EMPTY_LOOP);
@@ -307,6 +356,15 @@ export const CONTROLS = {
     ['loop over a call result', "it('all match', () => { for (const v of collect(xs)) expect(v).toBe(1); });", HITS.EMPTY_LOOP],
     ['loop over a member of a result', "it('reports', () => { for (const c of result.candidates) { expect(c.ok).toBe(true); } });", HITS.EMPTY_LOOP],
     ['inner length assertion is not a pin', "it('one group', () => { for (const s of sections(x)) { expect(s.f.length).toBeGreaterThan(0); } });", HITS.EMPTY_LOOP],
+    // Both shapes were silent while the ratchet above them worked — found by a control that PASSED
+    // on a repo provably containing the defect (`tkt-9c818426feb3`).
+    ['loop over a variable assigned from a call', "it('all match', () => { const items = source.filter((n) => n > 99); for (const i of items) expect(i).toBe(1); });", HITS.EMPTY_LOOP],
+    ['loop over an array literal with a method applied', "it('all match', () => { for (const x of [1, 2, 3].filter(f)) expect(x).toBe(1); });", HITS.EMPTY_LOOP],
+    // `$` is a legal identifier char and a regex anchor; unescaped, this shape was silently missed.
+    ['loop over a $-prefixed variable', "it('all match', () => { const $items = source.filter(f); for (const i of $items) expect(i).toBe(1); });", HITS.EMPTY_LOOP],
+    // Brackets wrapping a computed collection. `[` used to be a blanket excuse, so this read as a
+    // fixed-size literal while being exactly as emptiable as the thing it spreads.
+    ['loop over a spread of a computed collection', "it('all match', () => { for (const k of [...map.keys()]) expect(k).toBe(1); });", HITS.EMPTY_LOOP],
   ],
   negative: [
     ['plain assertion', "it('adds', () => { expect(add(1, 2)).toBe(3); });"],
@@ -317,6 +375,19 @@ export const CONTROLS = {
     ['loop over a literal array', "it('both ways', () => { for (const p of [true, false]) expect(f(p)).toBe(true); });"],
     ['loop over a constant', "it('all states', () => { for (const s of ISSUE_STATES) expect(can(s)).toBe(false); });"],
     ['guarded loop', "it('all match', () => { const xs = q(); expect(xs).toHaveLength(3); for (const v of xs) expect(v).toBe(1); });"],
+    // The ONLY control that reaches LENGTH_PINNED. In `guarded loop` above, `hasAssertion(outside)`
+    // short-circuits first, so deleting `&& !LENGTH_PINNED.test(outside)` from screenBlock failed no
+    // control at all — an unwatched guard. The pin has to sit outside the loop in text that does NOT
+    // assert, which is the narrow case LENGTH_PINNED actually exists for.
+    ['length recorded outside without asserting', "it('all match', () => { const xs = q(); record(xs.length); for (const v of xs) expect(v).toBe(1); });"],
+    // The false positive the indirection fix risks: a variable holding a literal is as fixed as the
+    // literal inline, and `[1, 2, 3]` must not become computed just because it was given a name.
+    ['loop over a variable assigned from a literal', "it('both ways', () => { const flags = [true, false]; for (const p of flags) expect(f(p)).toBe(true); });"],
+    // A binding declared inside a nested callback is not the one the loop iterates. Without a depth
+    // check the inner `items` decided for the outer, firing on a loop that cannot be empty.
+    ['shadowed binding in a nested callback', "it('all match', () => { const items = FIXED; helper(() => { const items = compute(); use(items); }); for (const i of items) expect(i).toBe(1); });"],
+    // Spread of a bare constant is still fixed-size — the spread rule must not swallow this.
+    ['loop over a spread of a constant', "it('both ways', () => { for (const p of [...FLAGS]) expect(f(p)).toBe(true); });"],
     ['accumulate then assert', "it('sums', () => { let n = 0; for (const x of compute(xs)) { n += x; } expect(n).toBe(3); });"],
     ['braces inside a string', "it('quotes', () => { expect(render()).toBe('a { b } c'); });"],
     ['asserts through a helper', "it('broadcasts', async () => { await expectRefreshOnWrite(dir, 'a.md', c); });"],
