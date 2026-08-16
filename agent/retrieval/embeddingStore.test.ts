@@ -69,7 +69,7 @@ describe('EmbeddingStore', () => {
     const store = await EmbeddingStore.load(file);
     store.set(hashText('keep'), [1]);
     store.set(hashText('drop'), [2]);
-    store.prune(new Set([hashText('keep')]));
+    store.prune(new Set([hashText('keep')]), ''); // '' = the unnamespaced scope these keys live in
     expect(store.has(hashText('keep'))).toBe(true);
     expect(store.has(hashText('drop'))).toBe(false);
     expect(store.size).toBe(1);
@@ -85,7 +85,7 @@ describe('EmbeddingStore', () => {
     const store = await EmbeddingStore.load(file);
     store.set(hashText('keep'), [1]);
     store.set(hashText('drop'), [2]);
-    store.prune(new Set([hashText('keep')]));
+    store.prune(new Set([hashText('keep')]), ''); // '' = the unnamespaced scope these keys live in
     await store.persist();
 
     const reloaded = await EmbeddingStore.load(file);
@@ -108,5 +108,51 @@ describe('EmbeddingStore', () => {
     // Last writer wins on content (they hold independent maps); the invariant under test is
     // that the file is never corrupt — a torn write reloads as an EMPTY store, not a full one.
     expect(reloaded.size).toBeGreaterThan(0);
+  });
+});
+
+// tkt-aa73a535ec4a. prune used to be namespace-blind, so with the server and the CLI sharing one
+// cache file each build deleted the other's vectors and both re-embedded from cold, permanently.
+describe('EmbeddingStore.prune is scoped to one namespace', () => {
+  let dir: string;
+  let file: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'embstore-scope-'));
+    file = path.join(dir, 'embeddings.json');
+  });
+  afterEach(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const seed = async () => {
+    const store = await EmbeddingStore.load(file);
+    store.set('aaaaaaaaaaaaaaaa:keep', [1]);
+    store.set('aaaaaaaaaaaaaaaa:drop', [2]);
+    store.set('bbbbbbbbbbbbbbbb:other', [3]);
+    return store;
+  };
+
+  it('leaves another namespace\'s entries alone', async () => {
+    const store = await seed();
+    store.prune(new Set(['aaaaaaaaaaaaaaaa:keep']), 'aaaaaaaaaaaaaaaa:');
+    expect(store.has('aaaaaaaaaaaaaaaa:keep')).toBe(true);
+    expect(store.has('aaaaaaaaaaaaaaaa:drop')).toBe(false); // still pruned WITHIN the scope
+    expect(store.has('bbbbbbbbbbbbbbbb:other')).toBe(true); // not ours to delete
+  });
+
+  it('still bounds growth — scoping must not become never pruning', async () => {
+    const store = await seed();
+    store.prune(new Set(['aaaaaaaaaaaaaaaa:keep']), 'aaaaaaaaaaaaaaaa:');
+    store.prune(new Set(['bbbbbbbbbbbbbbbb:other']), 'bbbbbbbbbbbbbbbb:');
+    expect(store.size).toBe(2); // one live entry per namespace, nothing accumulated
+  });
+
+  it('the unnamespaced scope claims bare keys, including the previous key format', async () => {
+    // Pre-fix keys were a bare digest with no prefix. They can never be hit again, so leaving them
+    // unclaimed by every scope would strand them in the file forever.
+    const store = await EmbeddingStore.load(file);
+    store.set(hashText('legacy'), [1]);
+    store.set('aaaaaaaaaaaaaaaa:current', [2]);
+    store.prune(new Set(), '');
+    expect(store.has(hashText('legacy'))).toBe(false);
+    expect(store.has('aaaaaaaaaaaaaaaa:current')).toBe(true); // a namespaced key is not "bare"
   });
 });

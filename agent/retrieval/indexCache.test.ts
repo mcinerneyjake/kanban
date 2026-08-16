@@ -332,3 +332,54 @@ describe('buildCliIndex + defaultCachePath', () => {
     expect(second.size).toBe(2);
   });
 });
+
+// tkt-aa73a535ec4a. The cache key folds in the embed model + doc prefix, but `prune` kept only the
+// hashes of the build that just ran — and a key is a sha256, so the namespace is not recoverable
+// from it. Two consumers on different EMBED_MODEL therefore wiped each other every build, and both
+// re-embedded from cold forever. The shared cache file (tkt-9f09b3a1e95c) is what made it reachable.
+describe('two embed models sharing one cache file', () => {
+  const buildWith = async (model: string, embedder: Embedder, tickets: Ticket[]) => {
+    const previous = process.env.EMBED_MODEL;
+    process.env.EMBED_MODEL = model;
+    try {
+      resetIndexCache(); // a fresh process, as the server and the CLI genuinely are
+      return await getTicketIndex({ embedder, tickets });
+    } finally {
+      if (previous === undefined) delete process.env.EMBED_MODEL;
+      else process.env.EMBED_MODEL = previous;
+    }
+  };
+
+  it('does not make each build wipe the other model\'s vectors (written first, observed red)', async () => {
+    const embedder = new CountingEmbedder();
+    const tickets = [mk('t1', 'A'), mk('t2', 'B')];
+
+    await buildWith('model-one', embedder, tickets);
+    expect(embedder.embeddedTexts).toHaveLength(2); // cold: both documents
+
+    await buildWith('model-two', embedder, tickets);
+    expect(embedder.embeddedTexts).toHaveLength(4); // cold for the OTHER namespace, correctly
+
+    // The whole bug: coming back to model-one must be WARM. Before the fix, model-two's prune had
+    // deleted every model-one vector, so this re-embedded both documents a second time.
+    await buildWith('model-one', embedder, tickets);
+    expect(embedder.embeddedTexts).toHaveLength(4);
+
+    await buildWith('model-two', embedder, tickets);
+    expect(embedder.embeddedTexts).toHaveLength(4);
+  });
+
+  it('still prunes WITHIN a namespace, so a removed ticket does not linger forever', async () => {
+    // The control for the fix's own failure mode: scoping the prune must not turn into never
+    // pruning. Growth-bounding is why prune exists.
+    const embedder = new CountingEmbedder();
+    await buildWith('model-one', embedder, [mk('t1', 'A'), mk('t2', 'B')]);
+    await buildWith('model-two', embedder, [mk('t1', 'A')]);
+    await buildWith('model-one', embedder, [mk('t1', 'A')]); // B is gone from the corpus
+
+    const raw: unknown = JSON.parse(await fs.readFile(resolveCachePath(), 'utf8'));
+    const entries = Object.keys(raw && typeof raw === 'object' ? raw : {});
+    // model-one: A only (B pruned). model-two: A only. Nothing from either namespace leaked.
+    expect(entries).toHaveLength(2);
+  });
+});

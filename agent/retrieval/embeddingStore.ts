@@ -23,6 +23,15 @@ function isVectorMap(v: unknown): v is Record<string, number[]> {
 // Disambiguates two persists from the SAME process (pid alone would collide).
 let nextTmpSeq = 0;
 
+// Keys are `<nsHash>:<contentHash>` (CachingEmbedder.scope) or a bare hash when unnamespaced.
+//
+// A key from the PREVIOUS format is a bare hash too, so the unnamespaced scope claims it and prunes
+// it away. That is intended: those keys can never be hit again under the new format, and leaving
+// them unclaimed would strand them in the file forever — a scoped pruner's version of a leak.
+function inScope(key: string, scope: string): boolean {
+  return scope === '' ? !key.includes(':') : key.startsWith(scope);
+}
+
 export class EmbeddingStore {
   // Tracks unpersisted mutations so persist() can no-op when nothing changed.
   private dirty = false;
@@ -58,9 +67,19 @@ export class EmbeddingStore {
     this.dirty = true;
   }
 
-  // Drop entries not in `keep`, bounding growth to the current corpus so edited/removed content doesn't accumulate forever.
-  prune(keep: Set<string>): void {
+  // Drop entries not in `keep`, bounding growth to the current corpus so edited/removed content
+  // doesn't accumulate forever — but ONLY within `scope`, the caller's namespace prefix.
+  //
+  // Namespace-blind pruning was the bug (tkt-aa73a535ec4a): the server and the CLI share one cache
+  // file, `keep` only ever holds the hashes of the build that just ran, so a build under one
+  // EMBED_MODEL deleted every vector belonging to the other and both re-embedded from cold, forever.
+  //
+  // `scope` is REQUIRED, not optional-defaulting-to-everything: the permissive default is exactly
+  // the old behaviour, and a caller that forgot to pass one would silently reintroduce the defect.
+  // Pass '' to deliberately prune the unnamespaced keys (tests).
+  prune(keep: Set<string>, scope: string): void {
     for (const hash of this.vectors.keys()) {
+      if (!inScope(hash, scope)) continue; // another namespace's entry — not ours to delete
       if (!keep.has(hash)) {
         this.vectors.delete(hash);
         this.dirty = true;
