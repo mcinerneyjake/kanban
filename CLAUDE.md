@@ -33,7 +33,7 @@ This project has a kanban MCP server. When asked to work on a ticket:
 3. Implement the work described in the ticket's `body`. **For feature and bug tickets, first add a `## Done when` acceptance list** to the body via `update_ticket`'s `appendBody` (the non-destructive append — never a full-body `body` overwrite) — a short bullet list of observable, checkable outcomes that define the ticket's exit condition (e.g. "CSV export succeeds on an empty-rows file; no unhandled exception"). Defining it here, once the work is understood, gives an unambiguous target and a per-ticket complement to the global Definition of Done. Chores and docs-only tickets may omit it.
 4. **Test coverage** — after implementing, explicitly evaluate what layers were touched and act accordingly (see Testing section below for rules). This step is mandatory; do not skip it silently.
 5. **Quality gate** — run `npm run typecheck`, `npm run lint`, and `npm test`. All three must pass before the ticket can be marked done. (Docs-only tickets that touch no code may skip the gate; state that in the summary.)
-6. **Self-review** — for non-trivial tickets, read your own diff at the manual-review pause, and run `/verify` when runtime behavior should be confirmed. **The `/code-review` itself is gate 2 and belongs at the commit gate, not here** — see **Branch, commit & PR workflow**, which is the single place that describes it; raising it twice is how it ends up half-done in both. Address findings before continuing. The ticket **stays `in-progress`** through self-review and commit — it moves to `qa` only when the PR opens (the single `qa` trigger; see **Branch, commit & PR workflow → 3. PR**). This keeps the status flow in-step with the tracker pipeline (`… Review · Commit · PR · QA · Done`). Trivial or docs-only tickets may skip self-review and proceed to step 7.
+6. **Self-review** — for non-trivial tickets, read your own diff at the manual-review pause, and run `/verify` when runtime behavior should be confirmed. **The `/code-review` itself is the review gate and belongs at the commit gate, not here** — see **Branch, commit & PR workflow**, which is the single place that describes it; raising it twice is how it ends up half-done in both. Address findings before continuing. The ticket **stays `in-progress`** through self-review and commit — it moves to `qa` only when the PR opens (the single `qa` trigger; see **Branch, commit & PR workflow → 3. PR**). This keeps the status flow in-step with the tracker pipeline (`… Review · Commit · PR · QA · Done`). Trivial or docs-only tickets may skip self-review and proceed to step 7.
 7. Append an `## Implementation summary` to the ticket body via `update_ticket`'s `appendBody` (the non-destructive append — never a full-body `body` overwrite). Do **not** set `status: "done"` yet — that happens after the PR merges (see **Branch, commit & PR workflow → 4. Merge**).
 
 The implementation summary **must** include a test line — either:
@@ -56,7 +56,7 @@ A ticket is **Done** only when all of these hold (the gate is executable, not ad
 - [ ] `npm run lint` passes — or N/A (docs-only, no code touched)
 - [ ] `npm test` passes, with tests added per the Testing table below — or an explicit skip reason
 - [ ] Self-review completed for non-trivial tickets (status stays `in-progress`; `qa` is set at PR-open)
-- [ ] **A `/code-review` ran before the commit and its findings are addressed** — gate 2 of the four, and unenforceable like the boxes around it: `tickets/` is gitignored, so CI reads none of this list except the three commands above
+- [ ] **A `/code-review` ran before the commit and its findings are addressed** — the review gate, second of the four. Not enforced today, though it is enforceable — see **Branch, commit & PR workflow**
 - [ ] For feature/bug tickets, a `## Done when` acceptance list was defined and every item holds
 - [ ] `## Implementation summary` appended to the ticket body, including the `Tests:` and `Risk:` lines
 - [ ] Status transitioned to `done` via `update_ticket` **after PR merge**
@@ -202,22 +202,26 @@ fails the required `branch-name` check when the PR opens. Fix it immediately aft
 
 Every ticket lands on its own branch and merges to `main` via a **squash-merged PR** — never a direct push to `main`. There are **four** human-approval gates, in this order:
 
-| # | gate | crossing it requires |
+| order | gate | crossing it requires |
 |---|---|---|
-| 1 | **"Ready to commit?"** | explicit confirmation |
-| 2 | **the `/code-review`** — raised *at* gate 1, resolved *before* the commit | a review to have **run**, not merely been offered |
-| 3 | **"Ready to open PR?"** | explicit confirmation |
-| 4 | **"Ready to merge?"** | explicit confirmation |
+| 1 | **commit gate** — *"Ready to commit?"* | explicit confirmation |
+| 2 | **review gate** — the `/code-review`, raised at the commit gate and resolved *before* the commit | a review to have **run**, not merely been offered |
+| 3 | **PR gate** — *"Ready to open PR?"* | explicit confirmation |
+| 4 | **merge gate** — *"Ready to merge?"* | explicit confirmation |
 
-Never cross a gate without explicit confirmation. Gate 2 is the one that is easy to lose, because it is the only one whose absence looks like nothing having happened — so the rule is stated as a **precondition on the PR**, not as a question that may be answered "no": **do not open a PR, and never merge, until a `/code-review` has run for this ticket.** What is Jake's to decide is *when to spend the tokens*, not whether the review happens (`feedback_code_review_before_pr`; **who runs it** is mode-dependent — see the note below).
+They are referred to by **name**, not number, throughout — the numbers here are the ordering only. `### 1.`–`### 4.` below are *sections*, and the commit and review gates both live inside section **2. Commit**, so a bare "gate 2" would be ambiguous against this file's `**3. PR**`-style section references.
+
+Never cross a gate without explicit confirmation. The review gate is the one that is easy to lose, because it is the only one whose absence looks like nothing having happened — so the rule is stated as a **precondition on the PR**, not as a question that may be answered "no": **do not open a PR, and never merge, until a `/code-review` has run for this ticket.** What is Jake's to decide is *when to spend the tokens*, not whether the review happens (`feedback_code_review_before_pr`; **who runs it** is mode-dependent — see the note below).
 
 **Ask the gates with `AskUserQuestion`, not prose.** It makes each one a single tap on a phone, which is the whole point of `tkt-8b13323c2545`. Two constraints: it renders **2–4 options**, so a gate must offer a genuine alternative (*Hold — I want to look first*), never a lone OK button that only pretends to be a choice; and it changes how the question is **asked**, never whether approval is required — a typed reply is still a valid answer to any gate.
 
-> **Gate 2's ordering is deliberate and was corrected once — do not "fix" it back.** The review is resolved **before** the commit, not after it. Post-commit, a review misdirected at the wrong repo finds a plausible branch-vs-`main` diff and returns confident findings about code nobody asked about; pre-commit, the wrong repo has a clean tree, so the same mistake **finds nothing and says so**. Same defect, and only one version self-announces — the fail-open shape this repo rejects everywhere else. (`feedback_code_review_before_pr`, corrected 2026-08-12. The earlier post-commit ordering survives in `tkt-4584ee923550`'s original body and in that ticket's plan doc — both superseded, and the plan contradicts itself on this point, so it settles nothing.)
+> **The review gate's ordering is deliberate and was corrected once — do not "fix" it back.** The review is resolved **before** the commit, not after it. Post-commit, a review misdirected at the wrong repo finds a plausible branch-vs-`main` diff and returns confident findings about code nobody asked about; pre-commit, the wrong repo has a clean tree, so the same mistake **finds nothing and says so**. Same defect, and only one version self-announces — the fail-open shape this repo rejects everywhere else. (`feedback_code_review_before_pr`, corrected 2026-08-12. The earlier post-commit ordering survives in `tkt-4584ee923550`'s original body and in that ticket's plan doc — both superseded, and the plan contradicts itself on this point, so it settles nothing.)
 >
-> **Who runs it depends on the mode.** By default Jake runs it himself. The `/kanban-workflow` skill's `--gates auto-commit` and `--gates auto-pr` pre-authorize the skill to run it *and* to treat any finding it rates significant as a hard stop — the review still always happens, only the "Jake personally" part is lifted, and only for a run he launched with those flags. **Gate 4 stays human in every mode.**
+> **Who runs it depends on the mode — and the skill does not yet hold up its half.** By default Jake runs it himself. In the `/kanban-workflow` skill's `--gates auto-commit` / `--gates auto-pr`, he has pre-authorized the skill to run it, lifting only the "Jake personally" part. **But the skill does not currently implement that**: its gate table has three columns (commit / PR open / merge) with no review gate, and nothing in it invokes `/code-review`. Only the hard-stop-on-significant-finding half is present. So under `auto-pr` — `cross | cross | ask` — a run can reach an open PR with no review at all, which is the outcome this gate exists to prevent. Closing that is `tkt-abaff4ebd8b3`; until it lands, **treat the review gate as yours to cross manually in every mode.** Note also that the skill is machine-local and unversioned (`~/.claude/skills/`), the same caveat that applies to `guard-subagent-gates` and the `track-steps` writer — a fresh clone has no copy, and nothing here can detect that. **The merge gate stays human in every mode.**
 >
-> **Nothing enforces gate 2, and be precise about why** — no hook or CI check can observe that a review ran. Note that *no* gate here is enforced in the sense of "approval was obtained": `guard-bash` blocks dangerous **shapes** of the `git` commands behind gates 1 and 3 (a commit on `main`, a force-push), never the absence of a confirmation — and it does not inspect `gh` at all, so gate 4's `gh pr merge` passes it untouched. What is different about gate 2 is that it has **no command to intercept at all**, so it is the one gate a guard could not enforce even in principle. Do not report it as enforced. And there is no CI substitute: the `code-review` workflow that could once have been weak evidence is `disabled_manually` as of 2026-08-17, so gate 2 is the **only** review this repo gets (see **3. PR**).
+> **The review gate is not enforced today — but it is enforceable, and the mechanism is already installed.** Note first that *no* gate here is enforced in the sense of "approval was obtained": `guard-bash` blocks dangerous **shapes** of the `git` commands (a commit on `main`, a force-push), never the absence of a confirmation, and it does not inspect `gh` at all — so `gh pr create` and `gh pr merge` both pass it untouched, leaving only the commit gate's `git commit` and the PR gate's `git push` in its path at all.
+>
+> What makes the review gate different is *precision*, not possibility. The pinned package ships a `record_review` MCP tool (allowlisted in `.claude/settings.json`) that appends a `review` milestone to `events/<id>.jsonl`, and the `/kanban-workflow` skill already calls it — so a `PreToolUse` hook could refuse a `git push` on a ticket with no such event. The reason that is not a gate yet, and it is worse than imprecision: `review` has **two writers**, and one of them fires automatically. `hooks/track-steps.mjs:103` pushes `review: reached` on *every passing commit*, so the milestone is present on nearly every ticket whether or not a review happened — the package's own `verify/rules.js` classifies it `AMBIGUOUS` and says "its presence witnesses neither one." It also carries no sha, so it cannot say *what* was reviewed. **Gating on the event as it stands would be a rubber stamp**, which is why the fix is to bind to content (`tkt-55080f378279`) rather than to wire a hook against today's record. Binding the gate to content is `tkt-55080f378279`. **Until then, do not report the review gate as enforced — and do not report it as unenforceable either.** There is also no CI substitute: the `code-review` workflow is `disabled_manually` as of 2026-08-17, so the review gate is the only *automated-tooling* review this repo gets, alongside the human diff-read in step 6 (see **3. PR**).
 
 > **Enforced locally:** a PreToolUse hook (`.claude/hooks/guard-bash.mjs`, wired in `.claude/settings.json`) blocks `git add -A`/`--all`/`.`, commits on `main`, and pushes to `main` before they run — these rules are no longer honor-system. (GitHub branch protection backstops the same at merge time — see the end of this section.)
 >
@@ -232,7 +236,7 @@ The workflow commands run **prompt-free**: `.claude/settings.json` allowlists th
 - **`delete_ticket` and destructive shapes stay excluded** — they still prompt.
 - **`create_ticket` is allowlisted but blocked at runtime by the `guard-ticket` hook** — ticket authoring is delegated to the local agent (see **Ticket creation flow**), parallel to the broad git rules being `guard-bash`-backed. The allow entry only avoids a re-prompt if that policy is ever relaxed; the hook is the real gate.
 
-**A subagent cannot cross the three *command* gates at all** — 1, 3 and 4; gate 2 has no command to block, so nothing stops a subagent skipping it (`tkt-8e291b058706`, ticket-workflow v0.16.0). A
+**A subagent cannot cross the three *command* gates at all** — commit, PR and merge; the review gate has no command to block, so nothing stops a subagent skipping it (`tkt-8e291b058706`, ticket-workflow v0.16.0). A
 user-scope `PreToolUse(Bash)` guard, `guard-subagent-gates`, blocks `git commit`, `git push`,
 `gh pr create` and `gh pr merge` when the call comes from a **subagent** — keyed on the payload's
 `agent_id`, which is present only inside one. It was paid for by a `/code-review` subagent that
@@ -266,7 +270,7 @@ Example: `chore/tkt-4f7ccb2cd6bc-adopt-branch-per-ticket`.
 
 ### 2. Commit (once implementation is complete)
 
-Ask **"Ready to commit?"** (gate 1) — do not commit until confirmed. **This is also where gate 2 is raised:** offer the `/code-review`, wait for it to run, and address its findings *before* committing. It costs tokens, so the spend is Jake's call — but "not now" defers the commit, it does not skip the review, because the PR cannot open without one. **Always name the target repo in the args** — a bare `/code-review` reviews the session's cwd, which from a kanban-rooted session has silently reviewed the wrong branch. Then:
+Ask **"Ready to commit?"** (the commit gate) — do not commit until confirmed. **This is also where the review gate is raised:** offer the `/code-review`, wait for it to run, and address its findings *before* committing. It costs tokens, so the spend is Jake's call — but "not now" defers the commit, it does not skip the review, because the PR cannot open without one. **Always name the target repo in the args** — a bare `/code-review` reviews the session's cwd, which from a kanban-rooted session has silently reviewed the wrong branch. Then:
 
 1. `git add` only the files changed for this ticket (never `git add -A` — the `guard-bash` hook blocks it).
 2. `git commit` with a message in this shape, passed via heredoc to avoid shell-escaping issues:
@@ -286,9 +290,9 @@ Commit as many times as the work needs — the squash-merge collapses the branch
 
 ### 3. PR (after committing)
 
-**Confirm gate 2 was crossed before asking**: a `/code-review` has run for this ticket and its findings are addressed. If none has, go back to gate 2 — that is the failure this ordering exists to prevent, and nothing downstream will catch it.
+**Confirm the review gate was crossed before asking**: a `/code-review` has run for this ticket and its findings are addressed. If none has, go back to the review gate — that is the failure this ordering exists to prevent, and nothing downstream will catch it.
 
-Ask **"Ready to open PR?"** (gate 3) — then push the branch and open it:
+Ask **"Ready to open PR?"** (the PR gate) — then push the branch and open it:
 
 ```bash
 git push -u origin <prefix>/<id>-<slug>
@@ -310,13 +314,15 @@ It is parked because `ANTHROPIC_API_KEY` is still unset. The **fail-open half is
 
 **The workflow is now `disabled_manually` (since 2026-08-17T14:35Z), so `review` does not appear on a PR at all** — measured on #289, which ran exactly two workflows. It was disabled ~8 minutes after three consecutive red `review` checks, which is the friction the paragraph below predicted; the prediction was right and the resolution was to switch the job off rather than live with it. **Read the absence correctly: no `review` check means nothing reviewed, which is not the same as nothing to report.** A disabled workflow contributes **no** check rather than a failing one, so `gh pr checks` exits 0 and the PR reads all-green — confirm with `gh workflow list --all`, never by inferring from the checks list. Whether it is re-enabled or retired is `tkt-16b6e37a1cbb`.
 
-What follows described the state *before* that, and is what returns if the workflow is re-enabled with the key still unset: **`review` is RED on every ordinary PR until the secret is set.** That was the intended state, not a regression — it blocks nothing, because the active ruleset requires only `gate` + `branch-name`. **Dependabot and fork PRs SKIP the job instead**, because Actions secrets are structurally unavailable to them, so failing there would be ~5 red checks a week carrying no signal; a skipped check reads as absent rather than as passing. Re-enabling `18084578` still needs the secret first (`tkt-f9782ff3fdf5`); requiring a check that always fails would be its own trap. `e2e` likewise reports on the PR but does not block merge.
+**Still true today, and not superseded by the disable:** re-enabling ruleset `18084578` needs the secret **first** (`tkt-f9782ff3fdf5`) — requiring a check that always fails would be its own trap — and `e2e` reports on the PR but does not block merge (it is `active`, with a `paths:` filter).
 
-When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. **The `code-review` CI job no longer runs — the workflow is `disabled_manually` (see above), so expect no `review` check on the PR.** While it was enabled it posted findings as a PR comment, but only with `ANTHROPIC_API_KEY` configured; without the key it went **red** rather than green (`tkt-5f28061cb3bf`), so a red `review` meant "no key", not "findings", and a *green* one was real evidence a review ran. None of that is available today, which is why gate 2 — a `/code-review` before the commit — is the only review this repo actually gets.
+**What the disable did supersede** is the behaviour of the `review` check itself; this is what returns if the workflow is switched back on with the key still unset. **`review` was RED on every ordinary PR until the secret was set.** That was the intended state, not a regression — it blocked nothing, because the active ruleset requires only `gate` + `branch-name`. **Dependabot and fork PRs SKIPPED the job instead**, because Actions secrets are structurally unavailable to them, so failing there would have been ~5 red checks a week carrying no signal; a skipped check reads as absent rather than as passing.
 
-### 4. Merge (after CI is green — `review` excepted while the key is unset)
+When the PR opens, call `update_ticket` to set `status: "qa"` — **this is the single point where a ticket enters `qa`** (self-review no longer sets it; the ticket was `in-progress` through commit). It stays in `qa` until the merge step. **The `code-review` CI job no longer runs — the workflow is `disabled_manually` (see above), so expect no `review` check on the PR.** While it was enabled it posted findings as a PR comment, but only with `ANTHROPIC_API_KEY` configured; without the key it went **red** rather than green (`tkt-5f28061cb3bf`), so a red `review` meant "no key", not "findings", and a *green* one was real evidence a review ran. None of that is available today, which is why the review gate — a `/code-review` before the commit — is the only *automated-tooling* review this repo gets.
 
-Check for a code review comment on the PR from the `code-review` CI job. **Expect none today** — the workflow is disabled (see **3. PR**) — and note it was never gate 2 regardless: it runs after the PR is open, too late to gate it. When it was live:
+### 4. Merge (after CI is green — `review` does not run at all; workflow disabled)
+
+Check for a code review comment on the PR from the `code-review` CI job. **Expect none today** — the workflow is disabled (see **3. PR**) — and note it was never the review gate regardless: it runs after the PR is open, too late to gate it. When it was live:
 
 ```bash
 gh pr view <number> --comments
@@ -328,7 +334,7 @@ If there are significant findings, present them to the user and ask: **"Fix thes
 
 If the review found no significant issues, proceed directly. **If `review` is red with no comment, read the job log before treating it as the no-key case** — "red because unconfigured" and "red because the API call failed" look identical from the checks list, and only one of them is fine to merge past. That applies only if the workflow is re-enabled; while it is disabled there is no `review` check to read either way.
 
-Ask **"Ready to merge?"** (gate 4) — never merge without explicit approval, in any mode. Then:
+Ask **"Ready to merge?"** (the merge gate) — never merge without explicit approval, in any mode. Then:
 
 ```bash
 gh pr merge --squash --delete-branch
