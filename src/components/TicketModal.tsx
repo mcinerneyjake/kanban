@@ -17,6 +17,7 @@ import { formatIso } from '../lib/formatDate.js';
 import { formatCalendarDate } from '../lib/completedDate.js';
 import Spinner from './ui/Spinner.js';
 import Modal from './ui/Modal.jsx';
+import { draftFailureOf, type DraftFailure } from '../lib/draftFailure.js';
 
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
@@ -68,7 +69,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
 
   // Create mode: probe the model on open; fall back to the manual form when it's down.
   const [note, setNote] = useState('');
-  const [draftPhase, setDraftPhase] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [draftPhase, setDraftPhase] = useState<'idle' | 'loading' | DraftFailure>('idle');
   const [drafted, setDrafted] = useState(false);
   const [noProposal, setNoProposal] = useState(false);
   const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill; runId: string } | null>(null);
@@ -111,8 +112,10 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
         setDraftRunId(result.runId);
       }
       setDraftPhase('idle');
-    } catch {
-      setDraftPhase('error');
+    } catch (err) {
+      // The real message stays server-side (it can carry internals); the UI only needs to know whether
+      // this was the model being unreachable or something else going wrong (tkt-a449b3ae0339).
+      setDraftPhase(draftFailureOf(err));
     }
   };
 
@@ -220,9 +223,11 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                 onChange={(e) => setNote(e.target.value)}
                 autoFocus
               />
-              {draftPhase === 'error' && (
+              {(draftPhase === 'model-down' || draftPhase === 'fault') && (
                 <p className="draft-error">
-                  Couldn't draft a ticket — is the model running?{' '}
+                  {draftPhase === 'model-down'
+                    ? "Couldn't draft a ticket — is the model running?"
+                    : "Couldn't draft a ticket — the drafting agent hit an error. The details are in the server log."}{' '}
                   <button type="button" className="link" onClick={() => setModelStatus('down')}>Enter manually</button>
                 </p>
               )}

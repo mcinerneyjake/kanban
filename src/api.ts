@@ -3,11 +3,21 @@ import type { Ticket, BoardTicket, DashboardSummary, EconomicsSummary, Economics
 // that could drift from the wire format (tkt-6cd916608a2f).
 import type { BoardListing } from 'ticket-workflow';
 
+// Carries the HTTP status, which callers need to tell apart failures the server deliberately
+// distinguishes. Dropping it made every intake failure indistinguishable in the UI, so a 500 from an
+// in-agent bug rendered as "is the model running?" (tkt-a449b3ae0339).
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 // Network-level fetch rejections (offline/DNS) propagate as TypeError, not here.
 async function throwIfError(res: Response): Promise<void> {
   if (res.ok) return;
   const body = await res.json().catch(() => ({}));
-  throw new Error(body.error || `Request failed (${res.status})`);
+  throw new ApiError(body.error || `Request failed (${res.status})`, res.status);
 }
 
 const json = async <T>(res: Response): Promise<T> => {

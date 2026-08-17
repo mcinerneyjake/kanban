@@ -1,5 +1,9 @@
 import { type ChatTool } from './tools.js';
 import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
+import { RuntimeUnavailableError } from './unavailable.js';
+
+// Gateway-class statuses: the request never reached a working model.
+const UNAVAILABLE_STATUS = new Set([502, 503, 504]);
 
 // Chat client for the agent loop — OpenAI-compatible /v1/chat/completions via fetch, no SDK. The provider seam (local vs cloud) is config-driven; a cloud driver would be a separate ChatClient (tkt-29788d084c21).
 
@@ -175,7 +179,14 @@ export class RuntimeChatClient implements ChatClient {
     const res = await this.fetchCompletion(messages, tools);
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 500);
-      if (looksUnloaded(body)) throw new Error(this.unloadedMessage());
+      // Runtime up, model absent — still "the runtime cannot serve this", and the message names the fix.
+      if (looksUnloaded(body)) throw new RuntimeUnavailableError(this.unloadedMessage());
+      // A gateway-class status is the runtime (or a proxy in front of it) declining to serve — the
+      // other direction of the same misreport (tkt-a449b3ae0339). 4xx and a bare 500 stay faults, so
+      // their body reaches the server log instead of being answered with "is the model running?".
+      if (UNAVAILABLE_STATUS.has(res.status)) {
+        throw new RuntimeUnavailableError(`Chat request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
+      }
       throw new Error(`Chat request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
     }
     const json: unknown = await res.json();
@@ -273,7 +284,7 @@ export class RuntimeChatClient implements ChatClient {
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'TimeoutError') {
-        throw new Error(`Chat request timed out after ${CHAT_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`, { cause: err });
+        throw new RuntimeUnavailableError(`Chat request timed out after ${CHAT_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`, { cause: err });
       }
       throw err;
     }

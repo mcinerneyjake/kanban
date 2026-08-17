@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { getTicketIndex, embedUsage } from '../../agent/retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from '../../agent/runtime/llm.js';
 import { proposeIntake } from '../../agent/runtime/propose.js';
+import { isRuntimeUnavailable } from '../../agent/runtime/unavailable.js';
 import { RUN_PREFIX_TEXT } from '../../agent/runtime/loop.js';
 import { type RunRecord } from '../../agent/cost/runLog.js';
 import { meterRun } from '../../agent/cost/meterRun.js';
@@ -13,12 +14,18 @@ import { BoundedMap } from '../lib/boundedMap.js';
 import type { Ticket, Provenance } from '../../shared/constants.js';
 import type { IntakeSearchRequest, IntakeProposeRequest, IntakeApplyRequest } from '../schemas/intake.js';
 
-// Translate a local-runtime failure → 503 in one place (the agent layer is
-// HTTP-agnostic). A real bug inside the agent still surfaces its own message.
+// Translate a local-runtime failure → 503 in one place (the agent layer is HTTP-agnostic).
+//
+// ONLY a positively-identified unreachable runtime becomes a 503. Everything else is rethrown
+// untouched so asyncWrap's funnel gives it a 500, console.errors the real error server-side, and puts
+// a generic message on the wire. Before tkt-a449b3ae0339 this caught everything, so an in-agent bug
+// arrived at the UI as "is the model running?" — the user was told to enter the ticket manually and the
+// fault was never reported anywhere.
 async function requireRuntime<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
+    if (!isRuntimeUnavailable(err)) throw err;
     throw new HttpError(503, `Intake unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

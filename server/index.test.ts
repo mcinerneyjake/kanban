@@ -600,6 +600,14 @@ describe('scheduleWeeklyArchive — timer callback fires', () => {
   });
 });
 
+// A REAL unreachable runtime, not a plain Error whose message merely mentions the code: undici rejects
+// with a TypeError whose `cause` carries `code` (verified against node's fetch). The old fixtures used a
+// bare `new Error('connect ECONNREFUSED')`, which is indistinguishable from an in-agent bug — which is
+// why they passed while the controller was answering 503 for everything (tkt-a449b3ae0339).
+function connectionRefused(): TypeError {
+  return new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1234'), { code: 'ECONNREFUSED' }) });
+}
+
 // --- intake search route (embedder stubbed via global fetch) ---
 
 function isEmbedReq(v: unknown): v is { input: string[] } {
@@ -638,7 +646,7 @@ describe('POST /api/intake/search', () => {
 
   it('503 when the embeddings runtime is unreachable', async () => {
     await seedTicket('tkt-aaa', 'Fix login bug');
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(connectionRefused())));
     const res = await request(app).post('/api/intake/search').send({ query: 'x' });
     expect(res.status).toBe(503);
   });
@@ -788,7 +796,7 @@ describe('POST /api/intake/propose', () => {
 
   it('503 when the runtime is unreachable', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(connectionRefused())));
     const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
   });
@@ -798,14 +806,48 @@ describe('POST /api/intake/propose', () => {
     expect(res.status).toBe(400);
   });
 
-  it('503 when the chat model fails even though the embedder is up', async () => {
+  // Chat-only failures, with the embedder up. These two are the whole point of tkt-a449b3ae0339: the
+  // status now depends on whether the failure is EVIDENCE about reachability, not on where it happened.
+  const chatFails = (rejection: unknown) => {
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/embeddings')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(rejection); // /chat/completions fails
+    }));
+  };
+
+  it('503 when the chat endpoint is genuinely unreachable even though the embedder is up', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    chatFails(connectionRefused());
+    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(503);
+  });
+
+  // This case ASSERTED 503 before the fix, and that assertion was the defect: an opaque error carries no
+  // evidence the runtime is down, so answering 503 told the user to enter the ticket manually and lost
+  // the fault. It is now a 500 whose detail goes to the server log and never onto the wire.
+  it('500, not 503, when the chat call fails opaquely — and the detail stays server-side', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
+    chatFails(new Error('tool loop blew up: cannot read properties of undefined'));
+    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Internal server error');
+    expect(res.body.error).not.toContain('tool loop'); // no internals on the wire
+    expect(errSpy).toHaveBeenCalled();                 // but it IS reported somewhere
+    errSpy.mockRestore();
+  });
+
+  it('503 when the runtime answers with a gateway status', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/embeddings')) {
         return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
       }
-      return Promise.reject(new Error('chat down')); // /chat/completions fails
+      return Promise.resolve(new Response('upstream gone', { status: 502 }));
     }));
     const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
