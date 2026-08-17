@@ -203,7 +203,16 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
   const showForm = ticket !== null || modelStatus === 'down' || drafted;
 
   return (
-    <Modal onClose={onClose} className={showForm ? undefined : 'modal--draft'} label={ticket ? 'Edit ticket' : 'New ticket'}>
+    <Modal
+      onClose={onClose}
+      className={showForm ? undefined : 'modal--draft'}
+      label={ticket ? 'Edit ticket' : 'New ticket'}
+      // After in-modal navigation this modal was REMOUNTED, so the trigger it captured is a link that
+      // died with the previous instance. The card for the ticket actually on screen is both reachable and
+      // the better destination — it is where the user just was (tkt-75ac08441da5). Queried at close time,
+      // since the board re-renders while the modal is open.
+      restoreFocusTo={() => (ticket ? document.querySelector<HTMLElement>(`[data-ticket-id="${ticket.id}"]`) : null)}
+    >
       <form onSubmit={submit}>
           {showChecking && (
             <div className="draft-checking">

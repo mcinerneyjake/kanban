@@ -111,6 +111,9 @@ function Card({ ticket, now, onOpen, columnId, depth = 0, childCount = 0, active
   return (
     <div
       className={`card prio-${ticket.priority}${depth > 0 ? ' card--child' : ''}${dropClass}`}
+      // Addressable so a closing modal can return focus to THIS ticket's card, which after in-modal
+      // navigation is no longer the card that opened it (tkt-75ac08441da5).
+      data-ticket-id={ticket.id}
       role="button"
       tabIndex={0}
       // No aria-label: accessible name derives from card contents so badges stay announced.

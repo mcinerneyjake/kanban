@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { restoreFocus } from '../../lib/focusRestore.js';
 
 // A11y contract: role=dialog + aria-modal, Tab focus-trap, focus-restore on close (tkt-3d41293158f8).
 // Escape ignores an open native <select> so its own Escape doesn't tear down the modal (losing unsaved edits).
@@ -21,9 +22,16 @@ type Props = {
   className?: string;
   children: ReactNode;
   label?: string;
+  /**
+   * Where focus goes when the captured trigger is gone. Needed because a modal keyed by content id
+   * REMOUNTS on in-modal navigation, so the new instance captures the link that unmounted with the old
+   * one — and focus() on a detached node no-ops straight to <body> (tkt-75ac08441da5). Resolved at close
+   * time, not at mount, so it cannot itself be stale.
+   */
+  restoreFocusTo?: () => HTMLElement | null;
 };
 
-export default function Modal({ onClose, className, children, label }: Props) {
+export default function Modal({ onClose, className, children, label, restoreFocusTo }: Props) {
   // Read onClose via a ref so the mount-only keydown effect never re-binds (which would reorder the stack).
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
@@ -33,6 +41,11 @@ export default function Modal({ onClose, className, children, label }: Props) {
   const [restoreEl] = useState<Element | null>(() =>
     typeof document !== 'undefined' ? document.activeElement : null,
   );
+  // Read through a ref for the same reason as onClose: the restore runs in the mount-only effect's
+  // cleanup, and listing the prop as a dep would re-bind that effect and reorder the modal stack.
+  const restoreToRef = useRef(restoreFocusTo);
+  useEffect(() => { restoreToRef.current = restoreFocusTo; }, [restoreFocusTo]);
+
   // Only close when the press STARTED on the backdrop: click fires on the mousedown/up common ancestor, so a text-drag released outside would else close the modal and lose edits.
   const pressedBackdrop = useRef(false);
 
@@ -76,8 +89,7 @@ export default function Modal({ onClose, className, children, label }: Props) {
       document.removeEventListener('keydown', onKey);
       const i = modalStack.indexOf(id);
       if (i !== -1) modalStack.splice(i, 1);
-      // Restore focus to the trigger; a detached node's focus() no-ops.
-      if (restoreEl instanceof HTMLElement) restoreEl.focus();
+      restoreFocus(restoreEl instanceof HTMLElement ? restoreEl : null, restoreToRef.current);
     };
   }, [restoreEl]);
 
