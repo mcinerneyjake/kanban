@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isAllowedOrigin, isAllowedTerminalHost, isValidToken, buildSessionEnv, allowedRootsFor,
+  isAllowedOrigin, isAllowedHost, isValidToken, buildSessionEnv, allowedRootsFor,
   buildDetachedRunArgs, buildAttachArgs, buildReattachCommand, dtachSocket, filterAdoptable, resolveSessionCommand,
   isHostGatewayRejection, withoutHostGateway,
   authorizeUpgrade, authorizeReattach, parseClientFrame, parseTicketParam, parseSessionParam,
@@ -60,31 +60,51 @@ describe('isAllowedOrigin', () => {
   });
 });
 
-describe('isAllowedTerminalHost', () => {
+describe('isAllowedHost', () => {
   it('allows loopback hosts on any port', () => {
-    expect(isAllowedTerminalHost('localhost:5173')).toBe(true);
-    expect(isAllowedTerminalHost('127.0.0.1:3001')).toBe(true);
-    expect(isAllowedTerminalHost('localhost')).toBe(true);
-    expect(isAllowedTerminalHost('[::1]:3001')).toBe(true);
+    expect(isAllowedHost('localhost:5173')).toBe(true);
+    expect(isAllowedHost('127.0.0.1:3001')).toBe(true);
+    expect(isAllowedHost('localhost')).toBe(true);
+    expect(isAllowedHost('[::1]:3001')).toBe(true);
     // KANBAN_PORT_OFFSET moves both dev ports; a port-pinned allowlist would reject a real worktree.
-    expect(isAllowedTerminalHost('localhost:5223')).toBe(true);
-    expect(isAllowedTerminalHost('127.0.0.1:3051')).toBe(true);
+    expect(isAllowedHost('localhost:5223')).toBe(true);
+    expect(isAllowedHost('127.0.0.1:3051')).toBe(true);
   });
 
   it('rejects the rebound-DNS host, which is the whole point', () => {
-    expect(isAllowedTerminalHost('evil.com')).toBe(false);
-    expect(isAllowedTerminalHost('evil.com:3001')).toBe(false);
+    expect(isAllowedHost('evil.com')).toBe(false);
+    expect(isAllowedHost('evil.com:3001')).toBe(false);
     // Rebinding needs a NAME; a name that merely contains "localhost" must not pass.
-    expect(isAllowedTerminalHost('localhost.evil.com')).toBe(false);
-    expect(isAllowedTerminalHost('notlocalhost')).toBe(false);
+    expect(isAllowedHost('localhost.evil.com')).toBe(false);
+    expect(isAllowedHost('notlocalhost')).toBe(false);
+  });
+
+  // The two names `isLoopbackHost` accepts that must not pass as a DIALED name: one is a route to
+  // loopback rather than a name for it, the other is a name whose loopback-ness depends on a resolver
+  // nobody here controls. Both stay loopback for the URL that predicate containerizes, so this is the
+  // gate's own decision and the only place it can be asserted (tkt-fc40f49495c1).
+  it('rejects 0.0.0.0 even though isLoopbackHost accepts it for a URL', () => {
+    expect(isAllowedHost('0.0.0.0')).toBe(false);
+    expect(isAllowedHost('0.0.0.0:3001')).toBe(false);
+    expect(containerizeLoopbackUrl('http://0.0.0.0:1234/v1')).toBe('http://host.docker.internal:1234/v1');
+  });
+
+  it('rejects *.localhost, which a resolver that ignores RFC 6761 lets an attacker publish', () => {
+    expect(isAllowedHost('attacker.localhost')).toBe(false);
+    expect(isAllowedHost('attacker.localhost:3001')).toBe(false);
+    expect(isAllowedHost('évil.localhost')).toBe(false); // punycoded by URL to xn--vil-9la.localhost
+    expect(isAllowedHost('.localhost')).toBe(false);
+    // Bare `localhost` is what everything real dials, so the suffix rule must not swallow it.
+    expect(isAllowedHost('localhost')).toBe(true);
+    expect(containerizeLoopbackUrl('http://lm.localhost:1234/v1')).toBe('http://host.docker.internal:1234/v1');
   });
 
   it('rejects credential and absent-header tricks', () => {
     // URL parses these to hostname evil.com — the loopback part is userinfo, not the host dialed.
-    expect(isAllowedTerminalHost('localhost@evil.com')).toBe(false);
-    expect(isAllowedTerminalHost('127.0.0.1@evil.com')).toBe(false);
-    expect(isAllowedTerminalHost(undefined)).toBe(false);
-    expect(isAllowedTerminalHost('')).toBe(false);
+    expect(isAllowedHost('localhost@evil.com')).toBe(false);
+    expect(isAllowedHost('127.0.0.1@evil.com')).toBe(false);
+    expect(isAllowedHost(undefined)).toBe(false);
+    expect(isAllowedHost('')).toBe(false);
   });
 });
 

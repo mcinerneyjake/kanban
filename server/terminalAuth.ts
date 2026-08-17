@@ -19,17 +19,32 @@ export function isAllowedOrigin(origin: string | undefined, env: NodeJS.ProcessE
   return ['localhost', '127.0.0.1'].some((host) => ports.some((port) => origin === `http://${host}:${port}`));
 }
 
-// Host gate for GET /api/terminal/token (tkt-b6eb52013662). Origin can't do this job: browsers omit
-// it on same-origin GETs, so the real page and a DNS-rebound one look identical. Host still carries
-// the name the browser dialed — `evil.com` for a rebound page, never loopback. Matched on hostname
-// only, deliberately port-blind: the Vite proxy may forward either its own or the API's Host, and
-// KANBAN_PORT_OFFSET moves both, so pinning ports would break real setups without adding security
-// (a port is not an authenticator). Parsing through URL normalizes ports, brackets and `user@host`
-// tricks — a bare `localhost@evil.com` resolves to hostname evil.com and is rejected.
-export function isAllowedTerminalHost(host: string | undefined): boolean {
+// Host gate for the whole API (tkt-fc40f49495c1; started life on GET /api/terminal/token,
+// tkt-b6eb52013662). Origin can't do this job: browsers omit it on same-origin GETs, and a
+// DNS-rebound page IS same-origin — which is also why the loopback bind does not help, the browser
+// being on loopback itself. Host still carries the name the browser dialed — `evil.com` for a rebound
+// page, never loopback. Matched on hostname only, deliberately port-blind: the Vite proxy may forward
+// either its own or the API's Host, and KANBAN_PORT_OFFSET moves both, so pinning ports would break
+// real setups without adding security (a port is not an authenticator). Parsing through URL
+// normalizes ports, brackets and `user@host` tricks — a bare `localhost@evil.com` resolves to
+// hostname evil.com and is rejected.
+export function isAllowedHost(host: string | undefined): boolean {
   if (host === undefined) return false;
   try {
-    return isLoopbackHost(new URL(`http://${host}`).hostname);
+    const { hostname } = new URL(`http://${host}`);
+    // Two names `isLoopbackHost` accepts that must not pass as a DIALED name. That predicate answers
+    // "does this URL point at this machine", which is the right question for `containerizeLoopbackUrl`
+    // and the wrong one here — this gate asks what the browser typed, and only some of the loopback
+    // space is ever typed.
+    //
+    // `0.0.0.0` reaches loopback services in browsers that never took the 2024 fix, without any name
+    // needing to resolve — a way in that rebinding doesn't even require.
+    if (hostname === '0.0.0.0') return false;
+    // `*.localhost` is loopback only if the resolver honours RFC 6761. Where it doesn't — Safari, or
+    // any attacker-influenced resolver — `x.localhost` is a name the attacker can publish, serve a
+    // page from, and then rebind to 127.0.0.1: the one class of name this gate exists to refuse.
+    if (hostname.endsWith('.localhost')) return false;
+    return isLoopbackHost(hostname);
   } catch {
     return false; // unparseable Host is not a loopback Host
   }
