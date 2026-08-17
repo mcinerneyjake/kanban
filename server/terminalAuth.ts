@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Ticket } from '../shared/constants.js';
 import { apiPort, webPort } from '../shared/ports.js';
+import { MAX_INPUT_CHARS } from '../shared/terminalProtocol.js';
 
 // Pure core for the embedded terminal (tkt-be809dd2b7fb): WS-upgrade guards, the
 // curated session env, filesystem-confinement roots, and the `docker run` argv.
@@ -484,7 +485,7 @@ const MAX_DIM = 1000;
 
 // Largest input payload we'll write to a pty in one frame. Sits well above the client's paste cap,
 // so it only fires for a client that skipped that guard — the client cap is UX, this is the boundary.
-export const MAX_INPUT_CHARS = 200_000;
+export { MAX_INPUT_CHARS };
 
 // Keystroke input ({t:'i',d}) or a resize ({t:'r',cols,rows}); anything else is dropped.
 // Resize dims are clamped to positive integers ≤ MAX_DIM: node-pty's resize THROWS on 0/
