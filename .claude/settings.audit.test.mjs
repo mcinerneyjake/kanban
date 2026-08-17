@@ -239,6 +239,25 @@ describe('.claude/settings.json permission allowlist', () => {
     expect(fire('mcp__kanban__get_ticket').status, 'an unrelated tool must be allowed').toBe(0);
   });
 
+  // CLAUDE.md asserts TWICE that guard-bash does not inspect `gh` at all, and derives a real
+  // conclusion from it (the merge gate has no runtime backstop). It was a hand-run grep, so it went
+  // stale the moment upstream chose to add one. Generated, not transcribed (tkt-4de2f4a839b7).
+  it('pins CLAUDE.md\'s claim that guard-bash does not inspect `gh`', () => {
+    const packaged = join(dirname(createRequire(import.meta.url).resolve('ticket-workflow')), '..', 'hooks', 'guard-bash.mjs');
+    const src = readFileSync(packaged, 'utf8');
+    const GH_TOKEN = /\bgh\b/g;
+    // The control first: a bare /\bgh\b/ silently fails to match inside "through"/"right", so a typo'd
+    // pattern would report a clean zero forever. Prove it fires on the shape being ruled out.
+    expect('gh pr merge 40 --squash'.match(GH_TOKEN), 'the detector cannot see a gh command').toHaveLength(1);
+    expect('a through-and-through rightful thought'.match(GH_TOKEN), 'the detector matches inside words').toBeNull();
+
+    expect(
+      src.match(GH_TOKEN),
+      'the pinned guard-bash now references `gh` — CLAUDE.md says twice that it does not, and concludes ' +
+        'from that the merge gate has no runtime backstop. Re-measure and fix both sentences.',
+    ).toBeNull();
+  });
+
   // `gh pr merge` lands a commit on main SERVER-SIDE with no `git push`, so guard-bash's pushesMain
   // rule is never consulted and the merge sails past it — watched on the previously pinned build:
   // exit 0 (tkt-e508ad42a68a). v0.16.0's guard-subagent-gates closes the half that has no human at the
