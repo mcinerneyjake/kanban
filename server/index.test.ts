@@ -17,6 +17,17 @@ import { isTicketEventsResponse } from '../src/lib/terminalRelay.js';
 
 const dirs = setupTempTicketDirs('kanban-index-test');
 
+// ONE listening server for this whole file, rather than supertest's default of a fresh app.listen(0)
+// PER REQUEST — ~100 of them here (tkt-8167cd23c651). That churn is the leading explanation for a
+// long-standing flake: under heavy full-suite concurrency a request to /api/tickets intermittently came
+// back 404, and once **401** — a status this codebase cannot emit anywhere (grepped; the app mounts no
+// auth middleware and constructs no 401), which is the fingerprint of a request answered by something
+// that is not this app. Reusing one bound port removes the per-request socket/fd churn entirely.
+const server = app.listen(0);
+afterAll(() => new Promise<void>((resolve, reject) => {
+  server.close((err) => (err ? reject(err) : resolve()));
+}));
+
 async function seedTicket(id: string, title = 'Test ticket', body = '') {
   const content = [
     '---',
@@ -36,7 +47,7 @@ async function seedTicket(id: string, title = 'Test ticket', body = '') {
 
 describe('GET /api/tickets', () => {
   it('returns an empty board when no tickets exist', async () => {
-    const res = await request(app).get('/api/tickets');
+    const res = await request(server).get('/api/tickets');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ tickets: [], unreadable: [], eventsSkipped: 0, eventsUnreadable: 0 });
   });
@@ -58,7 +69,7 @@ describe('GET /api/tickets', () => {
         'not json',
         JSON.stringify({ ticketId: 'tkt-damaged01', step: 'done', state: 'reached', at: '2026-07-01T00:00:00.000Z' }),
       ]);
-      const res = await request(app).get('/api/tickets');
+      const res = await request(server).get('/api/tickets');
       expect(res.status).toBe(200);
       expect(res.body.eventsSkipped).toBe(1);
       expect(Array.isArray(res.body.tickets)).toBe(true); // not nested one level deeper
@@ -69,7 +80,7 @@ describe('GET /api/tickets', () => {
       await seedDone('tkt-clean0001', [
         JSON.stringify({ ticketId: 'tkt-clean0001', step: 'done', state: 'reached', at: '2026-07-01T00:00:00.000Z' }),
       ]);
-      const res = await request(app).get('/api/tickets');
+      const res = await request(server).get('/api/tickets');
       expect(res.body.eventsSkipped).toBe(0);
     });
   });
@@ -77,7 +88,7 @@ describe('GET /api/tickets', () => {
   it('returns all tickets', async () => {
     await seedTicket('abc123456789', 'First');
     await seedTicket('def123456789', 'Second');
-    const res = await request(app).get('/api/tickets');
+    const res = await request(server).get('/api/tickets');
     expect(res.status).toBe(200);
     expect(res.body.tickets).toHaveLength(2);
     expect(res.body.unreadable).toEqual([]);
@@ -95,7 +106,7 @@ describe('GET /api/tickets', () => {
       await seedTicket('abc123456789', 'Good');
       await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
 
-      const res = await request(app).get('/api/tickets');
+      const res = await request(server).get('/api/tickets');
 
       expect(res.status).toBe(200); // one bad file must not 500 the board (tkt-cd9d5026c34f)
       expect(res.body.tickets.map((t: { id: string }) => t.id)).toEqual(['abc123456789']);
@@ -109,7 +120,7 @@ describe('GET /api/tickets', () => {
       await seedTicket('abc123456789', 'Findable');
       await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
 
-      const res = await request(app).get('/api/tickets?q=findable');
+      const res = await request(server).get('/api/tickets?q=findable');
 
       expect(res.body.tickets.map((t: { id: string }) => t.id)).toEqual(['abc123456789']);
       expect(res.body.unreadable).toHaveLength(1);
@@ -121,7 +132,7 @@ describe('GET /api/tickets', () => {
       await seedTicket('abc123456789', 'Findable');
       await fs.writeFile(path.join(dirs.tickets, 'tkt-colon.md'), UNQUOTED_COLON, 'utf8');
 
-      const res = await request(app).get('/api/tickets?q=nomatch');
+      const res = await request(server).get('/api/tickets?q=nomatch');
 
       expect(res.body.tickets).toEqual([]);
       expect(res.body.unreadable).toHaveLength(1); // a filter must never hide it
@@ -141,7 +152,7 @@ describe('GET /api/dashboard', () => {
   }
 
   it('returns an all-zero summary for an empty board', async () => {
-    const res = await request(app).get('/api/dashboard');
+    const res = await request(server).get('/api/dashboard');
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(0);
     expect(res.body.project).toBeNull();
@@ -151,7 +162,7 @@ describe('GET /api/dashboard', () => {
   it('aggregates all tickets when no project is given', async () => {
     await seedTicket('abc123456789', 'First');
     await seedTicket('def123456789', 'Second');
-    const res = await request(app).get('/api/dashboard');
+    const res = await request(server).get('/api/dashboard');
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(2);
   });
@@ -159,7 +170,7 @@ describe('GET /api/dashboard', () => {
   it('scopes the summary to ?project=', async () => {
     await seedWithProject('aaaaaaaaaaaa', 'kanban');
     await seedWithProject('bbbbbbbbbbbb', 'other');
-    const res = await request(app).get('/api/dashboard?project=kanban');
+    const res = await request(server).get('/api/dashboard?project=kanban');
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(1);
     expect(res.body.project).toBe('kanban');
@@ -169,26 +180,26 @@ describe('GET /api/dashboard', () => {
 describe('GET /api/tickets/:id', () => {
   it('returns the ticket when it exists', async () => {
     await seedTicket('abc123456789', 'My ticket');
-    const res = await request(app).get('/api/tickets/abc123456789');
+    const res = await request(server).get('/api/tickets/abc123456789');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: 'abc123456789', title: 'My ticket' });
   });
 
   it('returns 404 for an unknown id', async () => {
-    const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
+    const res = await request(server).get('/api/tickets/zzzzzzzzzzzz');
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: expect.stringContaining('not found') });
   });
 
   it('returns 400 for an invalid id (path traversal)', async () => {
-    const res = await request(app).get('/api/tickets/..%2F..%2Fetc%2Fpasswd');
+    const res = await request(server).get('/api/tickets/..%2F..%2Fetc%2Fpasswd');
     expect(res.status).toBe(400);
   });
 });
 
 describe('POST /api/tickets', () => {
   it('creates a ticket and returns 201 with the new ticket', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/tickets')
       .send({ title: 'New ticket', type: 'task', priority: 'medium', status: 'backlog' });
     expect(res.status).toBe(201);
@@ -197,42 +208,42 @@ describe('POST /api/tickets', () => {
   });
 
   it('returns 400 when title is missing', async () => {
-    const res = await request(app).post('/api/tickets').send({ type: 'task' });
+    const res = await request(server).post('/api/tickets').send({ type: 'task' });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('Title') });
   });
 
   it('returns 400 when title is an empty string', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: '   ' });
+    const res = await request(server).post('/api/tickets').send({ title: '   ' });
     expect(res.status).toBe(400);
   });
 
   it('returns 400 (not 500) when title is a non-string', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: 42 });
+    const res = await request(server).post('/api/tickets').send({ title: 42 });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('title') });
   });
 
   it('returns 400 when project is a non-string', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: 'A', project: { nested: true } });
+    const res = await request(server).post('/api/tickets').send({ title: 'A', project: { nested: true } });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('project') });
   });
 
   it('returns 400 when blockers is not an array of strings', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: 'A', blockers: 'tkt-x' });
+    const res = await request(server).post('/api/tickets').send({ title: 'A', blockers: 'tkt-x' });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('blockers') });
   });
 
   it('returns 400 when creating with a non-creatable status (qa)', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: 'A', status: 'qa' });
+    const res = await request(server).post('/api/tickets').send({ title: 'A', status: 'qa' });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ error: expect.stringContaining('status') });
   });
 
   it('returns 400 when creating with status archived', async () => {
-    const res = await request(app).post('/api/tickets').send({ title: 'A', status: 'archived' });
+    const res = await request(server).post('/api/tickets').send({ title: 'A', status: 'archived' });
     expect(res.status).toBe(400);
   });
 });
@@ -240,7 +251,7 @@ describe('POST /api/tickets', () => {
 describe('PATCH /api/tickets/:id', () => {
   it('updates an existing ticket and returns the updated body', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ title: 'Updated' });
     expect(res.status).toBe(200);
@@ -249,7 +260,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('returns 400 when order is not a number', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ order: 'five' });
     expect(res.status).toBe(400);
@@ -259,7 +270,7 @@ describe('PATCH /api/tickets/:id', () => {
   // tkt-81b4d35e95e5 — appendBody appends non-destructively over the raw-HTTP seam
   it('appends via appendBody without overwriting the existing body', async () => {
     await seedTicket('abc123456789', 'Original', 'Seed body');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ appendBody: 'Appended' });
     expect(res.status).toBe(200);
@@ -268,7 +279,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('returns 400 when body and appendBody are sent together', async () => {
     await seedTicket('abc123456789', 'Original', 'Seed body');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ body: 'Replace', appendBody: 'Add' });
     expect(res.status).toBe(400);
@@ -277,7 +288,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('returns 400 (not 500) when title is a non-string', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ title: 42 });
     expect(res.status).toBe(400);
@@ -286,7 +297,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('returns 400 when parent is a non-string (and does not persist it)', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ parent: 99 });
     expect(res.status).toBe(400);
@@ -295,7 +306,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('returns 400 when assignee is a nested object (data-loss guard)', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ assignee: { name: 'x' } });
     expect(res.status).toBe(400);
@@ -304,7 +315,7 @@ describe('PATCH /api/tickets/:id', () => {
 
   it('accepts a fractional order (drag-drop midpoint)', async () => {
     await seedTicket('abc123456789', 'Original');
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/abc123456789')
       .send({ order: 1.5 });
     expect(res.status).toBe(200);
@@ -312,7 +323,7 @@ describe('PATCH /api/tickets/:id', () => {
   });
 
   it('returns 404 for an unknown id', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/zzzzzzzzzzzz')
       .send({ title: 'Ghost' });
     expect(res.status).toBe(404);
@@ -320,7 +331,7 @@ describe('PATCH /api/tickets/:id', () => {
   });
 
   it('returns 400 for an invalid id', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .patch('/api/tickets/..%2Fbad')
       .send({ title: 'x' });
     expect(res.status).toBe(400);
@@ -330,27 +341,27 @@ describe('PATCH /api/tickets/:id', () => {
 describe('DELETE /api/tickets/:id', () => {
   it('deletes an existing ticket and returns 204', async () => {
     await seedTicket('abc123456789', 'To delete');
-    const res = await request(app).delete('/api/tickets/abc123456789');
+    const res = await request(server).delete('/api/tickets/abc123456789');
     expect(res.status).toBe(204);
-    const check = await request(app).get('/api/tickets/abc123456789');
+    const check = await request(server).get('/api/tickets/abc123456789');
     expect(check.status).toBe(404);
   });
 
   it('returns 404 for an unknown id', async () => {
-    const res = await request(app).delete('/api/tickets/zzzzzzzzzzzz');
+    const res = await request(server).delete('/api/tickets/zzzzzzzzzzzz');
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: expect.stringContaining('not found') });
   });
 
   it('returns 400 for an invalid id', async () => {
-    const res = await request(app).delete('/api/tickets/..%2Fbad');
+    const res = await request(server).delete('/api/tickets/..%2Fbad');
     expect(res.status).toBe(400);
   });
 });
 
 describe('wrap error handler', () => {
   it('does not leak stack traces in the error response body', async () => {
-    const res = await request(app).get('/api/tickets/zzzzzzzzzzzz');
+    const res = await request(server).get('/api/tickets/zzzzzzzzzzzz');
     expect(res.status).toBe(404);
     expect(res.body).not.toHaveProperty('stack');
     expect(Object.keys(res.body)).toEqual(['error']);
@@ -447,7 +458,7 @@ describe('GET /api/tickets?q= (search)', () => {
   it('returns only matching tickets when q is set', async () => {
     await seedTicket('abc333333333', 'Fix login bug');
     await seedTicket('abc444444444', 'Add dashboard');
-    const res = await request(app).get('/api/tickets?q=login');
+    const res = await request(server).get('/api/tickets?q=login');
     expect(res.status).toBe(200);
     expect(res.body.tickets).toHaveLength(1);
     expect(res.body.tickets[0].title).toBe('Fix login bug');
@@ -455,7 +466,7 @@ describe('GET /api/tickets?q= (search)', () => {
 
   it('search is case-insensitive', async () => {
     await seedTicket('abc555555555', 'Fix Login Bug');
-    const res = await request(app).get('/api/tickets?q=LOGIN');
+    const res = await request(server).get('/api/tickets?q=LOGIN');
     expect(res.status).toBe(200);
     expect(res.body.tickets).toHaveLength(1);
   });
@@ -463,7 +474,7 @@ describe('GET /api/tickets?q= (search)', () => {
   it('matches tickets by body content', async () => {
     await seedTicket('abc666666666', 'Unrelated title', 'The password reset flow is broken');
     await seedTicket('abc777777777', 'Another ticket', 'Nothing relevant');
-    const res = await request(app).get('/api/tickets?q=password');
+    const res = await request(server).get('/api/tickets?q=password');
     expect(res.status).toBe(200);
     expect(res.body.tickets).toHaveLength(1);
     expect(res.body.tickets[0].id).toBe('abc666666666');
@@ -471,7 +482,7 @@ describe('GET /api/tickets?q= (search)', () => {
 
   it('returns an empty tickets array when nothing matches', async () => {
     await seedTicket('abc888888888', 'Some ticket');
-    const res = await request(app).get('/api/tickets?q=xyzzy-no-match');
+    const res = await request(server).get('/api/tickets?q=xyzzy-no-match');
     expect(res.status).toBe(200);
     expect(res.body.tickets).toHaveLength(0);
   });
@@ -480,7 +491,7 @@ describe('GET /api/tickets?q= (search)', () => {
 describe('GET /api/projects', () => {
   it('returns an empty array when no tickets have a project', async () => {
     await seedTicket('proj11111111', 'No project');
-    const res = await request(app).get('/api/projects');
+    const res = await request(server).get('/api/projects');
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
@@ -500,7 +511,7 @@ describe('GET /api/projects', () => {
     await raw('projaaaaaaaa', 'zebra');
     await raw('projbbbbbbbb', 'alpha');
     await raw('projcccccccc', 'zebra');
-    const res = await request(app).get('/api/projects');
+    const res = await request(server).get('/api/projects');
     expect(res.status).toBe(200);
     expect(res.body).toEqual(['alpha', 'zebra']);
   });
@@ -508,7 +519,7 @@ describe('GET /api/projects', () => {
 
 describe('POST /api/archive', () => {
   it('returns { archived: 0 } on an empty board', async () => {
-    const res = await request(app).post('/api/archive');
+    const res = await request(server).post('/api/archive');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ archived: 0 });
   });
@@ -527,13 +538,13 @@ describe('POST /api/archive', () => {
       );
     await write('arcstale1111', '2026-01-01T00:00:00.000Z');
     await write('arcfresh1111', new Date().toISOString());
-    const res = await request(app).post('/api/archive');
+    const res = await request(server).post('/api/archive');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ archived: 1 });
 
-    const stale = await request(app).get('/api/tickets/arcstale1111');
+    const stale = await request(server).get('/api/tickets/arcstale1111');
     expect(stale.body.status).toBe('archived');
-    const fresh = await request(app).get('/api/tickets/arcfresh1111');
+    const fresh = await request(server).get('/api/tickets/arcfresh1111');
     expect(fresh.body.status).toBe('done');
   });
 });
@@ -543,7 +554,7 @@ describe('wrap error funnel — 500 branch', () => {
     const spy = vi.spyOn(tickets, 'listProjects').mockRejectedValueOnce(new Error('boom'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const res = await request(app).get('/api/projects');
+      const res = await request(server).get('/api/projects');
       expect(res.status).toBe(500);
       expect(Object.keys(res.body)).toEqual(['error']);
       expect(res.body).not.toHaveProperty('stack');
@@ -630,7 +641,7 @@ describe('POST /api/intake/search', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('400 when query is missing', async () => {
-    const res = await request(app).post('/api/intake/search').send({});
+    const res = await request(server).post('/api/intake/search').send({});
     expect(res.status).toBe(400);
   });
 
@@ -638,7 +649,7 @@ describe('POST /api/intake/search', () => {
     await seedTicket('tkt-aaa', 'Fix login bug');
     await seedTicket('tkt-bbb', 'Add dashboard charts');
     stubEmbeddings();
-    const res = await request(app).post('/api/intake/search').send({ query: 'the login screen is broken' });
+    const res = await request(server).post('/api/intake/search').send({ query: 'the login screen is broken' });
     expect(res.status).toBe(200);
     expect(res.body.results[0].id).toBe('tkt-aaa');
     expect(res.body.results[0].status).toBe('backlog');
@@ -647,12 +658,12 @@ describe('POST /api/intake/search', () => {
   it('503 when the embeddings runtime is unreachable', async () => {
     await seedTicket('tkt-aaa', 'Fix login bug');
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(connectionRefused())));
-    const res = await request(app).post('/api/intake/search').send({ query: 'x' });
+    const res = await request(server).post('/api/intake/search').send({ query: 'x' });
     expect(res.status).toBe(503);
   });
 
   it('400 when the query is only whitespace', async () => {
-    const res = await request(app).post('/api/intake/search').send({ query: '   ' });
+    const res = await request(server).post('/api/intake/search').send({ query: '   ' });
     expect(res.status).toBe(400);
   });
 
@@ -661,13 +672,13 @@ describe('POST /api/intake/search', () => {
     await seedTicket('tkt-bbb', 'Another login issue');
     await seedTicket('tkt-ccc', 'Add dashboard charts');
     stubEmbeddings();
-    const res = await request(app).post('/api/intake/search').send({ query: 'login', limit: 1 });
+    const res = await request(server).post('/api/intake/search').send({ query: 'login', limit: 1 });
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(1);
   });
 
   it('returns an empty list for an empty board without calling the runtime', async () => {
-    const res = await request(app).post('/api/intake/search').send({ query: 'anything' });
+    const res = await request(server).post('/api/intake/search').send({ query: 'anything' });
     expect(res.status).toBe(200);
     expect(res.body.results).toEqual([]);
   });
@@ -704,7 +715,7 @@ describe('POST /api/intake/propose', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('400 when report is missing', async () => {
-    const res = await request(app).post('/api/intake/propose').send({});
+    const res = await request(server).post('/api/intake/propose').send({});
     expect(res.status).toBe(400);
   });
 
@@ -715,7 +726,7 @@ describe('POST /api/intake/propose', () => {
       { content: null, tool_calls: [{ id: 'c2', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"New bug"}' } }] },
       { content: 'Proposed creating a ticket.' },
     ]);
-    const res = await request(app).post('/api/intake/propose').send({ report: 'a new bug to add' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'a new bug to add' });
     expect(res.status).toBe(200);
     expect(res.body.proposal).toMatchObject({ action: 'create_ticket', args: { title: 'New bug' } });
     expect((await tickets.listTickets()).some((t) => t.title === 'New bug')).toBe(false);
@@ -728,7 +739,7 @@ describe('POST /api/intake/propose', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Metered draft"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const res = await request(app).post('/api/intake/propose').send({ report: 'a bug to add' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'a bug to add' });
     expect(res.status).toBe(200);
     const run = await readRun(res.body.runId);
     expect(run).not.toBeNull();
@@ -746,7 +757,7 @@ describe('POST /api/intake/propose', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
       { content: 'Nothing to do.' },
     ]);
-    const res = await request(app).post('/api/intake/propose').send({ report: 'a report' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'a report' });
     expect(res.status).toBe(200);
 
     const run = await readRun(res.body.runId);
@@ -772,7 +783,7 @@ describe('POST /api/intake/propose', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"anything"}' } }] },
       { content: 'Done.' },
     ]);
-    const res = await request(app).post('/api/intake/propose').send({ report: 'a report' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'a report' });
     expect(res.status).toBe(200);
 
     const run = await readRun(res.body.runId);
@@ -786,7 +797,7 @@ describe('POST /api/intake/propose', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] },
       { content: 'Nothing relevant; no action taken.' },
     ]);
-    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(200);
     expect(res.body.proposal).toBeNull();
     const run = await readRun(res.body.runId);
@@ -797,12 +808,12 @@ describe('POST /api/intake/propose', () => {
   it('503 when the runtime is unreachable', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(connectionRefused())));
-    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
   });
 
   it('400 when the report is only whitespace', async () => {
-    const res = await request(app).post('/api/intake/propose').send({ report: '   ' });
+    const res = await request(server).post('/api/intake/propose').send({ report: '   ' });
     expect(res.status).toBe(400);
   });
 
@@ -821,7 +832,7 @@ describe('POST /api/intake/propose', () => {
   it('503 when the chat endpoint is genuinely unreachable even though the embedder is up', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     chatFails(connectionRefused());
-    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
   });
 
@@ -832,7 +843,7 @@ describe('POST /api/intake/propose', () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
     chatFails(new Error('tool loop blew up: cannot read properties of undefined'));
-    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('Internal server error');
     expect(res.body.error).not.toContain('tool loop'); // no internals on the wire
@@ -849,7 +860,7 @@ describe('POST /api/intake/propose', () => {
       }
       return Promise.resolve(new Response('upstream gone', { status: 502 }));
     }));
-    const res = await request(app).post('/api/intake/propose').send({ report: 'x' });
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
     expect(res.status).toBe(503);
   });
 });
@@ -882,7 +893,7 @@ describe('POST /api/intake/apply', () => {
   }
   async function proposeRunId(report: string, turns: { content: string | null; tool_calls?: unknown[] }[]): Promise<string> {
     stubProposeFlow(turns);
-    const res = await request(app).post('/api/intake/propose').send({ report });
+    const res = await request(server).post('/api/intake/propose').send({ report });
     expect(res.status).toBe(200);
     vi.unstubAllGlobals(); // apply never calls the model
     return res.body.runId;
@@ -894,7 +905,7 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Metered bug"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const res = await request(app).post('/api/intake/apply')
+    const res = await request(server).post('/api/intake/apply')
       .send({ action: 'create_ticket', runId, args: { title: 'Metered bug' } });
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ source: 'assisted', runId, title: 'Metered bug' });
@@ -910,7 +921,7 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Seam"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const applyRes = await request(app).post('/api/intake/apply')
+    const applyRes = await request(server).post('/api/intake/apply')
       .send({ action: 'create_ticket', runId, args: { title: 'Seam' } });
     expect(applyRes.status).toBe(201);
 
@@ -951,7 +962,7 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: JSON.stringify(args) } }] },
       { content: 'Proposed.' },
     ]);
-    const res = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args });
+    const res = await request(server).post('/api/intake/apply').send({ action: 'create_ticket', runId, args });
     expect(res.status).toBe(201);
     // source-input == persisted-output across every field the agent proposed.
     expect(res.body).toMatchObject({ ...args, source: 'assisted', runId });
@@ -963,8 +974,8 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Idem"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const first = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
-    const second = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
+    const first = await request(server).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
+    const second = await request(server).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Idem' } });
     expect(first.status).toBe(201);
     expect(second.body.id).toBe(first.body.id);
     expect((await tickets.listTickets()).filter((t) => t.title === 'Idem')).toHaveLength(1);
@@ -976,10 +987,10 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Deletable"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const first = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
+    const first = await request(server).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
     expect(first.status).toBe(201);
-    await request(app).delete(`/api/tickets/${first.body.id}`).expect(204);
-    const replay = await request(app).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
+    await request(server).delete(`/api/tickets/${first.body.id}`).expect(204);
+    const replay = await request(server).post('/api/intake/apply').send({ action: 'create_ticket', runId, args: { title: 'Deletable' } });
     expect(replay.status).toBe(200);
     expect(replay.body).toMatchObject({ id: first.body.id, deleted: true });
   });
@@ -991,7 +1002,7 @@ describe('POST /api/intake/apply', () => {
       { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'update_ticket', arguments: '{"id":"tkt-upd12345678","title":"Updated"}' } }] },
       { content: 'Proposed.' },
     ]);
-    const res = await request(app).post('/api/intake/apply')
+    const res = await request(server).post('/api/intake/apply')
       .send({ action: 'update_ticket', runId, args: { id: 'tkt-upd12345678', title: 'Updated' } });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: 'tkt-upd12345678', title: 'Updated', runId });
@@ -1000,14 +1011,14 @@ describe('POST /api/intake/apply', () => {
   });
 
   it('update with a missing id → 400 (not a silent create)', async () => {
-    const res = await request(app).post('/api/intake/apply')
+    const res = await request(server).post('/api/intake/apply')
       .send({ action: 'update_ticket', runId: 'run-x', args: { title: 'No id' } });
     expect(res.status).toBe(400);
   });
 
   // An apply whose runId has no captured usage falls back to a plain human write — no provenance, no run.
   it('applies with an unknown runId — plain write (no provenance, no run)', async () => {
-    const res = await request(app).post('/api/intake/apply')
+    const res = await request(server).post('/api/intake/apply')
       .send({ action: 'create_ticket', runId: 'run-orphan', args: { title: 'Orphan' } });
     expect(res.status).toBe(201);
     expect(res.body.source).toBeNull();
@@ -1021,21 +1032,21 @@ describe('GET /api/intake/health', () => {
 
   it('reports available:true when the chat runtime responds', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))));
-    const res = await request(app).get('/api/intake/health');
+    const res = await request(server).get('/api/intake/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: true });
   });
 
   it('reports available:false when the runtime is unreachable', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED'))));
-    const res = await request(app).get('/api/intake/health');
+    const res = await request(server).get('/api/intake/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: false });
   });
 
   it('reports available:false (still 200, never 503) when the runtime errors', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('nope', { status: 500 }))));
-    const res = await request(app).get('/api/intake/health');
+    const res = await request(server).get('/api/intake/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: false });
   });
@@ -1044,7 +1055,7 @@ describe('GET /api/intake/health', () => {
 describe('GET /api/tickets/:id/events', () => {
   it('returns an all-pending pipeline and no events for a never-worked ticket', async () => {
     await seedTicket('tkt-fresh');
-    const res = await request(app).get('/api/tickets/tkt-fresh/events');
+    const res = await request(server).get('/api/tickets/tkt-fresh/events');
     expect(res.status).toBe(200);
     expect(res.body.ticketId).toBe('tkt-fresh');
     expect(res.body.events).toEqual([]);
@@ -1053,9 +1064,9 @@ describe('GET /api/tickets/:id/events', () => {
 
   it('reflects a status transition emitted via the PATCH route', async () => {
     await seedTicket('tkt-work', 'Work', '');
-    const patch = await request(app).patch('/api/tickets/tkt-work').send({ status: 'in-progress' });
+    const patch = await request(server).patch('/api/tickets/tkt-work').send({ status: 'in-progress' });
     expect(patch.status).toBe(200);
-    const res = await request(app).get('/api/tickets/tkt-work/events');
+    const res = await request(server).get('/api/tickets/tkt-work/events');
     expect(res.status).toBe(200);
     expect(res.body.events).toHaveLength(1);
     const started = res.body.pipeline.find((p: { step: string }) => p.step === 'started');
@@ -1063,7 +1074,7 @@ describe('GET /api/tickets/:id/events', () => {
   });
 
   it('rejects an id that fails the path-traversal guard with 400', async () => {
-    const res = await request(app).get('/api/tickets/bad.id/events');
+    const res = await request(server).get('/api/tickets/bad.id/events');
     expect(res.status).toBe(400);
   });
 
@@ -1084,7 +1095,7 @@ describe('GET /api/tickets/:id/events', () => {
     it('reports lost lines as skipped, and the client guard accepts the payload', async () => {
       await seedTicket('tkt-damaged');
       await seedEvents('tkt-damaged', ['not json at all', good('tkt-damaged', 'lint'), '{"torn']);
-      const res = await request(app).get('/api/tickets/tkt-damaged/events');
+      const res = await request(server).get('/api/tickets/tkt-damaged/events');
       expect(res.status).toBe(200);
       expect(res.body.skipped).toBe(2);
       expect(res.body.unrecognized).toBe(0);
@@ -1103,7 +1114,7 @@ describe('GET /api/tickets/:id/events', () => {
         good('tkt-skewed', 'lint'),
         JSON.stringify({ ticketId: 'tkt-skewed', step: 'deploy', state: 'passed', at: '2026-07-01T00:00:00.000Z' }),
       ]);
-      const res = await request(app).get('/api/tickets/tkt-skewed/events');
+      const res = await request(server).get('/api/tickets/tkt-skewed/events');
       expect(res.body.unrecognized).toBe(1);
       expect(res.body.skipped).toBe(0);
       expect(isTicketEventsResponse(res.body)).toBe(true);
@@ -1113,7 +1124,7 @@ describe('GET /api/tickets/:id/events', () => {
     it('reports 0/0 for a clean log, and the fields are present rather than absent', async () => {
       await seedTicket('tkt-healthy');
       await seedEvents('tkt-healthy', [good('tkt-healthy', 'lint'), good('tkt-healthy', 'commit')]);
-      const res = await request(app).get('/api/tickets/tkt-healthy/events');
+      const res = await request(server).get('/api/tickets/tkt-healthy/events');
       expect(res.body.skipped).toBe(0);
       expect(res.body.unrecognized).toBe(0);
       expect(Object.keys(res.body)).toContain('skipped');
@@ -1129,15 +1140,15 @@ describe('POST /api/tickets/:id/review', () => {
 
   it('marks review reached and returns the updated pipeline', async () => {
     await seedTicket('tkt-rev');
-    const res = await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
+    const res = await request(server).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
     expect(res.status).toBe(200);
     expect(reviewState(res.body)).toBe('reached');
   });
 
   it('un-reviews with { reviewed: false }, reverting review to pending', async () => {
     await seedTicket('tkt-rev');
-    await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
-    const res = await request(app).post('/api/tickets/tkt-rev/review').send({ reviewed: false });
+    await request(server).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
+    const res = await request(server).post('/api/tickets/tkt-rev/review').send({ reviewed: false });
     expect(res.status).toBe(200);
     expect(reviewState(res.body)).toBe('pending');
     // both actions are retained in the append-only log
@@ -1146,18 +1157,18 @@ describe('POST /api/tickets/:id/review', () => {
 
   it('defaults to reviewed when no body is sent', async () => {
     await seedTicket('tkt-rev');
-    const res = await request(app).post('/api/tickets/tkt-rev/review');
+    const res = await request(server).post('/api/tickets/tkt-rev/review');
     expect(res.status).toBe(200);
     expect(reviewState(res.body)).toBe('reached');
   });
 
   it('rejects an invalid id with 400', async () => {
-    const res = await request(app).post('/api/tickets/bad.id/review').send({ reviewed: true });
+    const res = await request(server).post('/api/tickets/bad.id/review').send({ reviewed: true });
     expect(res.status).toBe(400);
   });
 
   it('rejects a well-formed id for a nonexistent ticket with 404 and writes no event file', async () => {
-    const res = await request(app).post('/api/tickets/tkt-ghost99999999/review').send({ reviewed: true });
+    const res = await request(server).post('/api/tickets/tkt-ghost99999999/review').send({ reviewed: true });
     expect(res.status).toBe(404);
     // the orphan events/<id>.jsonl must never have been created
     const files = await fs.readdir(dirs.events);
@@ -1167,7 +1178,7 @@ describe('POST /api/tickets/:id/review', () => {
 
 describe('malformed JSON body', () => {
   it('returns a 400 { error } on the JSON contract, not the default HTML error page', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/tickets')
       .set('Content-Type', 'application/json')
       .send('{ "title": '); // truncated → express.json throws a SyntaxError
@@ -1205,7 +1216,7 @@ describe('GET /api/economics', () => {
   it('returns an aggregate summary over the run log', async () => {
     await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
     await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
-    const res = await request(app).get('/api/economics');
+    const res = await request(server).get('/api/economics');
     expect(res.status).toBe(200);
     expect(res.body.runs).toBe(2);
     expect(res.body.totals.acceptedTickets).toBe(2);
@@ -1213,7 +1224,7 @@ describe('GET /api/economics', () => {
   });
 
   it('returns zeros for an empty run log', async () => {
-    const res = await request(app).get('/api/economics');
+    const res = await request(server).get('/api/economics');
     expect(res.status).toBe(200);
     expect(res.body.runs).toBe(0);
   });
@@ -1221,21 +1232,21 @@ describe('GET /api/economics', () => {
   it('filters by ?from/?to (bare dates → inclusive day bounds)', async () => {
     await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
     await appendRun(rec('run-2', '2026-07-05T10:00:00.000Z'));
-    const res = await request(app).get('/api/economics?from=2026-07-04&to=2026-07-06');
+    const res = await request(server).get('/api/economics?from=2026-07-04&to=2026-07-06');
     expect(res.body.runs).toBe(1);
   });
 
   it('returns a single run for ?runId=', async () => {
     await appendRun(rec('run-1', '2026-07-01T10:00:00.000Z'));
     await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
-    const res = await request(app).get('/api/economics?runId=run-2');
+    const res = await request(server).get('/api/economics?runId=run-2');
     expect(res.status).toBe(200);
     expect(res.body.runs).toBe(1);
   });
 
   it('enriches the single-run payload with identity + authored ticket ids', async () => {
     await appendRun(rec('run-2', '2026-07-02T10:00:00.000Z'));
-    const res = await request(app).get('/api/economics?runId=run-2');
+    const res = await request(server).get('/api/economics?runId=run-2');
     expect(res.status).toBe(200);
     // The aggregate rollup drops these; the detail payload carries them.
     expect(res.body.runId).toBe('run-2');
@@ -1245,13 +1256,13 @@ describe('GET /api/economics', () => {
   });
 
   it('404s for an unknown runId', async () => {
-    const res = await request(app).get('/api/economics?runId=nope');
+    const res = await request(server).get('/api/economics?runId=nope');
     expect(res.status).toBe(404);
   });
 
   it('maps a non-HttpError from the service to 500 (wrap)', async () => {
     const spy = vi.spyOn(econ, 'summarizeEconomicsFromLog').mockRejectedValueOnce(new Error('boom'));
-    const res = await request(app).get('/api/economics');
+    const res = await request(server).get('/api/economics');
     expect(res.status).toBe(500);
     spy.mockRestore();
   });
@@ -1284,5 +1295,36 @@ describe('GET /api/terminal/token (host gate, tkt-b6eb52013662)', () => {
   it('rejects a foreign Host that merely embeds a loopback name', async () => {
     const res = await request(terminalApp).get('/api/terminal/token').set('Host', 'localhost.evil.com');
     expect(res.status).toBe(403);
+  });
+});
+
+// The harness itself, asserted (tkt-8167cd23c651). Two different things are checked, because either
+// alone is weak: the runtime invariant that one bound port serves every request, and a source check
+// that no call site has drifted back to passing the app itself — which silently reintroduces the
+// per-request ephemeral server this file exists to avoid. Nothing at runtime can observe that drift,
+// since handing supertest the app works perfectly well; it just brings the flake back.
+describe('test harness: one server per file', () => {
+  // Deliberately does NOT assert the port is unchanged across requests: with a bound server supertest
+  // never rebinds, so that comparison cannot fail — it passes even when written against itself
+  // (checked by mutation). What IS load-bearing is that this one server stays listening and serves
+  // every request; closing it turns this red.
+  it('keeps one bound server listening and serving for the whole file', async () => {
+    const address = server.address();
+    expect(typeof address === 'object' && address !== null ? address.port : null).toBeGreaterThan(0);
+    expect(server.listening).toBe(true);
+    expect((await request(server).get('/api/tickets')).status).toBe(200);
+    expect((await request(server).get('/api/tickets')).status).toBe(200);
+  });
+
+  it('has no per-request-server call sites left, and the detector is not vacuous', async () => {
+    const source = await fs.readFile(new URL(import.meta.url), 'utf8');
+    // Assembled rather than written literally: a literal would match THIS file and make the assertion
+    // below impossible to satisfy — the detector would be finding itself.
+    const perRequestServer = new RegExp('request' + '\\(app\\)', 'g');
+    expect(source.match(perRequestServer)).toBeNull();
+    expect(source).toContain('request(server)');
+    // Positive control: the pattern must actually fire on the shape it looks for, or a rename would
+    // leave it matching nothing anywhere and passing for the wrong reason.
+    expect(['await ', 'request', '(app)', '.get("/x")'].join('').match(perRequestServer)).toHaveLength(1);
   });
 });
