@@ -135,15 +135,42 @@ describe('.claude/settings.json permission allowlist', () => {
 
   // The local hooks must stay LAUNCHERS delegating to the pinned package, never re-vendored copies:
   // the copy this replaced drifted and left every repo outside kanban failing OPEN for ~24h in
-  // 2026-07. A re-vendored guard-bash is 333 lines, so the cap is what makes re-vendoring go red.
+  // 2026-07.
+  //
+  // The check is on SUBSTANCE, not length. Length alone was the original proxy (a re-vendored
+  // guard-bash is 333 lines), but a launcher legitimately carries consumer POLICY — guard-ticket's now
+  // sets TICKET_WORKFLOW_CREATE_REASON, which is deliberately verbose because it is the text a blocked
+  // session reads (tkt-0361525dbf9f). That pushed it to 37 of a 40-line cap, i.e. one paragraph from a
+  // false failure. Raising a threshold to fit your own change is exactly how a guard gets hollowed out,
+  // so the cap is raised AND paired with what actually distinguishes the two: a launcher delegates and
+  // decides nothing, while a vendored guard carries its own rule table.
+  const VENDORED_LOGIC = [
+    [/^\s*const\s+RULES\b/m, 'defines a RULES table'],
+    [/^\s*(export\s+)?function\s+decide\b/m, 'defines its own decide()'],
+    [/\bnew RegExp\(|=\s*\/[^/\n]+\/[gimsuy]*\s*[;,)]/m, 'defines a matcher regex'],
+  ];
+
   it('wires only launchers that delegate to the pinned package, not vendored copies', () => {
     const local = wiredLocalHooks();
     expect(local.length).toBeGreaterThan(0); // else every assertion below is vacuous
     for (const file of local) {
       const src = readFileSync(file, 'utf8');
       expect(src, `${file} does not import the package hook`).toContain('ticket-workflow/hooks/');
-      expect(src.split('\n').length, `${file} is too long to be a launcher`).toBeLessThan(40);
+      // Generous, because policy text is legitimate here; the substance checks below are the real gate.
+      expect(src.split('\n').length, `${file} is too long to be a launcher`).toBeLessThan(80);
+      for (const [pattern, what] of VENDORED_LOGIC) {
+        expect(pattern.test(src), `${file} ${what} — that is a vendored guard, not a launcher`).toBe(false);
+      }
     }
+  });
+
+  // The control for the assertion above: the patterns must actually FIRE on a real vendored guard. Three
+  // regexes that match nothing would pass every launcher forever — a guard that cannot fail.
+  it('those vendored-logic patterns detect the real guard they exist to reject', () => {
+    const packaged = join(dirname(createRequire(import.meta.url).resolve('ticket-workflow')), '..', 'hooks', 'guard-bash.mjs');
+    const src = readFileSync(packaged, 'utf8');
+    const fired = VENDORED_LOGIC.filter(([pattern]) => pattern.test(src)).map(([, what]) => what);
+    expect(fired, 'no pattern matched the packaged guard-bash — the checks above are vacuous').not.toEqual([]);
   });
 
   // Verify the EFFECT, not the wiring: drive the actually-wired file and watch it block. The package
