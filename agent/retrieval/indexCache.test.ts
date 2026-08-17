@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getTicketIndex, resetIndexCache, buildBoardIndex, buildCliIndex, defaultCachePath, resolveCachePath, embedUsage } from './indexCache.js';
+import { getTicketIndex, resetIndexCache, buildBoardIndex, buildCliIndex, defaultCachePath, resolveCachePath, embedUsage, prunePreventedBy } from './indexCache.js';
 import { type Embedder } from './retrieval.js';
 import { createTicket } from '../../server/tickets.js';
 import { type Ticket } from '../../shared/constants.js';
@@ -381,5 +381,101 @@ describe('two embed models sharing one cache file', () => {
     const entries = Object.keys(raw && typeof raw === 'object' ? raw : {});
     // model-one: A only (B pruned). model-two: A only. Nothing from either namespace leaked.
     expect(entries).toHaveLength(2);
+  });
+});
+
+// tkt-da0b8b6bc21e — the THIRD dimension of the same prune guard. The namespace dimension was
+// tkt-aa73a535ec4a and the empty-corpus dimension is covered above; nothing ever varied whether the
+// board read was COMPLETE. `listBoard` reports files it could not parse in `unreadable`, but
+// `listTickets` returns only `.tickets`, so the completeness report was discarded one line before the
+// connector saw it — and a partial read then pruned the vectors of every ticket it could not see.
+//
+// These drive the REAL chain (listBoard → TicketConnector.pull → buildIndex → EmbeddingStore.prune)
+// through TICKETS_DIR_OVERRIDE rather than injecting `opts.tickets`. Injecting is precisely why every
+// existing prune test missed this: an explicit corpus never has an unreadable file.
+describe('prune over a partial board read (live board)', () => {
+  let tmpDir: string;
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-indexcache-partial-'));
+    process.env.TICKETS_DIR_OVERRIDE = tmpDir;
+  });
+  afterAll(async () => {
+    delete process.env.TICKETS_DIR_OVERRIDE;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+  beforeEach(async () => {
+    const files = await fs.readdir(tmpDir);
+    await Promise.all(files.filter((f) => f.endsWith('.md')).map((f) => fs.unlink(path.join(tmpDir, f))));
+  });
+
+  // A fresh process each time, so the build must reload the store from disk.
+  const build = async (embedder: Embedder) => {
+    resetIndexCache();
+    await getTicketIndex({ embedder });
+  };
+
+  it('keeps the vectors of tickets it could not read (written first, observed red)', async () => {
+    await createTicket({ title: 'Alpha' });
+    const beta = await createTicket({ title: 'Beta' });
+    const betaPath = path.join(tmpDir, `${beta.id}.md`);
+    const intact = await fs.readFile(betaPath, 'utf8');
+
+    const cold = new CountingEmbedder();
+    await build(cold);
+    expect(cold.embeddedTexts.sort()).toEqual(['Alpha', 'Beta']);
+
+    // Unparseable frontmatter: listBoard skips the file and records it in `unreadable`.
+    await fs.writeFile(betaPath, '---\n: : not valid: yaml\n---\nBeta\n');
+    const partial = new CountingEmbedder();
+    await build(partial);
+    expect(partial.embeddedTexts).toEqual([]); // Alpha still warm — the read succeeded for it
+
+    // Beta's text comes back byte-identical, so its cache key is unchanged: if the vector survived
+    // the partial build, this is warm. Before the fix the partial build pruned it and this re-embedded.
+    await fs.writeFile(betaPath, intact);
+    const warm = new CountingEmbedder();
+    await build(warm);
+    expect(warm.embeddedTexts).toEqual([]);
+  });
+
+  // The control for the FIX's own failure mode, not evidence of the bug: "do not prune on a partial
+  // read" must not become "never prune". This one passes before the fix too — deliberately, since it
+  // is the regression net.
+  it('still prunes a removed ticket when the read is complete', async () => {
+    await createTicket({ title: 'Alpha' });
+    const beta = await createTicket({ title: 'Beta' });
+    await build(new CountingEmbedder());
+
+    await fs.unlink(path.join(tmpDir, `${beta.id}.md`));
+    await build(new CountingEmbedder()); // a complete read of a now-one-ticket board
+
+    await createTicket({ title: 'Beta' });
+    const after = new CountingEmbedder();
+    await build(after);
+    expect(after.embeddedTexts).toEqual(['Beta']); // cold ⇒ the prune did happen
+  });
+});
+
+// The decision itself, asserted directly rather than inferred from embed counts. Both refusals must be
+// DISTINGUISHABLE in the log: "read as nothing" and "read as smaller than it is" are different faults.
+describe('prunePreventedBy', () => {
+  it('permits the prune only over a non-empty, completely-read board', () => {
+    expect(prunePreventedBy(3, [])).toBeNull();
+  });
+
+  it('refuses on an empty corpus, naming that reason', () => {
+    expect(prunePreventedBy(0, [])).toBe('the corpus is empty');
+  });
+
+  it('refuses on an incomplete read, naming the files', () => {
+    const reason = prunePreventedBy(500, [{ file: 'tkt-1.md', reason: 'bad yaml' }]);
+    expect(reason).toContain('1 ticket file(s) could not be read');
+    expect(reason).toContain('tkt-1.md'); // the operator needs to know WHICH file to fix
+  });
+
+  it('reports the empty corpus first when a board is both empty and partly unreadable', () => {
+    // Not arbitrary: with keepSize 0 there is nothing to keep, so the unreadable list is the less
+    // actionable of the two facts. Pinned so the message cannot silently swap.
+    expect(prunePreventedBy(0, [{ file: 'tkt-1.md', reason: 'bad yaml' }])).toBe('the corpus is empty');
   });
 });

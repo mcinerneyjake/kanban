@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { type Ticket } from '../../shared/constants.js';
-import { getTicketsDir } from '../../server/tickets.js';
+import { getTicketsDir, type BoardListing, type UnreadableTicketFile } from '../../server/tickets.js';
 import { RuntimeEmbedder, DocumentIndex, type Embedder } from './retrieval.js';
 import { resolveEmbedConfig } from './models.js';
 import { TicketConnector } from './connectors/ticket.js';
@@ -104,9 +104,28 @@ export interface IndexOptions {
   cachePath?: string;
 }
 
+// Why the prune was skipped, or null to prune. Pure and exported so the decision is asserted directly
+// rather than inferred from embedding behaviour, and so both refusal reasons are named in the log.
+//
+// `unreadable` is the fix for tkt-da0b8b6bc21e: `keep` holds only the hashes of the build that just ran,
+// so pruning against a partial read deletes the vectors of every ticket that read could not see. The two
+// cases are kept separate because they are different failures — an empty corpus is a board that read as
+// nothing, a non-empty one with unreadable files is a board that read as smaller than it is.
+export function prunePreventedBy(keepSize: number, unreadable: UnreadableTicketFile[]): string | null {
+  if (keepSize === 0) return 'the corpus is empty';
+  if (unreadable.length > 0) {
+    return `${unreadable.length} ticket file(s) could not be read (${unreadable.map((u) => u.file).join(', ')})`;
+  }
+  return null;
+}
+
 async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
-  // Pull raw tickets first — the change signature is over their id + updated stamps, before mapping to Documents.
-  const tickets = opts.tickets ?? await board.pull();
+  // Pull raw tickets first — the change signature is over their id + updated stamps, before mapping to
+  // Documents. An explicitly-supplied corpus (tests) is authoritative by definition, so it reads as complete.
+  const pulled: BoardListing = opts.tickets
+    ? { tickets: opts.tickets, unreadable: [] }
+    : await board.pullBoard();
+  const tickets = pulled.tickets;
   const sig = signature(tickets);
   if (cache && cache.sig === sig) return cache.index;
 
@@ -117,11 +136,16 @@ async function buildIndex(opts: IndexOptions): Promise<DocumentIndex> {
   // Namespace by the embedder's identity so a model/prefix swap re-embeds rather than serving stale vectors.
   const caching = new CachingEmbedder(raw, store, cacheNamespace());
   const index = await DocumentIndex.build(caching, documents);
-  // Prune to bound growth — but NOT when the corpus is empty: a transiently unreadable board must not wipe the cache and force a cold re-embed next build.
-  // Scoped to THIS embedder's namespace: another EMBED_MODEL's vectors live in the same file and are
-  // not ours to delete (tkt-aa73a535ec4a).
+  // Prune to bound growth — but only over a board that read COMPLETELY, since a prune deletes whatever
+  // this build could not see. Scoped to THIS embedder's namespace too: another EMBED_MODEL's vectors live
+  // in the same file and are not ours to delete (tkt-aa73a535ec4a).
   const keep = caching.corpusHashes();
-  if (keep.size > 0) store.prune(keep, caching.scope());
+  const blocked = prunePreventedBy(keep.size, pulled.unreadable);
+  if (blocked) {
+    console.warn(`[intake] embedding cache not pruned: ${blocked} — an incomplete board read must not delete vectors it cannot see`);
+  } else {
+    store.prune(keep, caching.scope());
+  }
   // Best-effort, like EmbeddingStore.load: the cache is an optimization, so an unwritable
   // .cache/ (read-only mount, EACCES, ENOSPC) must not take intake down with a 503. Before this
   // ticket the server path performed no disk writes at all, so no disk condition could break it.

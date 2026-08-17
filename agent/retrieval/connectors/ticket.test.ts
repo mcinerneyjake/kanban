@@ -65,6 +65,20 @@ describe('TicketConnector.pull (live board)', () => {
     expect(tickets.map((t) => t.title)).toContain('On the board');
   });
 
+  // pull() cannot report an unreadable file — the Connector contract returns records only — so the one
+  // caller that deletes derived state reads pullBoard instead (tkt-da0b8b6bc21e).
+  it('pullBoard carries the completeness report that pull() drops', async () => {
+    await createTicket({ title: 'Readable' });
+    await fs.writeFile(path.join(tmpDir, 'tkt-corrupt.md'), '---\n: : not valid: yaml\n---\nbody\n');
+
+    const connector = new TicketConnector();
+    const listing = await connector.pullBoard();
+    expect(listing.tickets.map((t) => t.title)).toEqual(['Readable']);
+    expect(listing.unreadable.map((u) => u.file)).toEqual(['tkt-corrupt.md']);
+    // The control: the same read through pull() is indistinguishable from a clean one-ticket board.
+    expect(await connector.pull()).toHaveLength(1);
+  });
+
   it('collectDocuments maps the whole board to kanban-sourced Documents', async () => {
     await createTicket({ title: 'First' });
     await createTicket({ title: 'Second' });

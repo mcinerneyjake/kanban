@@ -1,4 +1,4 @@
-import { listTickets } from '../../../server/tickets.js';
+import { listBoard, type BoardListing } from '../../../server/tickets.js';
 import { type Ticket } from '../../../shared/constants.js';
 import { type Document } from '../retrieval.js';
 import { type Connector } from './connector.js';
@@ -8,7 +8,15 @@ export class TicketConnector implements Connector<Ticket> {
   readonly source = 'kanban';
 
   pull(): Promise<Ticket[]> {
-    return listTickets();
+    return listBoard().then((b) => b.tickets);
+  }
+
+  // The board read WITH its completeness report. `pull()` satisfies the source-agnostic Connector
+  // contract and therefore returns records only — which makes a partial read indistinguishable from a
+  // smaller board. Harmless for search; fatal for anything that DELETES derived state, so the one
+  // caller that prunes reads this instead (tkt-da0b8b6bc21e).
+  pullBoard(): Promise<BoardListing> {
+    return listBoard();
   }
 
   toDocument(t: Ticket): Document {
