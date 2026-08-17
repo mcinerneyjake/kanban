@@ -8,6 +8,7 @@ import { app, msUntilNextSundayEvening, stopArchiveScheduler, scheduleWeeklyArch
 import { terminalRouter } from './routes/terminal.js';
 import { terminalToken } from './terminalToken.js';
 import * as tickets from './tickets.js';
+import { closeAllStreamClients } from './stream.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
@@ -1295,6 +1296,153 @@ describe('GET /api/terminal/token (host gate, tkt-b6eb52013662)', () => {
   it('rejects a foreign Host that merely embeds a loopback name', async () => {
     const res = await request(terminalApp).get('/api/terminal/token').set('Host', 'localhost.evil.com');
     expect(res.status).toBe(403);
+  });
+});
+
+// A DNS-rebound page is SAME-ORIGIN to the browser: the loopback bind is irrelevant (the browser is
+// on loopback) and no origin check is ever consulted. The Host header is the one thing that still
+// carries the name the browser dialled. The terminal token route has checked it since
+// tkt-b6eb52013662; nothing else did, so a rebound page had full read/write over the board and could
+// burn metered local-LLM runs through /api/intake (tkt-fc40f49495c1).
+//
+// SCOPE, so nobody reads more into it: `hostGuard` is Express middleware, and the terminal WebSocket
+// is handled on `server.on('upgrade')` — it never enters this stack. That path is guarded instead by
+// `authorizeUpgrade`, which checks Origin; browsers always send it on an upgrade, and a rebound page
+// sends its own.
+describe('the Host gate covers every Express route (not the WS upgrade, which Origin guards)', () => {
+  const FORGED = 'evil.com';
+  const send = (method: 'get' | 'post', route: string) =>
+    method === 'get' ? request(server).get(route) : request(server).post(route);
+
+  // One route per router mounted in app.ts — a guard wired after a router protects every route
+  // except the ones already handled, and nothing about the passing cases would show it.
+  const ROUTES = [
+    ['get', '/api/tickets'],
+    ['post', '/api/tickets'],
+    ['get', '/api/tickets/tkt-aaaaaaaaaaaa/events'],
+    ['get', '/api/dashboard'],
+    ['post', '/api/archive'],
+    ['post', '/api/intake/search'],
+    ['get', '/api/economics'],
+    ['get', '/api/stream'],
+  ] as const;
+
+  it.each(ROUTES)('refuses %s %s from a rebound Host', async (method, route) => {
+    const res = await send(method, route).set('Host', FORGED);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'forbidden host' });
+  });
+
+  /**
+   * The list above cannot tell a real route from a typo: the guard is app-wide and first, so a
+   * rebound `GET /api/this-does-not-exist` 403s exactly the same way, and a route later renamed
+   * would leave every case green while claiming per-router coverage. So each one is dialed again
+   * from an allowed Host and must be *matched* — any status but 404.
+   *
+   * `/api/stream` is excluded here and covered below instead: it is SSE, so a GET that succeeds
+   * never ends and would hang this file rather than fail it.
+   */
+  it.each(ROUTES.filter(([, route]) => route !== '/api/stream'))(
+    'and %s %s is a route that actually exists',
+    async (method, route) => {
+      const res = await send(method, route).set('Host', '127.0.0.1:3001');
+      expect(res.status).not.toBe(404);
+      expect(res.status).not.toBe(403);
+    },
+  );
+
+  it('and the existence check can tell a real route from an invented one', async () => {
+    const res = await request(server).get('/api/this-route-does-not-exist').set('Host', '127.0.0.1:3001');
+    expect(res.status).toBe(404);
+  });
+
+  it('and /api/stream is a real SSE route, which is why it is checked apart', async () => {
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    const abort = new AbortController();
+    try {
+      // fetch resolves on headers, so this never waits for a stream that by design does not end.
+      const res = await fetch(`http://127.0.0.1:${port}/api/stream`, { signal: abort.signal });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+    } finally {
+      abort.abort();
+      closeAllStreamClients(); // an open SSE response would keep server.close() waiting in afterAll
+    }
+  });
+
+  // The status is not the point — the write not landing is. A refusal that still mutated the board
+  // would satisfy every assertion above.
+  it('and the refused write leaves the board untouched', async () => {
+    await seedTicket('tkt-hostgate01', 'Present before the attempt');
+    const before = (await request(server).get('/api/tickets')).body.tickets.length;
+    const res = await request(server)
+      .post('/api/tickets')
+      .set('Host', FORGED)
+      .send({ title: 'Filed by a rebound page', type: 'task', priority: 'medium' });
+    expect(res.status).toBe(403);
+    expect((await request(server).get('/api/tickets')).body.tickets.length).toBe(before);
+  });
+
+  // An EMPTY Host, which is a different code path from an absent one: this fails on `new URL('http://')`
+  // throwing, while a genuinely absent header (HTTP/1.0) takes the `host === undefined` branch —
+  // unreachable through supertest, and covered directly in terminalAuth.test.ts.
+  it('refuses a request whose Host is empty, rather than assuming the best', async () => {
+    const res = await request(server).get('/api/tickets').set('Host', '');
+    expect(res.status).toBe(403);
+  });
+
+  /**
+   * The name a rebinding attack actually gets to choose. `*.localhost` is loopback only where the
+   * resolver honours RFC 6761; where it does not, the attacker publishes it, serves the page, and
+   * rebinds. `isLoopbackHost` accepts it — correctly, for a URL it containerizes — so this asserts
+   * the gate's own narrower rule, at the HTTP level where it matters.
+   */
+  it('refuses attacker.localhost, which isLoopbackHost alone would allow', async () => {
+    const res = await request(server).get('/api/tickets').set('Host', 'attacker.localhost');
+    expect(res.status).toBe(403);
+  });
+
+  /**
+   * `0.0.0.0` reaches loopback services in browsers that never applied the 2024 fix, and it is not a
+   * name anyone's DNS has to resolve — so it is a way in that rebinding does not even need. No real
+   * caller dials it: the UI dials `localhost`, the proxy dials `localhost`, curl dials whatever the
+   * user typed. `isLoopbackHost` treats it as loopback for `containerizeLoopbackUrl`, where it is the
+   * right answer for a URL; as a *dialled name* it is not.
+   */
+  it('refuses 0.0.0.0, which is a route to loopback rather than a name for it', async () => {
+    const res = await request(server).get('/api/tickets').set('Host', '0.0.0.0:3001');
+    expect(res.status).toBe(403);
+  });
+
+  // The control. Without it a guard that refused everything would pass every case above — and the
+  // shifted port matters because KANBAN_PORT_OFFSET moves both dev ports in a worktree.
+  it.each(['127.0.0.1:3001', 'localhost:5173', 'localhost', '[::1]:3001', 'localhost:5223', '127.0.0.1:3051'])(
+    'and still answers the real page on Host %s',
+    async (host) => {
+      const res = await request(server).get('/api/tickets').set('Host', host);
+      expect(res.status).toBe(200);
+    },
+  );
+
+  /**
+   * Ordering, asserted through its effect: the guard is wired before `express.json`, so an
+   * oversized body from a rebound Host is refused rather than buffered and parsed. The control
+   * below sends the same body from a real Host and requires the 413 — without it this passes for
+   * any body size at all, including one the parser never objected to.
+   */
+  describe('and refuses before the body is parsed', () => {
+    const oversized = { title: 'x'.repeat(300_000), type: 'task', priority: 'medium' };
+
+    it('403s the oversized body rather than 413ing it', async () => {
+      const res = await request(server).post('/api/tickets').set('Host', FORGED).send(oversized);
+      expect(res.status).toBe(403);
+    });
+
+    it('and that body really is one the parser would have rejected', async () => {
+      const res = await request(server).post('/api/tickets').send(oversized);
+      expect(res.status).toBe(413);
+    });
   });
 });
 
