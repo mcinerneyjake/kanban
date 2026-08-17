@@ -269,6 +269,71 @@ describe('.claude/settings.json permission allowlist', () => {
     expect(fire('gh pr merge 40 --squash', {}).status, 'the main thread must stay allowed').toBe(0);
   });
 
+});
+
+// The BROADEST permissions actually in effect were the ones nothing checked (tkt-fa2bd5a7a455).
+// `.claude/settings.local.json` grants `Bash(npm run *)`, `Bash(node *)`, `Bash(npm install *)` — exactly
+// the wildcard shapes CLAUDE.md said were never allowed — and it is gitignored GLOBALLY via
+// ~/.config/git/ignore, so the audit above and CI are both blind to it. Two facts make that matter:
+// `guard-bash` contains zero references to npm or node (measured), so those rules have no runtime
+// backstop at all; and `.husky/pre-commit` runs `npm test`, so a test here gates every local commit.
+//
+// This can never be a CI gate — the file is legitimately absent there. What it must not do is pass
+// VACUOUSLY in that case, so the mode is asserted explicitly rather than skipped.
+describe('.claude/settings.local.json (machine-local, audited only where it exists)', () => {
+  const localPath = new URL('./settings.local.json', import.meta.url);
+  const present = existsSync(localPath);
+  const localAllow = present
+    ? (JSON.parse(readFileSync(localPath, 'utf8')).permissions?.allow ?? [])
+    : null;
+
+  // A wildcard that ends the rule is the dangerous shape: `Bash(npm run *)` admits any script. One
+  // inside a quoted literal (`Bash(git commit -m ' *)`) is a message body, not a subcommand.
+  const isOpenEnded = (rule) => /\*\s*\)$/.test(rule) && !/'[^']*\*/.test(rule);
+
+  // Reviewed and deliberate. Each is Jake's own local choice; the point of the list is that a NEW one
+  // has to be added here consciously rather than arriving unnoticed.
+  const REVIEWED_LOCAL_WILDCARDS = new Set([
+    'Bash(git push *)', 'Bash(git add *)', 'Bash(git switch *)', 'Bash(git pull *)', // git: guard-bash-backed
+    'Bash(gh pr *)', 'Bash(npx playwright *)', 'Bash(npx vitest *)', 'Bash(npm test *)',
+    'Bash(npm run *)', 'Bash(node *)', 'Bash(npm install *)', // NO runtime backstop — see the header
+  ]);
+
+  it('records whether it evaluated anything, so an absent file is not a silent pass', () => {
+    // The three-outcome discipline in its smallest form: this is 'audited' or 'absent', never an
+    // unexamined green. In CI it is 'absent' and the assertions below have nothing to check — which is
+    // a fact about the environment, and is stated rather than hidden.
+    expect(present ? 'audited' : 'absent').toMatch(/^(audited|absent)$/);
+    if (!present) expect(localAllow).toBeNull();
+  });
+
+  it.runIf(present)('grants no open-ended wildcard that has not been reviewed here', () => {
+    const unreviewed = localAllow.filter((r) => isOpenEnded(r) && !REVIEWED_LOCAL_WILDCARDS.has(r));
+    expect(unreviewed, 'add it to REVIEWED_LOCAL_WILDCARDS deliberately, or narrow the rule').toEqual([]);
+  });
+
+  it.runIf(present)('rejects the same dangerous tokens as the checked-in file', () => {
+    // The local file is not a lower standard — it is just invisible to CI.
+    for (const rule of localAllow) {
+      for (const token of FORBIDDEN) {
+        expect(rule.includes(token), `${rule} contains "${token}"`).toBe(false);
+      }
+    }
+  });
+
+  // The control. A detector that matched nothing would pass every local file forever, which is the
+  // vacuous shape this whole block exists to avoid — so prove it fires and prove it discriminates.
+  it('detects open-ended wildcards, and does not fire on a quoted message body', () => {
+    for (const rule of ['Bash(npm run *)', 'Bash(node *)', 'Bash(gh pr *)', 'Bash(npx playwright *)']) {
+      expect(isOpenEnded(rule), rule).toBe(true);
+    }
+    for (const rule of ["Bash(git commit -m ' *)", 'Bash(npm test)', 'Bash(npm run lint)', 'mcp__kanban__get_ticket']) {
+      expect(isOpenEnded(rule), rule).toBe(false);
+    }
+  });
+});
+
+describe('.claude/settings.json permission allowlist — hook backstops', () => {
   // Guards are per-repo (duplicates decide identically); WRITERS are per-machine — a second track-steps
   // double-writes every milestone (1,889 rows, 2026-07-17..08-13; tkt-af4669ce9a0d).
   // Detects OVER-wiring only: the surviving writer is machine-local, so its removal is silent here.
