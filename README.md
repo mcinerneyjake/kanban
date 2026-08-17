@@ -17,11 +17,10 @@ code, and closes it with `update_ticket` — dogfooding the very tools it builds
 
 The workflow is deliberately strict so an agent can run it end-to-end. One
 ticket → one branch → one squash-merged PR, gated by CI (typecheck · lint ·
-Vitest, plus a path-filtered Playwright e2e job) and a *second* automated Claude
-review that comments on each PR. Branch protection blocks direct pushes to
-`main`, so nothing merges without the gate green. A human approves three
-checkpoints — commit, open PR, merge — but the implementation between them is
-the agent's.
+Vitest, plus a path-filtered Playwright e2e job). Branch protection blocks
+direct pushes to `main`, so nothing merges without the gate green. A human
+approves four checkpoints — commit, **a code review before that commit**, open
+PR, merge — but the implementation between them is the agent's.
 
 The result, as of 2026-07-27: **264 commits across 23 active days, 235
 co-authored by Claude**, each a self-contained, tested, reviewed slice rather
@@ -179,7 +178,7 @@ set `LLM_API_KEY` (`.env` only, never commit). **OpenAI**
 dedicated Anthropic/Claude chat driver was evaluated and deliberately dropped
 rather than shipped half-verified — cloud stays a config swap behind the seam,
 not a maintained path. (The one cloud integration this repo keeps is the CI
-code-review job.) Note the embedder is keyless today, so retrieval still runs
+code-review job — whose workflow is currently disabled, see the CI section.) Note the embedder is keyless today, so retrieval still runs
 against a local embedding model either way.
 
 #### GitHub-in-terminal (optional) — push + open PRs from the embedded terminal
@@ -270,14 +269,18 @@ npm run test:e2e    # playwright — boots the app and drives a real browser
 A husky pre-commit hook runs the first three locally; the same gate runs in
 GitHub Actions on every PR, alongside a check that branch names follow
 `<type>/<id>-<slug>`. Work lands on `main` via squash-merged PRs, with branch
-protection requiring three checks green (gate · branch-name · review).
+protection requiring two checks green (gate · branch-name).
 
-Two more workflows run per-PR: an automated **Claude code review** posts
-findings as a comment when an `ANTHROPIC_API_KEY` repo secret is configured
-(and skips silently when it's absent or the diff is docs-only), and a
-path-filtered **Playwright e2e job** runs the browser suite whenever UI-facing
-files change — advisory for now, promoted to required once it has a stable
-track record. All workflows run least-privilege (`contents: read`) with
+A path-filtered **Playwright e2e job** runs the browser suite whenever
+UI-facing files change — advisory for now, promoted to required once it has a
+stable track record. A third workflow, an automated **Claude code review**, is
+currently **disabled**: it needs an `ANTHROPIC_API_KEY` repo secret, and
+without one it correctly fails closed rather than skipping green — which meant
+a red check on every PR, so it was switched off pending a decision on whether
+to configure the key or retire the job. Note what that costs: a disabled
+workflow contributes *no* check rather than a failing one, so the PR reads
+all-green; `gh workflow list --all` is the only way to see it. All workflows
+run least-privilege (`contents: read`) with
 concurrency groups.
 
 > The e2e suite is deterministic without a local LLM: `playwright.config.ts`
