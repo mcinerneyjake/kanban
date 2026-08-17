@@ -126,8 +126,53 @@ export class ApiPriceCostModel implements CostModel {
     if (!price || !isSet(price.inputPerMTok) || !isSet(price.outputPerMTok)) {
       return [{ label, amount: null, unit: 'USD', kind: 'assumed', note: 'notional — no price configured for this model' }];
     }
-    const usd = (usage.promptTokens / 1e6) * price.inputPerMTok.value
-      + (usage.completionTokens / 1e6) * price.outputPerMTok.value;
-    return [{ label, amount: usd, unit: 'USD', kind: 'assumed' }];
+    const { promptTokens, completionTokens, note } = chargeableTokens(usage);
+    const usd = (promptTokens / 1e6) * price.inputPerMTok.value
+      + (completionTokens / 1e6) * price.outputPerMTok.value;
+    return [{ label, amount: usd, unit: 'USD', kind: 'assumed', note }];
   }
+}
+
+// `usage` is a MERGE of the chat and embed meters (intake.ts), so its scalar token totals are mixed —
+// and this model holds one price, the chat model's. Charging embed tokens at a chat rate inflated the
+// cloud-equivalent, and with it the local-vs-cloud saving derived from it: the direction that flatters
+// our own argument (tkt-4251671dcb5a).
+//
+// Excluding rather than pricing them separately is deliberate: no embed price exists anywhere
+// (`apiPrices` is `{}`), so a per-kind rate would be an invented number, while exclusion errs low.
+// The per-call trace already carries `kind` and its own tokens, so no new plumbing is needed.
+function chargeableTokens(usage: RunUsage): { promptTokens: number; completionTokens: number; note?: string } {
+  const unsplittable = {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    note: 'no usable call trace — any embedding tokens in this total are priced at the chat rate',
+  };
+  // undefined ≠ []: a run logged before tracing existed cannot be split at all, so the mixed total is
+  // the only figure available — but it must say so rather than pass as a clean one.
+  if (!usage.callTrace) return unsplittable;
+
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let embedTokens = 0;
+  let traced = 0;
+  for (const c of usage.callTrace) {
+    if (!c.tokens) continue; // unreported (LM Studio embeddings report 0) — no tokens to charge either way
+    traced += c.tokens.prompt + c.tokens.completion;
+    if (c.kind === 'embed') { embedTokens += c.tokens.prompt + c.tokens.completion; continue; }
+    promptTokens += c.tokens.prompt;
+    completionTokens += c.tokens.completion;
+  }
+  // The scalars accumulate from these same per-call tokens (UsageMeter.record), so for real usage the
+  // two agree exactly. Disagreement means the trace cannot account for the totals — an empty trace
+  // beside non-zero tokens, say — and charging only what it does account for would silently understate
+  // the figure, which is the mirror of the bug being fixed. Fall back and say the split failed.
+  if (traced !== usage.promptTokens + usage.completionTokens) return unsplittable;
+
+  return {
+    promptTokens,
+    completionTokens,
+    note: embedTokens > 0
+      ? `excludes ${embedTokens.toLocaleString()} embedding tokens — no cloud embed price is configured, and charging them at the chat rate would overstate this`
+      : undefined,
+  };
 }
