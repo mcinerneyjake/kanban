@@ -6,6 +6,7 @@ import { classifyClose, reconnectDelayMs, RECONNECT, overlayFor, liveMessageFor,
 import { clipboardIntent, decidePaste } from '../lib/terminalClipboard';
 import { serializeBuffer } from '../lib/terminalBuffer';
 import TerminalPipelinePhase from './TerminalPipelinePhase.js';
+import { terminalInputBuffer, canSendInput } from '../lib/terminalInputBuffer.js';
 
 // Dev-only floating terminal (tkt-be809dd2b7fb): an xterm bound over a WebSocket to a
 // confined, subscription-authed Claude Code session in a container. Minimize keeps the
@@ -96,6 +97,9 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
   // A multi-line paste held for confirmation (see decidePaste), and the notice for a refused one.
   const [pendingPaste, setPendingPaste] = useState<{ text: string; lines: number } | null>(null);
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  // Set when the input buffer refused a keystroke or a confirmed paste. A refused input is GONE, so the
+  // one thing this must not do is stay quiet about it (tkt-13d218c7749d).
+  const [inputDropped, setInputDropped] = useState(false);
   const cancelPasteRef = useRef<HTMLButtonElement | null>(null);
   // A frozen, browser-selectable snapshot of the buffer (null = closed). See copy view below.
   const [copyView, setCopyView] = useState<string | null>(null);
@@ -147,9 +151,14 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
     termRef.current = term;
     fitRef.current = fit;
 
+    // One buffer for the whole widget lifetime, not per socket — it exists precisely to bridge the gap
+    // between two sockets.
+    const inputBuffer = terminalInputBuffer();
     let ws: WebSocket | null = null;
     let disposed = false;
     let hasEverOpened = false;
+    // Effect-scoped, not per-socket: the input path must consult it too (see sendInput).
+    let pendingSizeResend = false; // a reattach must re-deliver the size once the fresh pty is live
     let reconnectAttempts = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -158,9 +167,26 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
     const sendResize = () => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));
     };
-    const dataSub = term.onData((d) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'i', d }));
-    });
+    // Input is only deliverable once the socket is open AND the server-side pty is live. A reattach gets a
+    // FRESH pty created asynchronously, so input sent in that window races its creation and is dropped
+    // exactly as the onopen resize is — which is why this shares pendingSizeResend rather than testing
+    // readyState alone (tkt-13d218c7749d).
+    const canSend = () => canSendInput(ws?.readyState, pendingSizeResend);
+    const sendInput = (d: string) => {
+      if (canSend()) { ws?.send(JSON.stringify({ t: 'i', d })); return; }
+      // Refused means NOTHING was queued, so it has to be said out loud — a silent drop is the defect.
+      if (!inputBuffer.queue(d)) setInputDropped(true);
+    };
+    // Ordered after the reattach resize, so the pty's SIGWINCH repaint lands before the replayed input.
+    // drain() empties the buffer, so the onopen and first-byte call sites cannot double-apply.
+    const flushInput = () => {
+      if (!canSend()) return;
+      for (const d of inputBuffer.drain()) ws?.send(JSON.stringify({ t: 'i', d }));
+      setInputDropped(false);
+    };
+    // term.paste() routes through coreService.triggerDataEvent, i.e. this same handler, so a confirmed
+    // paste is buffered here too — verified against xterm's own paste implementation.
+    const dataSub = term.onData(sendInput);
     // Clipboard (tkt-fe2ead98fd65). Paste never calls navigator.clipboard.readText() — that would
     // give the page ambient read of the clipboard; the only source is the user-gesture paste event.
     term.attachCustomKeyEventHandler((event) => {
@@ -229,7 +255,6 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
           ws = socket;
           wsRef.current = socket;
           let revealed = false;
-          let pendingSizeResend = false; // a reattach must re-deliver the size once the fresh pty is live
           // Lift the loading overlay only once claude's initial render burst SETTLES (a quiet gap
           // after output) — revealing on the first byte would flash the freshly-cleared screen before
           // the UI paints. A hard cap covers sessions that stream continuously.
@@ -255,7 +280,10 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
             // which proves the pty is live; the pty is at the WRONG size, so that one resize is itself
             // the change that makes Claude/Ink fully re-lay-out (no artificial nudge/timer needed —
             // that's only for the reload path, whose pty is already at the right size).
-            if (isReattach) pendingSizeResend = true;
+            pendingSizeResend = isReattach;
+            // A plain (re)connect has a live pty already, so anything buffered while we were down goes
+            // now; a reattach waits for the first byte below.
+            flushInput();
             // Reveal once output SETTLES (first byte + a quiet gap) for both new and reattached
             // sessions: a reattach's SIGWINCH repaint emits bytes, so it still reveals fast — and a
             // client can't reliably tell a reattach from a server-side fresh boot (grace expired /
@@ -271,6 +299,7 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
             if (pendingSizeResend) {
               pendingSizeResend = false;
               sendResize();
+              flushInput(); // after the resize, so the repaint precedes the replayed input
             }
             if (!revealed) {
               if (settleTimer) clearTimeout(settleTimer);
@@ -461,6 +490,13 @@ export default function TerminalWidget({ session, theme, onClose, onStartShell }
         {/* Suppressed while a confirm is open: both bars are absolute/top:0/z-index:1, so the notice
             (which Copy can raise mid-confirm) would paint over the security warning. */}
         {pasteNotice && !pendingPaste && <div className="tw-paste-bar" role="status">{pasteNotice}</div>}
+        {/* role=alert, not status: the input is already gone, so this is the only record of it. Cleared
+            automatically on the next successful flush. */}
+        {inputDropped && !pendingPaste && !pasteNotice && (
+          <div className="tw-paste-bar" role="alert">
+            Input was dropped — too much typed while disconnected. Re-enter it once the terminal reconnects.
+          </div>
+        )}
       </div>
       {/* Screen readers get the reconnect/recovery cue that used to live in the (now removed) overlay. */}
       <span className="sr-only" role="status" aria-live="polite">{liveMsg}</span>
