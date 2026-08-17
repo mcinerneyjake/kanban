@@ -172,4 +172,77 @@ describe('ApiPriceCostModel (dormant seam)', () => {
     const lines = new ApiPriceCostModel(prices, 'm').lines(usageWith({}));
     expect(lines[0].amount).toBe(0);
   });
+
+  // tkt-4251671dcb5a. intake merges the chat and embed meters, so `promptTokens` is a MIXED total —
+  // and this model prices all of it at the CHAT model's input rate. An embed model is an order of
+  // magnitude cheaper, so the cloud-equivalent (and the local-vs-cloud saving derived from it) came out
+  // inflated. The trace already carries per-call `kind` and tokens, so the split needs no new plumbing.
+  describe('mixed chat + embed usage', () => {
+    const prices = {
+      chat: {
+        inputPerMTok: { value: 3, unit: 'USD/Mtok', source: 'test' },
+        outputPerMTok: { value: 15, unit: 'USD/Mtok', source: 'test' },
+      },
+    };
+    const call = (kind: 'chat' | 'embed', prompt: number, completion: number, startedAt: number) =>
+      ({ kind, startedAt, ms: 10, inputChars: 100, tokens: { prompt, completion, total: prompt + completion } });
+
+    it('prices only the chat tokens, and says the embed ones were excluded', () => {
+      const usage = usageWith({
+        promptTokens: 1_000_000 + 4_000_000, // 1M chat + 4M embed, as mergeUsage produces
+        completionTokens: 1_000_000,
+        calls: 2,
+        reportedCalls: 2,
+        activeMs: 20,
+        callTrace: [call('chat', 1_000_000, 1_000_000, 1), call('embed', 4_000_000, 0, 2)],
+      });
+      const [cloud] = new ApiPriceCostModel(prices, 'chat').lines(usage);
+      expect(cloud.amount).toBeCloseTo(18, 9); // 1M×3 + 1M×15 — the embed 4M is NOT priced at $3/Mtok
+      // Names the exclusion AND how much was excluded: a note that just says "some tokens omitted"
+      // leaves the reader unable to judge the size of what is missing.
+      expect(cloud.note).toMatch(/embed/i);
+      expect(cloud.note).toContain('4,000,000');
+    });
+
+    // The control: exclusion must not become "price nothing". A chat-only traced run is unchanged.
+    it('leaves a chat-only run exactly as before', () => {
+      const usage = usageWith({
+        promptTokens: 1_000_000, completionTokens: 1_000_000, calls: 1, reportedCalls: 1, activeMs: 10,
+        callTrace: [call('chat', 1_000_000, 1_000_000, 1)],
+      });
+      const [cloud] = new ApiPriceCostModel(prices, 'chat').lines(usage);
+      expect(cloud.amount).toBeCloseTo(18, 9);
+      expect(cloud.note).toBeUndefined(); // nothing was excluded, so nothing to caveat
+    });
+
+    // A pre-trace run (callTrace undefined) cannot be split at all. Keeping the old total is the only
+    // option, but it must SAY the total may include embed tokens rather than imply a clean figure.
+    it('falls back to the mixed total when the trace is absent, and states the assumption', () => {
+      const usage = usageWith({ promptTokens: 1_000_000, completionTokens: 1_000_000, reportedCalls: 1 });
+      delete usage.callTrace; // a run logged before tracing existed
+      const [cloud] = new ApiPriceCostModel(prices, 'chat').lines(usage);
+      expect(cloud.amount).toBeCloseTo(18, 9);
+      expect(cloud.note).toMatch(/no usable call trace/i);
+    });
+
+    // The mirror of the bug: charging only what the trace accounts for would UNDERSTATE the figure when
+    // the trace cannot account for the totals. An empty trace beside real tokens is the reachable case,
+    // since emptyUsage() supplies `callTrace: []`.
+    it('falls back rather than zeroing when the trace cannot account for the totals', () => {
+      const usage = usageWith({ promptTokens: 1_000_000, completionTokens: 1_000_000, reportedCalls: 1, callTrace: [] });
+      const [cloud] = new ApiPriceCostModel(prices, 'chat').lines(usage);
+      expect(cloud.amount).toBeCloseTo(18, 9); // NOT 0
+      expect(cloud.note).toMatch(/no usable call trace/i);
+    });
+
+    it('is 0, not notional, for a run that was ONLY embeddings', () => {
+      const usage = usageWith({
+        promptTokens: 4_000_000, calls: 1, reportedCalls: 1, activeMs: 10,
+        callTrace: [call('embed', 4_000_000, 0, 1)],
+      });
+      const [cloud] = new ApiPriceCostModel(prices, 'chat').lines(usage);
+      expect(cloud.amount).toBe(0); // a measured zero: there was no chat work to price
+      expect(cloud.note).toMatch(/embed/i);
+    });
+  });
 });
