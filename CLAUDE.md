@@ -422,6 +422,43 @@ This is where the rule was paid for: **~12 confident false results in one 2026-0
 - **Merged-but-undeleted branches: `scripts/probe/merged-branches.mjs <repo-path>`** (`tkt-0993b12650a1`). Ancestry is the wrong instrument — a squash-merge makes a branch's commits non-ancestors of `main`, so `git rev-list main..<branch>` called 11 of 13 branches live when 3 were. This asks GitHub for merged PRs instead, and requires the branch tip to still *be* the merged head: a name matching a merged PR does not mean the commits do. It prints a paste-ready `git branch -D`, which stays a **human** action (`guard-bash` blocks the agent, correctly — see **Concurrent sessions**).
 - **Before A/B-ing any instruction change: `node scripts/probe/clean-room.mjs`** (`tkt-b86d2a318f8b`). Answers whether a session can be run that loads **no** user-scope instructions — without one, both arms carry `~/.claude/CLAUDE.md` and the difference between them is unattributable, which is what invalidated the `tkt-70ab03c22f43` A/B. **It reports `BLOCKED`, not `CLEAN`, when it cannot tell** — `CLEAN` is reachable from exactly one arm pair and every other input, including an unrecognised one, is `BLOCKED` — and it exits non-zero on anything but `CLEAN`. As measured 2026-08-11 it *is* `BLOCKED` here: `--bare` and an isolated `CLAUDE_CONFIG_DIR` both exist and both fail auth on this subscription-only machine (`--bare` reads strictly `ANTHROPIC_API_KEY`; the OAuth token does not travel with a copied `.claude.json`). The unblocker is an API key, not a new mechanism — so until then, **an instruction change can be reasoned about but not measured, and should not be deleted on the strength of one A/B.** When it does go green, note that `--bare` strips MCP servers, skills and hooks as well as `CLAUDE.md`, so those must be held constant across both arms or they become the next confound.
 
+## Writing these documents
+
+`CLAUDE.md` and `README.md` instruct every future session, so a wrong sentence here misinforms
+unboundedly and silently — unlike a wrong function, which fails once and loudly. Two rules, both paid
+for by `tkt-4de2f4a839b7`, where a `/code-review` found **12** false or stale claims across the two
+files and 9 needed correcting.
+
+**1. For mutable external state, write the probe — not the answer.** Nearly every stale claim here was
+*true when written*: `review` really was red on every PR, branch protection really did require three
+checks. They rotted because they were recorded as answers to questions nobody would re-ask. A sentence
+naming the command that answers it cannot go stale.
+
+> ❌ "`review` is RED on every ordinary PR until the secret is set."
+> ✅ "`gh workflow list --all` says whether `review` runs here — the checks list can't, because a
+> disabled workflow contributes no check at all."
+
+Applies to workflow states, branch-protection rulesets, secrets, installed versions, and anything else
+living outside the repo. Where the current answer genuinely helps, **date it and keep the probe beside
+it**, the way `repoStats` is an `asOf` snapshot rather than a live figure.
+
+**2. A claim about code in this repo belongs in a test, not in prose.** If it can be measured, assert
+it — `.claude/settings.audit.test.mjs` is the home, and `shared/constants.test.ts` is the pattern. A
+hand-run `grep` quoted into a paragraph is a transcription, and *"generate, don't transcribe"* applies
+to sentences exactly as it does to numbers. Precedent: this file asserted twice that `guard-bash` never
+inspects `gh`, and drew a real conclusion from it (the merge gate has no runtime backstop) — nothing
+checked it until that claim got its own test.
+
+**3. Governing-doc changes are never "trivial".** The Testing table lets docs-only changes skip tests,
+and that stays true — but do not let "it's only markdown" also skip the **review gate**. These two files
+are where an unreviewed false claim propagates furthest. Size is not the measure of blast radius here.
+
+**Do not build an assertion-word probe for this.** It was prototyped and measured against the pre-fix
+files: **1 true positive in 51 flags** (~2% precision, 20% recall). The premise is backwards — words
+like *never*/*cannot*/*enforced* select for prose the author thought hard about, which is already hedged
+and cited, while the claims that actually rot are unremarkable declaratives (*"A human approves three
+checkpoints."*). The measurement is in `tkt-4de2f4a839b7`.
+
 ## Stack
 
 React + Vite frontend, Express API, markdown files as the database (no SQL).
