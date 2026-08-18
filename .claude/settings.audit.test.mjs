@@ -220,6 +220,78 @@ describe('.claude/settings.json permission allowlist', () => {
     }
   });
 
+  // The kanban-workflow skill's foreign-repo mode (tkt-9a3afc5b9f4f) rests on ONE claim: a command
+  // carrying `cd <target>` is judged against the TARGET's branch, so never-commit-to-main still
+  // applies to the repo actually being written. That is a claim about code in this repo, so it
+  // belongs in a test rather than in SKILL.md prose (CLAUDE.md -> Writing these documents).
+  // Both directions are asserted: blocking-on-cd alone is equally consistent with a guard that
+  // blocks any cd, which would make foreign mode unusable rather than safe.
+  it('judges a cd-carrying command against the target repo, in both directions', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'audit-guard-cd-'));
+    try {
+      const make = (name, branch) => {
+        const dir = join(tmp, name);
+        const git = (...args) => execFileSync('git', args, { cwd: dir, env: hermeticEnv(), encoding: 'utf8' });
+        execFileSync('git', ['init', '-q', '-b', 'main', dir], { env: hermeticEnv() });
+        git('remote', 'add', 'origin', 'https://example.invalid/r.git'); // protected-branch rules need one
+        git('config', 'user.email', 't@t');
+        git('config', 'user.name', 't');
+        writeFileSync(join(dir, 'a.txt'), 'x');
+        git('add', 'a.txt');
+        git('commit', '-qm', 'init');
+        if (branch) git('switch', '-qc', branch);
+        return dir;
+      };
+      const onBranch = make('sess', 'feat/tkt-abcdef123456-x');
+      const onMain = make('targ', null);
+      const spaced = make('has space', null); // `make` joins, so the space lands in the path
+
+      const hook = wiredLocalHooks().find((f) => f.includes('guard-bash'));
+      expect(hook, 'no guard-bash launcher is wired').toBeTruthy();
+      // `cwd` goes in the PAYLOAD as well as on the process: guard-bash reads `payload?.cwd ??
+      // process.cwd()`, and the runtime always sends the field, so a payload-less fixture would
+      // exercise a fallback production never takes.
+      const run = (cwd, command) =>
+        spawnSync('node', [hook], {
+          input: JSON.stringify({ cwd, tool_name: 'Bash', tool_input: { command } }),
+          cwd,
+          env: hermeticEnv(),
+          encoding: 'utf8',
+        });
+      const fire = (cwd, command) => run(cwd, command).status;
+
+      // Session is on a feature branch, so the session's own branch would ALLOW. Only reading the
+      // cd target's branch produces a block — this is the assertion foreign mode's safety rests on.
+      expect(fire(onBranch, 'git commit -m x'), 'plain commit on a feature branch must be allowed').toBe(0);
+      const blocked = run(onBranch, `cd ${onMain} && git commit -m x`);
+      expect(blocked.status, 'a cd into a repo on main must be blocked, judged by the TARGET branch').toBe(2);
+      // Exit 2 has four sources here, two of them "cannot determine" — so the status alone would stay
+      // green if branch resolution broke and the target-branch judgement stopped happening.
+      expect(blocked.stderr, `blocked for the wrong reason: ${blocked.stderr}`).toMatch(/commits to main/i);
+
+      // The reverse: session on main, cd into a feature branch. A guard that merely blocked any cd,
+      // or that read only the session, would fail here — and foreign mode would be dead in practice.
+      expect(fire(onMain, 'git commit -m x'), 'plain commit on main must be blocked').toBe(2);
+      expect(
+        fire(onMain, `cd ${onBranch} && git commit -m x`),
+        'a cd into a repo on a feature branch must be allowed even when the session sits on main',
+      ).toBe(0);
+
+      // KNOWN FAIL-OPEN, pinned deliberately. `resolveDir` returns null for a target it cannot parse
+      // — whitespace-split, quoted, or variable — and the guard then falls back to the SESSION's
+      // branch, which in foreign mode is the permissive answer. This is why SKILL.md §1 refuses such
+      // a target and §2a mandates a literal unquoted path; if upstream ever fixes it, this goes red
+      // and that instruction can be relaxed. Deleting the instruction while this still passes would
+      // reopen a real hole (tkt-9a3afc5b9f4f, code review finding 1).
+      expect(
+        fire(onBranch, `cd ${spaced} && git commit -m x`),
+        'if this now BLOCKS, guard-bash parses spaced targets — relax SKILL.md §1/§2a to match',
+      ).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   // guard-ticket needs its own behavioural case: the shape test above is satisfied by a path in a
   // COMMENT, so a launcher hollowed out to `process.exit(0)` would leave create_ticket unguarded —
   // defeating the metered-intake gate — with every other assertion here still green.

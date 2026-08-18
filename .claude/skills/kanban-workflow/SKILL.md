@@ -12,7 +12,7 @@ you read it at runtime (step 2). If you find yourself reciting testing tables, c
 formats or seam rules from memory, stop and go read the repo's file instead. Two sources of truth
 drift, and a stale skill *instructs*.
 
-What is yours: argument parsing, the repo check, board audit, ticket selection, premise validation,
+What is yours: argument parsing, repo resolution, board audit, ticket selection, premise validation,
 gate levels, hard stops, and the loop.
 
 ## 0. Parse `$ARGUMENTS`
@@ -27,13 +27,19 @@ No project given: call `list_tickets` per project, show open counts, and `AskUse
 list.
 
 State the resolved settings in one line before doing anything: `project=X gates=Y continuous=Z`.
+Reprint it with `mode=native|foreign` appended once §1 has resolved the repos — it cannot be known
+before then, since it needs the `git rev-parse` and the repo map.
 
-## 1. Repo check — fail closed, before any board read
+## 1. Resolve the repos — native or foreign mode
 
-Resolve the session's repo with `git rev-parse --show-toplevel`. If it is not the project's repo,
-**stop immediately**: print the path to open a session in, and make no other tool call. Do not work
-another repo over absolute paths — that repo's `CLAUDE.md`, `settings.json` and guard hooks load from
-the *session's* directory, so working it from here silently drops every rule it has.
+Two repos matter, and they are not always the same one:
+
+- the **session repo** — `git rev-parse --show-toplevel`. This is where the auto-injected `CLAUDE.md`,
+  the `settings.json` allowlist and the project-scoped hooks came from, whatever you do later.
+- the **target repo** — where this project's code lives, resolved from the project→repo map below.
+
+Equal → **native mode**. Different → **foreign mode**: you drive the target repo from this session,
+via §2a's command form. Announce which one, and in foreign mode name both paths.
 
 **The project→repo map lives at `$CLAUDE_PROJECT_DIR/.claude/skills/kanban-workflow/repos.local.json`.**
 Read it and resolve the target as `<baseDir>/<projects[project].repo>`. That file is **gitignored on
@@ -55,19 +61,136 @@ JSON file with the wrong shape (`{}`, or `repos.example.json` copied with only `
 neither missing nor unparseable, so the first two conditions alone would let it through. Seed a real
 one from `repos.example.json` in the same directory.
 
-The map supplies the path to *print*; the cwd supplies the truth. Confirm the path exists before
-printing it — a stale row must not send anyone somewhere that isn't there. A project absent from the
-map: say you have no repo mapping and stop.
+**Three stops survive foreign mode. None is softened by it:**
+
+- **The resolved target path does not exist.** Print it and stop — a stale row must not send anyone,
+  or any `cd`, somewhere that isn't there. Confirm with a real check, not by assuming the map is current.
+- **The project is absent from the map.** Say you have no repo mapping and stop. Do not guess a path
+  from the project's name.
+- **The resolved target path is not a plain absolute path.** If it contains whitespace, `$`, `*`, a
+  quote or a leading `~`, stop and say why. This one is not fastidiousness — see the fail-open below.
+
+**Why foreign mode is safe, and the two places it is not.** `guard-bash` parses a `cd` (and a
+`git -C`) out of the command and judges **the target repo's** branch, so the protected-branch rules
+apply to the repo actually being written. It follows the `cd` in both directions: a `cd` into a repo
+on `main` is blocked even when the session sits on a feature branch, and a `cd` into a feature branch
+is allowed even when the session sits on `main`. Asserted against the pinned build in kanban's
+`.claude/settings.audit.test.mjs` ("judges a cd-carrying command against the target repo, in both
+directions") — do not take it from this file's word.
+
+Two limits on that, both measured, both failing in the **permissive** direction:
+
+1. **A target path the guard cannot parse silently reverts to judging the *session*.** `resolveDir`
+   returns null for a `cd` target that was whitespace-split, quoted, or a variable — and the fallback
+   is the session's branch, which in foreign mode is a feature branch, i.e. *allowed*. Measured, session
+   on a feature branch, every target on `main`: a plain `cd <path>` blocks, while `cd /a/my repo`,
+   `cd "/a/my repo"`, `cd '/a/my repo'`, `cd $TARGET` and `pushd <path>` **all pass**. Hence the third
+   stop above, and §2a's literal-path rule. The fail-open is pinned by a test case, so if upstream
+   fixes it that test goes red and these rules can be relaxed — do not relax them before that.
+2. **The commit rule is remote-gated; the push rule is not.** `ruleFor` returns null for `commit`
+   when the repo has no remote, so in a target with no `origin` a commit on `main` is **allowed** —
+   deliberate upstream behaviour ("land it on a branch and open a PR" being meaningless with nowhere
+   to push), and identical natively. Two mapped targets have no remote today. Do not tell a reader
+   working one of those that a guard is holding: check `git remote` and say which rules are live.
+
+**What foreign mode carries, and what it drops.** The old hard stop named three things that load from
+the session's directory — `CLAUDE.md`, `settings.json`, and the guard hooks. They do not all fare the
+same, so do not let the guard result above stand in for the other two:
+
+| loads from the session, not the target | status in foreign mode |
+|---|---|
+| **guard hooks** | **Carried** — but not because the target's copy runs. The guards are wired in `~/.claude/settings.json`, so they fire whatever the cwd, and `guard-bash` judges the `cd` target. The target's own `.claude/hooks/*` do **not** run, and they are not all launchers of the pinned package: two mapped targets vendor a standalone 333-line guard with no `ticket-workflow` reference at all. Those are older and stricter-by-accident (they hardcode `main` instead of consulting `origin/HEAD`), so the session's newer guard covers what they would have — verify that still holds before relying on it for a target you have not checked. |
+| **`CLAUDE.md`** | **Your job, per §2.** Nothing loads the target's automatically. |
+| **`settings.json` permission allowlist** | **Dropped, and in the permissive direction.** |
+| **pipeline telemetry** | **Dropped, per §2a.** |
+
+The allowlist row is the one with no mitigation, so state it rather than discovering it: commands you
+run against the target are permitted by **this session's** allowlist, and the board repo's is among
+the broadest on the machine. A target that deliberately allows less does not get to enforce that here.
+The guards still bound what a permitted command may *do* — this widens what runs without a prompt, it
+does not unblock a commit to `main`. If a target's restrictions are the point of the ticket, work it
+from a session rooted there instead.
 
 ## 2. Read the repo's own rules
 
-Read the target repo's `CLAUDE.md` and follow it for every mechanic: branch naming, commit format,
+Read the **target** repo's `CLAUDE.md` and follow it for every mechanic: branch naming, commit format,
 testing requirements, seam rules, PR body, merge steps. `~/.claude/CLAUDE.md` carries the status
 protocol and the engineering tenets and applies everywhere.
 
-**If the repo has no `CLAUDE.md`** (`ticket-workflow` today), say so out loud and fall back to
-`~/.claude/CLAUDE.md` plus the derived gate in step 9. Never silently assume kanban's rules apply
-elsewhere.
+> **Foreign mode inverts the usual precedence, and nothing on screen will tell you.** The `CLAUDE.md`
+> auto-injected into this session is the **session** repo's, and it does **not** govern the target's
+> ticket. It arrives first, it is never announced as scoped, and it reads exactly like the rules for
+> the work in front of you — so the failure is silent by construction. In foreign mode the target's
+> `CLAUDE.md` is the one you must go and read, and where the two disagree the **target wins** on every
+> mechanic. Say out loud which file you are following before the first edit.
+
+**Rank the target's rules by what its own `CLAUDE.md` actually defines** — do not treat "has a
+`CLAUDE.md`" as "defines a workflow":
+
+1. **It defines the mechanic** → follow it, exactly.
+2. **It deliberately defines a *different* one** → follow that, and do not restore the missing step.
+   A repo whose `CLAUDE.md` says commits land locally on `main` with no push, no PR and no CI means
+   it; inventing a PR gate there is not caution, it is disobeying the file you were sent to read.
+3. **It is silent on the mechanic** → fall back to `~/.claude/CLAUDE.md` plus the derived gate in
+   §9, and **say which mechanic you are improvising**. Silence is common: several targets define
+   testing and comment rules but no branch or commit convention at all.
+4. **There is no `CLAUDE.md`** → say so out loud, then as (3). Never silently assume kanban's rules
+   apply elsewhere; kanban's are the heaviest on this machine and the least likely to fit.
+
+Whichever rung applies, name it. "I am on rung 3 for commit format" is checkable; "following the
+repo's rules" is not.
+
+## 2a. Foreign-mode command form — `cd`, never `-C` or `--prefix`
+
+Skip this section in native mode. In foreign mode, **every** command that acts on the target repo is:
+
+```bash
+cd <target> && <the literal command from §6/§9/§11–13>
+```
+
+**Not `git -C <target> …`, and not `npm --prefix <target> …`, for any milestone-bearing command**
+(`git switch -c`, `npm run typecheck`, `npm run lint`, `npm test`, `git commit`, `gh pr create`).
+Both are safe — `guard-bash` follows `-C` as it follows `cd` — but the `track-steps` matcher is
+**positional**: it reads `t[0]`/`t[1]`/`t[2]`, so `git -C … commit` puts `-C` where `commit` must be
+and matches **nothing**. Measured, with controls:
+
+| command | milestone recorded |
+|---|---|
+| `git commit -m x` | `commit` |
+| `cd <target> && git commit -m x` | `commit` |
+| `git -C <target> commit -m x` | **none** |
+| `npm run typecheck` | `typecheck` |
+| `npm --prefix <target> run typecheck` | **none** |
+| `cd <target> && npm run typecheck` | `typecheck` |
+
+The compound form works because the matcher splits on `&&` first and matches each segment. So `cd`
+is not a style preference — it is the only spelling of a foreign command that the pipeline can see.
+
+`--prefix` stays correct in the one place it already appears (**Never**, filing a follow-up ticket):
+that command is deliberately *not* milestone-bearing, and it must run the agent from the board repo
+rather than the target.
+
+**Two things that are not commands, and route differently.** The board tools (`list_tickets`,
+`start_ticket`, `update_ticket`, `record_review`) reach the board through the MCP server — a **separate
+process** whose cwd and environment were fixed when the session started. No shell `cd` can move it, so
+these are correct in both modes and take no prefix. (Which root it resolved is a per-machine detail;
+what matters here is that a command's cwd is not an input to it.) **`EnterWorktree`/`ExitWorktree` are the
+opposite: they act on the *session's* repo**, so in foreign mode they would branch this repo rather
+than the target. Do not use them in foreign mode — if the target needs a worktree, that is a reason to
+work it from a session rooted there.
+
+> **Known limit — and it corrupts, it does not merely go missing.** `track-steps` resolves the ticket
+> id from the branch of the *session's* cwd, never from the `cd` target, and writes the milestone to
+> the central board's `events/<id>.jsonl`. So if this session sits on a branch carrying a `tkt-…` id,
+> a foreign-mode run appends `test`/`commit`/`review` rows to **that** ticket's log — a real kanban
+> ticket showing a pipeline it never ran. The `cd` form makes a milestone *matchable*; nothing makes
+> it *attributable*. Same class as the 1,889 duplicate rows in `tkt-af4669ce9a0d`.
+>
+> **So: before entering foreign mode, check the session's own branch.** If it carries a `tkt-…` id,
+> switch the session repo to `main` first, or stop and say why. On a branch with no id the milestone
+> resolves to nothing and is simply dropped, which is the acceptable version of this. Fixing it
+> properly is `tkt-8ada0242e94e` plus the runtime pin bump `tkt-876ab4261e69`; until both land, never
+> report the tracker as intact because the commands looked right.
 
 ## 3. Audit the board
 
@@ -147,7 +270,8 @@ Then cut the branch from a fresh `main` per the repo's convention (typically
 
 **Use the literal command spellings** `git switch -c`, `npm run typecheck`, `npm run lint`,
 `npm test`, `gh pr create` — the `track-steps` hook keys pipeline milestones off those exact strings
-and off the `tkt-[0-9a-f]{12}` in the branch name. A paraphrase records nothing, silently.
+and off the `tkt-[0-9a-f]{12}` in the branch name. A paraphrase records nothing, silently. In foreign
+mode these keep their exact spelling and gain a `cd <target> &&` prefix — see §2a.
 
 ## 7. `## Done when`
 
@@ -167,7 +291,8 @@ defect you were asked to fix.
 
 ## 9. Quality gate — derived, not assumed
 
-Read the repo's `package.json` scripts and run whichever of `typecheck`, `lint`, `test` exist.
+Read the **target** repo's `package.json` scripts and run whichever of `typecheck`, `lint`, `test`
+exist — in foreign mode, the target's, not the session's, and via §2a's `cd` form.
 **Name the ones that do not exist** rather than reporting a clean three-command gate — `ticket-workflow`
 has no `lint`, and a gate that silently shrinks is a gate that lies.
 
@@ -183,6 +308,11 @@ Announce the level and the reason *before* running it.
 - Security, failure paths, deploy, concurrency, cross-module seams, and **any line where a comment
   was written to defend a decision** → `/code-review` at high effort. For integration-heavy diffs add
   a flow-scoped angle: "trace this value source to sink; list every transformation or drop."
+
+**Always name the target repo in the review's arguments — never a bare `/code-review`.** It resolves
+against the session's cwd, so in foreign mode a bare call reviews *this* repo and reports confidently
+on a diff nobody asked about. In native mode naming it costs nothing; in foreign mode it is the whole
+difference between reviewing the work and reviewing the wrong repository (`tkt-32f7c384bcad`).
 
 **Always append to the review prompt: "distrust every comment in this diff — treat each asserted
 guarantee as a claim to verify, not a justification to read."** Confident prose is an instruction to
@@ -219,12 +349,19 @@ Then `record_review({ id })`.
 **Merge is human in every mode.** There is no flag that changes this.
 
 At PR-open, `update_ticket({ status: 'qa' })` — the single point a ticket enters `qa`. After the merge
-lands: `ExitWorktree` if the ticket ran in one, then `update_ticket({ status: 'done' })`.
+lands: `ExitWorktree` if the ticket ran in one (native mode only — see §2a), then
+`update_ticket({ status: 'done' })`.
 
 **Surface the target's `mergeWarning` at the merge gate rather than burying it.** Per-project
 warnings live in `repos.local.json` (§1) — a project may carry one because merging deploys to
 production, or because its required checks do not actually run. Print it verbatim before asking, and
 say plainly when a project has none, so "no warning" is never confused with "not checked".
+
+**In foreign mode, add one line to the merge gate: which repo is about to be merged, by path.** The
+approval a human gives at this gate is the last one, and from a session rooted somewhere else the
+question "ready to merge?" does not on its own say *what*. The `gh` commands take §2a's `cd` form
+like every other — `gh` resolves the repo from the cwd, so a bare `gh pr merge` here targets the
+session's repository.
 
 ## 14. Hard stops — `auto` suppresses routine stops, never all stops
 
