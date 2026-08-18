@@ -137,6 +137,31 @@ describe('vacuous-baseline.json', () => {
     // ratchet exists to prevent.
     expect(baseline._attribution).toContain('tkt-9c818426feb3');
   });
+
+  // Double-entry for the ceilings: CI enforces only kanban's row, so on every other row this pin is
+  // the one thing standing between a quietly raised max and a merge (tkt-7bac51ae3cc6).
+  it('pins every ceiling — raising one is a two-file diff a review cannot miss', () => {
+    const maxes = Object.fromEntries(Object.entries(baseline.repos).map(([repo, row]) => [repo, row.max]));
+    // toMatchObject, not toEqual: a seventh repo must not fail the gate (the policy the first test
+    // in this describe states) — but a raised or vanished ceiling on any known repo must.
+    expect(maxes).toMatchObject({
+      'kanban': 0,
+      'ticket-workflow': 0,
+      'portfolio-site': 1,
+      'copart-filter': 4,
+      'job-tracker': 8,
+      'equipment-schedule': 11,
+    });
+  });
+
+  it('every triaged row accepts exactly as many candidates as its ceiling allows', () => {
+    const triaged = Object.entries(baseline.repos).filter(([, row]) => row.accepted !== undefined);
+    // pinned: if the accepted lists vanished wholesale, the loop below would verify nothing
+    expect(triaged.length).toBeGreaterThanOrEqual(4);
+    for (const [repo, row] of triaged) {
+      expect(row.accepted.length, `${repo}: accepted list out of step with its ceiling`).toBe(row.max);
+    }
+  });
 });
 
 // The seam the review flagged as untested: sweep() -> compareToBaseline on its

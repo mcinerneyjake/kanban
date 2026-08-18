@@ -1,16 +1,73 @@
 {
-  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). `max` is a CEILING, not a target: the gate fails when a repo exceeds it, and it should only ever be revised DOWN. `path` is relative to the kanban repo root and BINDS the row to a tree, so the ratchet cannot sweep one repo and report another's ceiling. `files`/`blocks` are read as a breadth floor, so a collapsed sweep fails instead of scoring a clean 0. `enforced` marks rows some gate actually checks — only kanban today, because the probe lives in this repo and another repo's CI cannot reach it.",
+  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). `max` is a CEILING, not a target: the gate fails when a repo exceeds it, and it should only ever be revised DOWN. `path` is relative to the kanban repo root and BINDS the row to a tree, so the ratchet cannot sweep one repo and report another's ceiling. `files`/`blocks` are read as a breadth floor, so a collapsed sweep fails instead of scoring a clean 0. `enforced` marks rows some gate actually checks — only kanban today, because the probe lives in this repo and another repo's CI cannot reach it. Rows carry an `accepted` list when their candidates were TRIAGED (tkt-7bac51ae3cc6): each entry is a candidate the audit read and accepted with the reason recorded. The RATCHET does not read these lists — it compares counts only, so a fixed accept plus a new candidate at the same count still passes; the lists serve the human re-triager (diff the sweep's candidates against them) and the ratchet test that pins accepted.length to max. A row without `accepted` is ceilinged-untriaged (deferred audit tier).",
   "_regenerate": "Do not hand-edit the counts. Run: node -e 'import(\"./scripts/probe/vacuous-tests.mjs\").then(m=>{for(const [r,p] of Object.entries(require(\"./scripts/probe/vacuous-baseline.json\").repos).map(([k,v])=>[k,v.path])){const s=m.sweep(p);console.log(r,s.files,s.blocks,s.candidates.length)}})' — the numbers below were generated that way, not transcribed.",
   "_countsAreFloors": "Counts are STILL FLOORS, not totals (tkt-9c818426feb3 narrowed the gap, it did not close it). isComputed now resolves a variable declared in the SAME test block and sees through [...spread], but these remain undetected: a collection declared in the enclosing describe/beforeEach or at module scope; two-level indirection (const b = a); reassignment (let xs = []; xs = compute()); an out-param filled by a call (const rows = []; collect(rows)); and .forEach on a chained call, where the receiver regex mis-captures. Do not read a 0 as proof of clean.",
   "_attribution": "How the 08-11 numbers moved (tkt-9c818426feb3), measured by running the PRE-FIX probe against today trees so the two causes are separable. ticket-workflow 0 -> 6: only +1 is the fix, +5 are NEW vacuous tests added since 08-11 (its test files went 9 -> 17) and are tracked, not excused. equipment-schedule 19 -> 25: +4 fix, +2 new. copart-filter 4 -> 5: +1 fix. kanban stayed 0 because its one candidate was FIXED, not ceilinged (server/terminalAuth.test.ts asserted a container mount boundary entirely inside an unpinned loop). Raising a ceiling is a debt record, never an excuse: the split above is what says which part still needs fixing.",
-  "_lowered": "2026-08-16, tkt-898aaec13fb1: ticket-workflow 6 -> 0. The repo was re-swept before the fix and reported 8, not the 6 recorded here — two more had landed since (an audit control, and the byte-for-byte template drift check whose IDENTICAL list is matched by targetPath, so renaming an entry silenced it entirely). All eight are fixed upstream, each pin sitting outside its loop; see ticket-workflow#53. Breadth floors in every row below were regenerated in the same run, because a floor left behind is a collapsed sweep this ratchet would not notice.",
-  "asOf": "2026-08-16",
+  "_lowered": "2026-08-16, tkt-898aaec13fb1: ticket-workflow 6 -> 0. The repo was re-swept before the fix and reported 8, not the 6 recorded here — two more had landed since (an audit control, and the byte-for-byte template drift check whose IDENTICAL list is matched by targetPath, so renaming an entry silenced it entirely). All eight are fixed upstream, each pin sitting outside its loop; see ticket-workflow#53. Breadth floors in every row below were regenerated in the same run, because a floor left behind is a collapsed sweep this ratchet would not notice. 2026-08-18, tkt-7bac51ae3cc6: equipment-schedule 25 -> 11 — the fresh sweep matched the recorded 25, triage fixed or rewrote down to 10 accepts (tkt-6a2232768981), then the critical-paths ticket's rebuilt replaceName sweep added 1 new accepted candidate, a probe false positive on a length-pinned call-derived collection (tkt-77046457a5df) — and copart-filter 5 -> 4: the re-sweep reported 6, not the recorded 5 (one had landed since), and 2 were fixed (tkt-98076f541a57). Every non-kanban `path` was also checked in this pass: the 08-17 projects/ consolidation moved kanban a level deeper, and four recorded paths silently pointed at nothing — the probe's refusing-to-sweep-nothing guard is what surfaced it rather than a clean 0.",
+  "asOf": "2026-08-18",
   "repos": {
-    "kanban": { "max": 0, "path": ".", "files": 94, "blocks": 1413, "enforced": true },
-    "ticket-workflow": { "max": 0, "path": "../ticket-workflow", "files": 21, "blocks": 681, "enforced": false },
-    "portfolio-site": { "max": 1, "path": "../portfolio-site", "files": 27, "blocks": 138, "enforced": false },
-    "copart-filter": { "max": 5, "path": "../copart-filter", "files": 48, "blocks": 982, "enforced": false },
-    "job-tracker": { "max": 8, "path": "../job-tracker", "files": 21, "blocks": 296, "enforced": false },
-    "equipment-schedule": { "max": 25, "path": "../hvac-projects/equipment-schedule", "files": 135, "blocks": 2216, "enforced": false }
+    "kanban": {
+      "max": 0,
+      "path": ".",
+      "files": 103,
+      "blocks": 1550,
+      "enforced": true,
+      "accepted": []
+    },
+    "ticket-workflow": {
+      "max": 0,
+      "path": "../ticket-workflow",
+      "files": 25,
+      "blocks": 738,
+      "enforced": false,
+      "accepted": []
+    },
+    "portfolio-site": {
+      "max": 1,
+      "path": "../../portfolio-site",
+      "files": 26,
+      "blocks": 137,
+      "enforced": false
+    },
+    "copart-filter": {
+      "max": 4,
+      "path": "../../copart-filter",
+      "files": 53,
+      "blocks": 1089,
+      "enforced": false,
+      "accepted": [
+        "shared/extractor/realDom.test.ts:169 — the no-throw loop is weak by linkedom’s nature (it never throws on a typo); subsumed by the counts table above it, now completeness-pinned over every SELECTORS key",
+        "shared/normalize/csvRow.test.ts:243 — loops over an in-test literal case list; cannot be empty without editing the literal in the same diff",
+        "src/lib/detail.test.ts:323 — guarded by its own fail-closed discovery test two lines up (linking.length >= 2)",
+        "src/lib/viewState.test.ts:119 — VIEW_STATE_CHIPS is Record<ViewState, string> with ViewState derived from VIEW_STATES; an empty or short chip set cannot compile"
+      ]
+    },
+    "job-tracker": {
+      "max": 8,
+      "path": "../../job-tracker",
+      "files": 23,
+      "blocks": 333,
+      "enforced": false
+    },
+    "equipment-schedule": {
+      "max": 11,
+      "path": "../../hvac-projects/equipment-schedule",
+      "files": 138,
+      "blocks": 2260,
+      "enforced": false,
+      "accepted": [
+        "server/reconcile/pipeline.test.ts:1205 — deliberate Tier-2 skip reporter, the house pattern (re-adjudicated in tkt-24b7fbca1ba0)",
+        "src/App.integration.test.tsx:2347 — helpers assert internally; booted() proven discriminating by a watched mutation (tkt-72a84f55eed4)",
+        "src/SheetTabs.test.tsx:201 — tabs() is getAllByRole, which throws on zero matches; the loop cannot run empty",
+        "src/SheetTabs.test.tsx:305 — same getAllByRole guarantee",
+        "src/exportSchedule.test.ts:119 — labeled continue-loop; non-vacuity pinned by the consolidated-headings registry sibling test",
+        "src/exportSchedule.test.ts:375 — membership in the withDuplicates each-list implies a duplicate exists; a length pin here is tautological",
+        "src/fields.test.ts:116 — labeled continue-loop over the duplicated-label each-list; same tautology argument",
+        "src/fields.test.ts:149 — per-schedule emptiness is legitimate (registerGrillAndDiffuser has 0 titled sections); the titled-sections registry sibling pins non-vacuity",
+        "src/fields.test.ts:156 — same registry-sibling coverage",
+        "src/fields.test.ts:531 — labeled continue-loop; the select/remarks registry sibling pins non-vacuity",
+        "src/replaceName.test.ts:41 — calls.length is pinned > 0 directly above the loop; the probe cannot credit a function-call-derived collection (a documented floors limitation)"
+      ]
+    }
   }
 }

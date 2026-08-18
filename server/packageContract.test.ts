@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
 import { readEvents } from './events.js';
@@ -169,9 +171,23 @@ describe('pinned ticket-workflow build: unreadable event logs fail closed', () =
 // test touches the pinned CLI, so a bump to a build that dropped or renamed the subcommand would
 // pass every local gate and only fail in CI.
 describe('pinned ticket-workflow build: CLI ships the audit subcommand', () => {
+  // Walked upward, not cwd-resolved: a worktree has no node_modules of its own (imports resolve to
+  // the primary checkout), and the cwd-anchored spelling failed there as 'undefinedundefined' —
+  // the swallowed spawn error, not a CLI regression (tkt-7bac51ae3cc6).
+  const findBin = (): string => {
+    let dir = path.dirname(fileURLToPath(import.meta.url));
+    for (;;) {
+      const candidate = path.join(dir, 'node_modules', '.bin', 'ticket-workflow');
+      if (existsSync(candidate)) return candidate;
+      const parent = path.dirname(dir);
+      if (parent === dir) throw new Error('ticket-workflow bin not found in any enclosing node_modules');
+      dir = parent;
+    }
+  };
+
   it('usage names audit', () => {
-    const bin = path.resolve('node_modules/.bin/ticket-workflow');
-    const r = spawnSync(bin, [], { encoding: 'utf8' });
+    const r = spawnSync(findBin(), [], { encoding: 'utf8' });
+    expect(r.error, 'the CLI failed to spawn at all').toBeUndefined();
     expect(`${r.stdout}${r.stderr}`).toMatch(/\baudit\b/);
   });
 });
