@@ -1,5 +1,5 @@
 {
-  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). `max` is a CEILING, not a target: the gate fails when a repo exceeds it, and it should only ever be revised DOWN. `path` is relative to the kanban repo root and BINDS the row to a tree, so the ratchet cannot sweep one repo and report another's ceiling. `files`/`blocks` are read as a breadth floor, so a collapsed sweep fails instead of scoring a clean 0. `enforced` marks rows some gate actually checks — only kanban today, because the probe lives in this repo and another repo's CI cannot reach it. Rows carry an `accepted` list when their candidates were TRIAGED (tkt-7bac51ae3cc6): each entry is a candidate the audit read and accepted with the reason recorded. The RATCHET does not read these lists — it compares counts only, so a fixed accept plus a new candidate at the same count still passes; the lists serve the human re-triager (diff the sweep's candidates against them) and the ratchet test that pins accepted.length to max. A row without `accepted` is ceilinged-untriaged (deferred audit tier).",
+  "_comment": "Vacuous-test ratchet baselines (tkt-d88902f60f7c). `max` is a CEILING, not a target: the gate fails when a repo exceeds it, and it should only ever be revised DOWN. `path` is relative to the kanban repo root and BINDS the row to a tree, so the ratchet cannot sweep one repo and report another's ceiling. `files`/`blocks` are read as a breadth floor, so a collapsed sweep fails instead of scoring a clean 0. `enforced` marks rows whose repo actually runs the check in a gate. Since the v0.19.0 distribution (tkt-05b1630bb53a) that means the repo's OWN CI running `ticket-workflow vacuous . --check` against its repo-local vacuous-baseline.json — kanban alone enforces through THIS central file (its vitest self-check); the other enforced rows are cross-repo mirrors of their repo-local baselines, kept for the fleet view, and a drifted mirror misleads without failing anything. Rows carry an `accepted` list when their candidates were TRIAGED (tkt-7bac51ae3cc6): each entry is a candidate the audit read and accepted with the reason recorded. The RATCHET does not read these lists — it compares counts only, so a fixed accept plus a new candidate at the same count still passes; the lists serve the human re-triager (diff the sweep's candidates against them) and the ratchet test that pins accepted.length to max. A row without `accepted` is ceilinged-untriaged (deferred audit tier).",
   "_regenerate": "Do not hand-edit the counts. Run: node -e 'import(\"./scripts/probe/vacuous-tests.mjs\").then(m=>{for(const [r,p] of Object.entries(require(\"./scripts/probe/vacuous-baseline.json\").repos).map(([k,v])=>[k,v.path])){const s=m.sweep(p);console.log(r,s.files,s.blocks,s.candidates.length)}})' — the numbers below were generated that way, not transcribed.",
   "_countsAreFloors": "Counts are STILL FLOORS, not totals (tkt-9c818426feb3 narrowed the gap; the v0.19.0 packaged engine narrowed it again — it now sees destructured declarations, .forEach on a call result and for-await). These remain undetected: a collection declared in the enclosing describe/beforeEach or at module scope; two-level indirection (const b = a); reassignment (let xs = []; xs = compute()); and an out-param filled by a call (const rows = []; collect(rows)). Do not read a 0 as proof of clean.",
   "_attribution": "How the 08-11 numbers moved (tkt-9c818426feb3), measured by running the PRE-FIX probe against today trees so the two causes are separable. ticket-workflow 0 -> 6: only +1 is the fix, +5 are NEW vacuous tests added since 08-11 (its test files went 9 -> 17) and are tracked, not excused. equipment-schedule 19 -> 25: +4 fix, +2 new. copart-filter 4 -> 5: +1 fix. kanban stayed 0 because its one candidate was FIXED, not ceilinged (server/terminalAuth.test.ts asserted a container mount boundary entirely inside an unpinned loop). Raising a ceiling is a debt record, never an excuse: the split above is what says which part still needs fixing.",
@@ -19,7 +19,7 @@
       "path": "../ticket-workflow",
       "files": 27,
       "blocks": 787,
-      "enforced": false,
+      "enforced": true,
       "accepted": []
     },
     "portfolio-site": {
@@ -27,14 +27,14 @@
       "path": "../../portfolio-site",
       "files": 26,
       "blocks": 143,
-      "enforced": false
+      "enforced": true
     },
     "copart-filter": {
       "max": 4,
       "path": "../../copart-filter",
       "files": 53,
       "blocks": 1093,
-      "enforced": false,
+      "enforced": true,
       "accepted": [
         "shared/extractor/realDom.test.ts:169 — the no-throw loop is weak by linkedom’s nature (it never throws on a typo); subsumed by the counts table above it, now completeness-pinned over every SELECTORS key",
         "shared/normalize/csvRow.test.ts:243 — loops over an in-test literal case list; cannot be empty without editing the literal in the same diff",
@@ -47,7 +47,7 @@
       "path": "../../job-tracker",
       "files": 23,
       "blocks": 333,
-      "enforced": false
+      "enforced": true
     },
     "equipment-schedule": {
       "max": 11,
@@ -70,5 +70,6 @@
       ]
     }
   },
-  "_engine": "Since 2026-08-18 (tkt-05b1630bb53a) the probe and the compare are the ticket-workflow package (pinned v0.19.0); vacuous-tests.mjs is a re-export shim and vacuous-ratchet.mjs keeps only the central-baseline layer (row paths, resolveRoot). The packaged engine detects shapes the old one missed (destructured loop sources, forEach on a call result, for-await) and excludes it.todo from block counts, so breadths were regenerated in this pass on clean mains — EXCEPT equipment-schedule, whose tree was mid-flight on another session’s branch; its recorded breadth is still the 08-18 pre-swap sweep, and the packaged engine read 15 candidates against its ceiling of 11 on that dirty snapshot. Re-triage belongs to its adoption pass, on a clean main."
+  "_engine": "Since 2026-08-18 (tkt-05b1630bb53a) the probe and the compare are the ticket-workflow package (pinned v0.19.0); vacuous-tests.mjs is a re-export shim and vacuous-ratchet.mjs keeps only the central-baseline layer (row paths, resolveRoot). The packaged engine detects shapes the old one missed (destructured loop sources, forEach on a call result, for-await) and excludes it.todo from block counts, so breadths were regenerated in this pass on clean mains — EXCEPT equipment-schedule, whose tree was mid-flight on another session’s branch; its recorded breadth is still the 08-18 pre-swap sweep, and the packaged engine read 15 candidates against its ceiling of 11 on that dirty snapshot. Re-triage belongs to its adoption pass, on a clean main.",
+  "_enforcedProbe": "`enforced` records mutable external state (another repo's CI wiring), verified 2026-08-18 — re-verify, never trust: in the repo, `gh workflow list --all` must show its gate workflow active AND its gate must reach `ticket-workflow vacuous . --check` (grep the workflow/verify chain for `vacuous`; ticket-workflow instead self-checks via src/vacuous/ratchet.test.ts \"this repo against its own ceiling\"). A disabled workflow contributes NO check and everything reads green — the exact rot this repo's own review workflow demonstrated."
 }
