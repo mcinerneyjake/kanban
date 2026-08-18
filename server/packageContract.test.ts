@@ -175,3 +175,28 @@ describe('pinned ticket-workflow build: CLI ships the audit subcommand', () => {
     expect(`${r.stdout}${r.stderr}`).toMatch(/\baudit\b/);
   });
 });
+
+// tkt-8e57620f90b7. The guard lives entirely upstream (kanban's validation/tickets modules are
+// re-export shims), so nothing else here would notice a bump to a build that dropped it — and the
+// failure mode is silent: the write succeeds, `unreadable` stays empty, and only a count is wrong.
+// Both real occurrences on this board arrived through appendBody.
+describe('pinned ticket-workflow build: raw NUL bytes are refused', () => {
+  const NUL = '\0'; // spelled as an escape — a raw byte here would be invisible in this source
+
+  it('rejects a NUL arriving through appendBody, and leaves no binary file behind', async () => {
+    const t = await createTicket({ title: 'A', body: 'original' });
+    await expect(updateTicket(t.id, { appendBody: `as \`${NUL}\` escape` })).rejects.toBeInstanceOf(HttpError);
+    const raw = await fs.readFile(path.join(dirs.tickets, `${t.id}.md`));
+    expect(raw.includes(0)).toBe(false);
+  });
+
+  it('rejects a NUL in a body replace on create', async () => {
+    await expect(createTicket({ title: 'A', body: `x${NUL}y` })).rejects.toBeInstanceOf(HttpError);
+  });
+
+  // Negative control: the escape is what the prose actually means, and must still round-trip.
+  it('accepts the two-character \\0 escape', async () => {
+    const t = await createTicket({ title: 'A', body: 'header is `SQLite format 3\\0`' });
+    expect((await getTicket(t.id)).body).toContain('\\0');
+  });
+});
