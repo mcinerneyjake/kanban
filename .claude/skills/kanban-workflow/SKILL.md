@@ -300,14 +300,40 @@ Read each command's exit status directly. Never read it through a pipe (in zsh t
 `$pipestatus[1]`, 1-indexed — `$PIPESTATUS` is empty). A missing script is reported, never counted
 as a pass.
 
+**The gate is not only the npm scripts.** Where the target's `CLAUDE.md` defines checks that bind its
+tests to *this* diff — kanban names a **mutation check** and a **red-first repro** rule — those are
+part of this step, and they run **before** the commit gate in every mode, including the auto ones that
+cross it unattended. Take the procedure, its scope and the marker it wants recorded from that file
+(step 2), never from here: a second copy of a procedure is the drift this skill exists to avoid, and
+a stale one *instructs*. Where the repo offers an escape hatch, take it explicitly and say why,
+rather than bending an acceptance criterion to fit.
+
+An auto mode that crosses the commit gate without a check the repo defines is a **silent downgrade**
+of that mode, not a faster one — the same hole as crossing it with no review. If one cannot be run,
+name it and stop (§14); a check you could not run is never reported as one that passed.
+
 ## 10. Review — calibrated, and stated
 
-Announce the level and the reason *before* running it.
+**The target repo decides *whether*; this step decides only *how deep*.** Read its `CLAUDE.md`
+(step 2) before calibrating: where that file makes a review a precondition of the PR — kanban's does —
+one **always** runs, and the levels below choose the effort, never the exemption. Announce the level
+and the reason *before* running it.
 
-- Trivial, config-only, docs-only → inline self-review.
-- Security, failure paths, deploy, concurrency, cross-module seams, and **any line where a comment
-  was written to defend a decision** → `/code-review` at high effort. For integration-heavy diffs add
-  a flow-scoped angle: "trace this value source to sink; list every transformation or drop."
+- Security, failure paths, deploy, concurrency, cross-module seams, **any line where a comment was
+  written to defend a decision**, and any change to a repo's governing docs (`CLAUDE.md`, `README.md`)
+  → `/code-review` at high effort. For integration-heavy diffs add a flow-scoped angle: "trace this
+  value source to sink; list every transformation or drop." Governing docs are on that list because a
+  wrong sentence there *instructs* every future session, silently and unboundedly — size is not the
+  measure of blast radius, and "it's only markdown" is not a calibration.
+- Anything else → `/code-review` at default effort. **The unclassified middle runs a review.** A diff
+  being hard to place is not evidence that it is safe, and this is the branch where the gate would
+  otherwise fail open.
+- Inline self-review **only** where the target's `CLAUDE.md` does *not* make a review a precondition
+  of the PR **and** the diff is trivial, config-only, or docs-only outside that repo's governing docs.
+  Note the wording: a repo that is *silent* on reviews satisfies the first half — silence is the common
+  case for a foreign target (§2, rungs 3–4), and reading it as "no exemption" would put a full review
+  on a one-line typo fix in a plain docs repo. Name **both** conditions you checked; "it looked small"
+  is neither of them.
 
 **Always name the target repo in the review's arguments — never a bare `/code-review`.** It resolves
 against the session's cwd, so in foreign mode a bare call reviews *this* repo and reports confidently
@@ -340,11 +366,27 @@ Then `record_review({ id })`.
 
 ## 11–13. The gates
 
-| level | commit | PR open | merge |
-|---|---|---|---|
-| `manual` (default) | ask | ask | ask |
-| `auto-commit` | cross | ask | ask |
-| `auto-pr` | cross | cross | **ask — always** |
+| level | review | commit | PR open | merge |
+|---|---|---|---|---|
+| `manual` (default) | ask | ask | ask | ask |
+| `auto-commit` | run | cross | ask | ask |
+| `auto-pr` | run | cross | cross | **ask — always** |
+
+**The review column has no skip value at any level, and that is the point of it.** `ask` means ask
+*when* to spend the tokens — "not now" defers the commit, it never cancels the review. `run` means the
+level has pre-authorized you to run it yourself (§10), which is the only thing an auto mode lifts.
+There is no value that crosses `commit` without a review having run, so no reading of this table
+reaches an open PR with none.
+
+**That is a claim about this table, not a guarantee about a run.** Nothing enforces it at execution
+time: `guard-bash` does not inspect `gh`, and kanban's `skillContract.test.mjs` — which fails that
+repo's gate if a column here is dropped, reordered or given a skipping value — asserts the table's
+*shape* only, and in foreign mode never runs at all. The obligation is yours; the table only removes
+the excuse.
+
+**Review resolves before the commit, which is what the column order records — do not "fix" it back.**
+The reasoning is in kanban's `CLAUDE.md` ("The review gate's ordering is deliberate"); read it there
+rather than trusting a summary here.
 
 **Merge is human in every mode.** There is no flag that changes this.
 
@@ -368,6 +410,8 @@ session's repository.
 Stop, report, and wait on any of:
 
 - A quality-gate failure not fixed in one pass.
+- **A check the target repo defines that you could not run** (§9). Name it. Not-run is never reported
+  as passed, and under `--continuous` this ends the loop like any other hard stop.
 - **In `auto-pr`: a repo with no enabled required checks.** Verify with `gh workflow list --all`.
   Absence of failing checks is not green — it means nothing ran. Never read it as a pass.
 - A red check, or a `/code-review` finding you rate significant.
