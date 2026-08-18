@@ -1,0 +1,11 @@
+{
+  "$comment": "Template for repos.local.json, which is gitignored. Copy this to repos.local.json and fill in real values. This repo is public. repoHygiene.test.mjs fails the suite if a home path naming a real account reaches the index; private project NAMES are not checked by anything, so keeping them here is convention you must uphold yourself. Both belong only in the gitignored repos.local.json.",
+  "baseDir": "/absolute/path/to/the/directory/holding/your/repos",
+  "projects": {
+    "kanban": { "repo": "relative/path/from/baseDir" },
+    "example-project": {
+      "repo": "relative/path/from/baseDir",
+      "mergeWarning": "Optional. Printed verbatim at the merge gate — e.g. merging deploys to production, or required checks do not actually run."
+    }
+  }
+}

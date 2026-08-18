@@ -84,7 +84,7 @@ function handleEvent(ev) {
 // Verify the binary actually resolves. The old `PATH.includes('claude')` shortcut
 // was a substring test, not an existence check — it both false-negatived (a claude
 // on PATH via a dir not literally named "claude") and false-positived (any PATH
-// entry containing "claude", e.g. /home/claude/bin, skipping the real check). Just
+// entry containing "claude", e.g. /opt/claude/bin, skipping the real check). Just
 // resolve it, unless CLAUDE_CLI explicitly overrides.
 if (!process.env.CLAUDE_CLI) {
   try {

@@ -16,7 +16,7 @@ const REAL_REJECTION = 'invalid argument "host.docker.internal:host-gateway" for
 const REAL_OTHER_FAILURE = 'Unable to find image \'kanban-terminal:latest\' locally\ndocker: Error response from daemon: pull access denied';
 
 const SID = '11111111-2222-4333-8444-555566667777';
-const KANBAN = '/Users/jake/kanban';
+const KANBAN = '/Users/someuser/kanban';
 
 function realRunArgs(): string[] {
   return buildDetachedRunArgs({

@@ -123,9 +123,9 @@ describe('isValidToken', () => {
 
 describe('buildSessionEnv', () => {
   it('keeps allowlisted keys and forces TERM', () => {
-    const env = buildSessionEnv({ PATH: '/usr/bin', HOME: '/home/j', TERM: 'dumb' });
+    const env = buildSessionEnv({ PATH: '/usr/bin', HOME: '/home/someuser', TERM: 'dumb' });
     expect(env.PATH).toBe('/usr/bin');
-    expect(env.HOME).toBe('/home/j');
+    expect(env.HOME).toBe('/home/someuser');
     expect(env.TERM).toBe('xterm-256color');
   });
   it('drops secret-shaped keys not on the allowlist', () => {
