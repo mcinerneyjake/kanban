@@ -106,6 +106,44 @@ describe('pinned ticket-workflow build: appendBody is non-destructive', () => {
   });
 });
 
+// Backup-on-write (tkt-18d53c0c7cd8, package v0.3.0). CLAUDE.md tells every session a clobbered body
+// IS recoverable and that appendBody is the rule; nothing asserted that against the pin, so a bump
+// that reordered snapshotHistory after the write — or dropped it — would leave the doc making a
+// PERMISSIVE claim with the gate fully green (tkt-74a35da0ef1e).
+describe('pinned ticket-workflow build: backup-on-write snapshots the prior body', () => {
+  const historyDir = (id: string) => path.join(dirs.tickets, '.history', id);
+
+  async function snapshots(id: string): Promise<string[]> {
+    const dir = historyDir(id);
+    if (!existsSync(dir)) return [];
+    const names = await fs.readdir(dir);
+    return Promise.all(names.map((n) => fs.readFile(path.join(dir, n), 'utf8')));
+  }
+
+  it('writes the PRIOR full file — frontmatter and body — before a body-changing update', async () => {
+    const t = await createTicket({ title: 'Snapshot me', body: 'original' });
+    await updateTicket(t.id, { body: 'clobbered' });
+    const snaps = await snapshots(t.id);
+    expect(snaps).toHaveLength(1);
+    expect(snaps.join('')).toContain('original');
+    // The whole point is recoverability, so the snapshot must not be body-only.
+    expect(snaps.join('')).toContain('Snapshot me');
+    expect(await getTicket(t.id).then((x) => x.body)).toBe('clobbered');
+  });
+
+  it('snapshots an appendBody too, not only a full-body clobber', async () => {
+    const t = await createTicket({ title: 'B', body: 'first' });
+    await updateTicket(t.id, { appendBody: 'second' });
+    expect((await snapshots(t.id)).join('')).toContain('first');
+  });
+
+  it('snapshots nothing on a structured-only update', async () => {
+    const t = await createTicket({ title: 'C', body: 'keep' });
+    await updateTicket(t.id, { priority: 'high' });
+    expect(await snapshots(t.id)).toEqual([]);
+  });
+});
+
 // readEvents' fail-closed rule (tkt-fc7c6846903d, package v0.9.0) and its lost-line counts
 // (tkt-355581f9dab3, v0.10.0). kanban imported both by bumping the pin and asserts neither:
 // server/index.test.ts drives the HTTP route, so a regression that restored `catch { return []; }`

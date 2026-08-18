@@ -14,8 +14,8 @@ export const AGENT_TOOL_NAMES = new Set<string>([
 // Create-only mode (the Claude-delegated path, tkt-2492e26a277a): drop update_ticket so a mis-matched
 // retrieval can't overwrite an existing ticket's body. A delegated create that duplicates is a
 // non-destructive nuisance (delete/merge later); a delegated update that clobbers a rich hand-authored
-// body is data loss (tickets/ is gitignored — no undo). The interactive/demo path keeps update_ticket
-// for its anti-duplicate story.
+// body is damage whose undo is only best-effort (ticket-workflow README -> Backup-on-write). The
+// interactive/demo path keeps update_ticket for its anti-duplicate story.
 export const CREATE_ONLY_TOOL_NAMES = new Set<string>(
   [...AGENT_TOOL_NAMES].filter((n) => n !== 'update_ticket'),
 );

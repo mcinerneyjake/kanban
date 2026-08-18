@@ -46,7 +46,7 @@ async function main(): Promise<void> {
       try {
         const current = await getTicket(args.id);
         console.log(`Current: "${current.title}" — ${current.status}/${current.priority}`);
-        // Body replacement is destructive + unrecoverable (tickets/ is gitignored — no undo); show the current body so the reviewer isn't approving a blind overwrite.
+        // Body replacement is destructive and its undo is only best-effort (ticket-workflow README -> Backup-on-write); show the current body so the reviewer isn't approving a blind overwrite.
         if (typeof args.body === 'string' && args.body !== current.body) {
           console.log('Current body (will be REPLACED by the proposed `body` above):');
           console.log(current.body || '(empty)');
