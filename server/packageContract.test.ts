@@ -4,7 +4,9 @@ import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
 import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
+import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CONTROLS, HITS } from '../scripts/probe/vacuous-tests.mjs';
 import { readEvents } from './events.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
@@ -170,7 +172,7 @@ describe('pinned ticket-workflow build: unreadable event logs fail closed', () =
 // ci.yml's gate runs `npx ticket-workflow audit .` (tkt-9342280b2536, v0.15.0). No other kanban
 // test touches the pinned CLI, so a bump to a build that dropped or renamed the subcommand would
 // pass every local gate and only fail in CI.
-describe('pinned ticket-workflow build: CLI ships the audit subcommand', () => {
+describe('pinned ticket-workflow build: CLI ships the audit and vacuous subcommands', () => {
   // Walked upward, not cwd-resolved: a worktree has no node_modules of its own (imports resolve to
   // the primary checkout), and the cwd-anchored spelling failed there as 'undefinedundefined' —
   // the swallowed spawn error, not a CLI regression (tkt-7bac51ae3cc6).
@@ -185,10 +187,63 @@ describe('pinned ticket-workflow build: CLI ships the audit subcommand', () => {
     }
   };
 
-  it('usage names audit', () => {
+  it('usage names audit and vacuous', () => {
     const r = spawnSync(findBin(), [], { encoding: 'utf8' });
     expect(r.error, 'the CLI failed to spawn at all').toBeUndefined();
     expect(`${r.stdout}${r.stderr}`).toMatch(/\baudit\b/);
+    // scripts/probe/vacuous-*.mjs are shims over this build (tkt-05b1630bb53a), and other repos'
+    // adoption runs `ticket-workflow vacuous --check` — a bump that dropped it passes every local gate.
+    expect(`${r.stdout}${r.stderr}`).toMatch(/\bvacuous\b/);
+  });
+});
+
+// tkt-05b1630bb53a. The vacuous engine's own suite runs at upstream HEAD, never at this pin, and
+// the ratchet only catches counts RISING — a bump to a build whose screen quietly weakened reports
+// 0/0 identically. So detection quality and control discipline get pinned here, through the shim
+// every documented sweep command imports (a runtime typo in its export list would fail these
+// static imports at load; the .d.mts covers only tsc).
+describe('pinned ticket-workflow build: vacuous probe through the shim', () => {
+  it('finds a known-vacuous test and leaves a sound one alone', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'shim-sweep-'));
+    try {
+      await fs.mkdir(path.join(dir, 'src'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'src', 'bad.test.ts'), "it('asserts nothing', () => { const x = compute(); use(x); });\n");
+      await fs.writeFile(path.join(dir, 'src', 'good.test.ts'), "it('adds', () => { expect(add(1, 2)).toBe(3); });\n");
+      const result = sweep(dir);
+      expect(result.files).toBe(2);
+      expect(result.candidates).toEqual([
+        { file: path.join('src', 'bad.test.ts'), line: 1, title: 'asserts nothing', hits: [HITS.NO_ASSERTION] },
+      ]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('screens a parsed block directly', () => {
+    const blocks = testBlocks("it('nothing', () => { use(x); });");
+    expect(blocks).toHaveLength(1);
+    expect(screenBlock(blocks[0])).toContain(HITS.NO_ASSERTION);
+  });
+
+  // controlFailures() over EMPTY control arrays returns [] (verified) — so a build that shipped
+  // without controls would pass assertInstruments and sweep uncontrolled. Non-empty is the guard.
+  it('ships controls in every category, all passing', () => {
+    for (const category of ['positive', 'negative', 'oneBlock', 'zeroBlock'] as const) {
+      expect(CONTROLS[category].length, category).toBeGreaterThan(0);
+    }
+    expect(controlFailures()).toEqual([]);
+  });
+
+  it('assertInstruments throws rather than letting a broken screen sweep', () => {
+    const saved = [...CONTROLS.positive];
+    CONTROLS.positive.push(['impossible', "it('n', () => { expect(real()).toBe(1); });", HITS.LITERAL]);
+    try {
+      expect(() => assertInstruments()).toThrow(/control/);
+    } finally {
+      CONTROLS.positive.length = 0;
+      CONTROLS.positive.push(...saved);
+    }
+    expect(controlFailures()).toEqual([]);
   });
 });
 
