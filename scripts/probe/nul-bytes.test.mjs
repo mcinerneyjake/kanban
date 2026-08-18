@@ -237,7 +237,11 @@ describe('CLI', () => {
     const piped = execFileSync('sh', ['-c', `node ${JSON.stringify(CLI)} ${JSON.stringify(root)} | cat; exit 0`], {
       encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
     });
-    expect(piped.length).toBeGreaterThan(131072); // the pipe buffer a truncating exit stopped at
+    // Assert COMPLETENESS, not a byte count: each fix line embeds the board's absolute path four
+    // times, so total size tracks tmpdir length — 166KB on macOS, 117KB on CI's short /tmp. Pinning
+    // a size measured the machine, not the behaviour, and went red in CI while passing locally.
+    expect(piped.length).toBeGreaterThan(65536); // non-vacuity control: must exceed one pipe buffer
+    expect(piped.split('\n').filter((l) => l.startsWith('  tr -d ')).length).toBe(400);
     // The final line must be the LAST file's complete fix command — a truncating exit cut mid-line.
     expect(piped.trimEnd().split('\n').pop()).toMatch(/tkt-0399\.md'$/);
   });
