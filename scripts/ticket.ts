@@ -54,7 +54,7 @@ async function cmdAppend(id: string, source: string, stdin: string): Promise<str
   if (!text) throw new UsageError('nothing to append — the input was empty');
   const before = await getTicket(id);
   // appendBody, not a read-modify-write on `body`: the service concatenates server-side, so a stale
-  // read can't silently drop a concurrent edit. tickets/ is gitignored — a clobber is unrecoverable.
+  // read can't drop a concurrent edit — and its per-id lock is in-process, so this CLI races an MCP session.
   const t = await updateTicket(id, { appendBody: text });
   return `${t.id}  appended ${text.length} chars (body ${before.body.length} -> ${t.body.length})`;
 }
