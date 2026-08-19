@@ -416,9 +416,8 @@ rather than trusting a summary here.
 
 **Merge is human in every mode.** There is no flag that changes this.
 
-At PR-open, `update_ticket({ status: 'qa' })` — the single point a ticket enters `qa`. After the merge
-lands: `ExitWorktree` if the ticket ran in one (native mode only — see §2a), then
-`update_ticket({ status: 'done' })`.
+At PR-open, `update_ticket({ status: 'qa' })` — the single point a ticket enters `qa`. The merge does
+not end the ticket: §15 owns everything after it, `ExitWorktree` and `status: 'done'` included.
 
 **Surface the target's `mergeWarning` at the merge gate rather than burying it.** Per-project
 warnings live in `repos.local.json` (§1) — a project may carry one because merging deploys to
@@ -452,16 +451,113 @@ edit, so there is nothing to leave half-done: the ticket is corrected, abandoned
 to the next-priority one. Three consecutive failures *is* a hard stop, because that stops being a
 stale ticket and starts being a stale board.
 
-## 15. Loop or stop
+## 15. Close the ticket — wrap-up check, then the handoff
 
-`--continuous`: re-read the board (it may have changed) and return to step 4. Otherwise print a
-one-line close, then recommend `/clear` before the next ticket — the ticket is the session's unit of
-work (session lifecycle, `~/.claude/CLAUDE.md`; `tkt-c8ac95e41f6f`).
+The merge is not the close. After the merge lands, in this order: `ExitWorktree` if the ticket ran in
+one (native mode only — see §2a), `update_ticket({ status: 'done' })`, then the two steps below. Neither is
+optional, and neither is a courtesy — a ticket that merges without them leaves work that only this
+session knew about.
+
+| ticket type | wrap-up check | handoff |
+|---|---|---|
+| `bug` | ask | print |
+| `feature` | ask | print |
+| `task` | ask | print |
+| `chore` | ask | print |
+
+**Every row is identical, and that is the content of the table.** There is no ticket type that closes
+without being asked — not a chore, not a docs-only change. Docs tickets are if anything the likeliest
+to owe wrap-up, since they are the ones that make a neighboring claim stale. `kanban`'s
+`skillContract.test.mjs` derives the rows from `TYPES` in `shared/constants.ts` and fails that repo's
+suite if a row is dropped or a cell is given a skipping value, the same way it binds the §11–13 table.
+
+### The wrap-up check
+
+One `AskUserQuestion`, multi-select, over this **fixed** list. Fixed is the point: asked freehand the
+question narrows to whatever the run happens to still remember, which after a long ticket is the
+recent half. Offer every item every time, even where you believe none applies — and say which ones you
+already believe apply, so the human is correcting a draft rather than auditing from scratch.
+
+- **Docs the diff falsified** — a claim in the target repo's `CLAUDE.md` or `README.md` that this
+  ticket just made stale. Governing-doc edits are never trivial (kanban's `CLAUDE.md`, "Writing these
+  documents"), so a stale one here misinforms every later session.
+- **Board follow-ups** — a §10 review finding you chose not to fix (each becomes a ticket through the
+  metered local agent, **one issue per run** — see **Never**), a ticket this one supersedes or
+  unblocks, a parent to update, or a stale premise §5 found sitting in another ticket's body.
+- **Durable facts for memory** — something this ticket established that the repo does not record and
+  the next session would have to re-derive.
+- **Nothing — close it out.** A real option, and it must be **chosen**.
+
+**Exactly four options, because `AskUserQuestion` renders 2–4.** The two board-writing categories are
+deliberately folded into one rather than listed separately: a five-item list cannot be rendered, so it
+would be silently trimmed to four at runtime — and *which* item got dropped would vary by run, which is
+the narrowing this fixed list exists to prevent. Splitting the check across two questions was the other
+option and is worse: two questions make "nothing needed" answerable twice, in ways that can disagree.
+
+**"Nothing" is exclusive, and resolves toward more work, not less.** Multi-select permits
+`["Board follow-ups", "Nothing"]`. Treat that as the follow-up items alone and ignore the "Nothing" —
+never the reverse. An answer that contradicts itself must not be read as authorization to skip.
+
+**An unaskable or unanswered wrap-up check does not resolve to "nothing needed".** Print that the check
+did not run, name the three follow-up items above, and say plainly that the close is unverified. This
+is the same fail-safe direction as §0's unanswered gate menu, and the same rule as everywhere else in
+this repo: "I could not check" must never return the permissive answer.
+
+**That is a claim about this file, not about a run.** Nothing observes whether the check happened —
+the test asserts the table above, and in foreign mode kanban's suite never runs at all. The table
+removes the excuse; it does not enforce the step.
+
+### The handoff
+
+Print a paste-ready block that returns to the **board repo** — the home base, since the skill is
+project-scoped there and the board tools are reachable from it in either mode:
+
+```bash
+cd <board-repo-path> && claude
+```
+
+then, in that session:
+
+```
+/kanban-workflow <project> --gates manual
+```
+
+**Substitute both placeholders before printing. A printed placeholder is a defect, not a template.**
+`<board-repo-path>` is `$CLAUDE_PROJECT_DIR` **resolved at runtime** — print the resolved path, never
+the variable, because the block is pasted into a *new* terminal where it is unset, so a literal
+`cd "$CLAUDE_PROJECT_DIR"` succeeds and lands in `$HOME`: a handoff that fails silently in the wrong
+directory. `<project>` is this run's project name — §0 reads the first bare token *as* the project, so
+a literal `<project>` resolves against a project that is not on the board rather than falling through
+to §0's menu. Equally, never write the resolved path into *this* file, which is public
+(`repoHygiene.test.mjs` fails kanban's suite on one). Two lines, not one: whether an initial prompt can
+carry a slash command is not something this file has measured, so do not print a one-liner that
+assumes it.
+
+**The handoff always says `--gates manual`, whatever level this run used.** A gate level authorizes
+*one* run to cross gates on the human's behalf; echoing `auto-pr` into the next session re-grants that
+authorization to a run nobody approved. `manual` crosses nothing, so pre-filling it costs no
+authorization — which is also why pre-filling it is not the invisible default §0's menu exists to
+prevent.
+
+**It prints at every close, `--continuous` included — that is why the table's column is per ticket
+type and not per mode.** In a loop it is not an instruction to stop; it is the resume point, correct
+at the moment it is printed, for a loop that can end at the very next hard stop or compaction. Say
+which it is: *"resuming here if the loop ends"* under `--continuous`, *"next session"* otherwise. The
+`--gates manual` it carries is not a contradiction of a loop still running at `auto-pr` — the level is
+this session's, and a new session re-earns its own.
+
+## 16. Loop or stop
+
+§15 runs in full for the ticket just closed — **both** steps, in **both** modes — before this section
+decides anything. Then: `--continuous` re-reads the board (it may have changed) and returns to step 4;
+otherwise recommend `/clear` after the handoff, the ticket being the session's unit of work (session
+lifecycle, `~/.claude/CLAUDE.md`; `tkt-c8ac95e41f6f`). The only thing `--continuous` changes here is
+whether a `/clear` is recommended next.
 
 **Checkpoint every ticket.** Print `project=X gates=Y done=N in-flight=<id>` after each cycle.
 **A compaction mid-loop ends the loop** — what survives it is a summary, not evidence. Finish or
 checkpoint the in-flight ticket (a `## Checkpoint` block per the session-lifecycle rule in
-`~/.claude/CLAUDE.md`), print the close line, and recommend a fresh session. Finding yourself
+`~/.claude/CLAUDE.md`), print the checkpoint line above, and recommend a fresh session. Finding yourself
 working the board without these instructions in context IS the compacted case: stop the loop the
 same way rather than continuing freehand.
 
