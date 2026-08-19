@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, truncateSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 import { seedHomeDir, sessionsRoot, sessionHomeDir, seedSessionHome, removeSessionHome, readHostModel, applyHostModel, claudeSettingsPath } from './terminalHome.js';
+import { SEED_SIZE_WARN_BYTES } from '../shared/terminalSeed.mjs';
 
 // Two valid v4 UUID session ids (isValidSessionId shape) — the isolation must key on these.
 const ID_A = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
@@ -88,6 +89,50 @@ describe('terminalHome (per-session HOME isolation, S4)', () => {
     removeSessionHome(ID_A, env);
     expect(readdirSync(sessionsRoot(env))).toEqual([ID_B]);
     expect(existsSync(keep)).toBe(true);
+  });
+
+  // tkt-ce65b2532e47. The round trip the unit tests in shared/terminalSeed.size.test.mjs cannot make:
+  // real bytes on disk → the warning a human would actually see at session start. The seed reached
+  // 502 MB once and every session copied all of it in silence; per-layer tests of the measurer and the
+  // verdict would both have stayed green through that, because neither owns the wiring between them.
+  describe('oversized seed (tkt-ce65b2532e47)', () => {
+    // Sparse, so CREATING it is free. The cpSync that follows is not: hole preservation is
+    // filesystem-dependent, so on ext4 (the CI runners) this case materializes ~50 MB into $TMPDIR
+    // and removes it again. Cheap enough to keep, but do not read this as a zero-write test.
+    const bloat = (bytes: number) => {
+      writeFileSync(path.join(seed, '.local-share-claude'), '');
+      truncateSync(path.join(seed, '.local-share-claude'), bytes);
+    };
+
+    it('warns at session start, naming the size, and still provisions the HOME', () => {
+      bloat(SEED_SIZE_WARN_BYTES + 1);
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const mount = seedSessionHome(ID_A, env);
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('over the 50.0 MB budget'));
+      // Warn, never refuse: a slow session beats no session, and the 502 MB seed still worked.
+      expect(readFileSync(path.join(mount.hostHome, '.claude', '.credentials.json'), 'utf8')).toContain('tok');
+      err.mockRestore();
+    });
+
+    // The control. Without it, a warning hardcoded to fire on every seed would pass the case above.
+    it('says nothing for a seed under the budget', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      seedSessionHome(ID_A, env);
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
+    // A seed that cannot be measured must not read as a seed that is fine. Here provisioning fails
+    // anyway (cpSync will not copy a file over a directory) — the point is that the warning lands
+    // FIRST, so the operator gets "its size is UNKNOWN" instead of a bare cpSync error.
+    it('warns when the seed cannot be measured at all, before the copy fails', () => {
+      rmSync(seed, { recursive: true, force: true });
+      writeFileSync(seed, 'the seed path is a file, not a directory');
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(() => seedSessionHome(ID_A, env)).toThrow();
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('UNKNOWN'));
+      err.mockRestore();
+    });
   });
 
   // Defense-in-depth: the reaper derives a home path from a `docker ps` LABEL (not shape-checked by

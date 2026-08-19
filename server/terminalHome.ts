@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, cpSync, existsSync, readFileSync, writeFileSync } fr
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { isValidSessionId, type CredMount } from './terminalAuth.js';
-import { seedHomePath, sessionsRootPath } from '../shared/terminalSeed.mjs';
+import { seedHomePath, sessionsRootPath, measureSeedSize, describeSeedSize } from '../shared/terminalSeed.mjs';
 
 // Per-session HOME isolation for the embedded terminal (S4, tkt-db09c3a52655).
 //
@@ -47,6 +47,16 @@ export function sessionHomeDir(sessionId: string, env: NodeJS.ProcessEnv = proce
   return path.join(sessionsRoot(env), sessionId, 'home');
 }
 
+// Warn — never REFUSE — when the template has grown past its budget (tkt-ce65b2532e47). The ticket
+// offered both; refusing trades a slow session for no session, and the 502 MB seed that paid for this
+// still worked. It was the silence that cost, so the fix is noise, not a block. Same call as
+// applyHostModel's unreadable path. The budget and the measurement live in shared/terminalSeed.mjs so
+// this and the dev preflight cannot read two different numbers.
+function warnOnSeedSize(env: NodeJS.ProcessEnv): void {
+  const { level, message } = describeSeedSize(measureSeedSize(env));
+  if (level === 'warn') console.error(`[terminal] ${message}`);
+}
+
 // Seed an isolated per-session HOME by copying the template into it. A stale dir from a crashed prior
 // run of the same id is cleared first (a fresh, uncontaminated copy every time). Ensures .claude/
 // exists so docker doesn't create it root-owned on mount. Returns the CredMount the container args
@@ -56,6 +66,7 @@ export function seedSessionHome(sessionId: string, env: NodeJS.ProcessEnv = proc
   const home = sessionHomeDir(sessionId, env);
   if (home === null) throw new Error(`seedSessionHome: invalid session id ${JSON.stringify(sessionId)}`);
   const seed = seedHomeDir(env);
+  warnOnSeedSize(env);
   rmSync(home, { recursive: true, force: true });
   mkdirSync(home, { recursive: true, mode: 0o700 });
   if (existsSync(seed)) cpSync(seed, home, { recursive: true });

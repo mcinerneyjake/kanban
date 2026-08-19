@@ -1,3 +1,4 @@
+import { lstatSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -44,6 +45,102 @@ export function validateSetupToken(token, { force = false } = {}) {
     return { ok: false, reason: `Token does not start with "${TOKEN_PREFIX}" — an API key (sk-ant-api…) or a URL is the usual mistake here. Re-run with --force if you are certain it is correct.` };
   }
   return { ok: true, reason: null };
+}
+
+// ── Seed size budget (tkt-ce65b2532e47) ──────────────────────────────────────
+//
+// `seedSessionHome` copies this directory WHOLE into a fresh HOME on every session start, so anything
+// that lands in the template is paid for on every session, forever. It reached 502 MB once — a
+// pre-S4 session's `.local/share/claude` install, back when the seed was mounted read-write — and
+// nothing noticed: not the preflight, not `terminal:clean`, not session start (tkt-c3e9c928bcec).
+//
+// The budget sits here, beside the path, for the same reason the path does: two consumers (session
+// start and the dev preflight) reading two different numbers is the drift tkt-812b2b71acbe paid for.
+// 50 MB is ~5x the largest healthy reading (8.9 MB, straight after that cleanup; 56 KB once the
+// re-seed prune landed) and ~10x under the observed pollution, so ordinary growth cannot trip it.
+export const SEED_SIZE_WARN_BYTES = 50 * 1024 * 1024;
+
+// Bytes are only half of "what does the copy cost" — a seed bloated by FILE COUNT copies slowly while
+// measuring healthy, and walking it would block session start and `npm run dev`, whose preflight
+// promises never to hang. Exceeding this aborts the walk into the unknown-size warning, which is the
+// right verdict either way: a template holding this many entries is polluted by definition.
+export const SEED_ENTRY_LIMIT = 20_000;
+
+// Sum the bytes cpSync would copy. Three deliberate choices:
+//   lstat, never stat — cpSync defaults to `dereference: false`, so a symlink costs the LINK, not its
+//   target. Following it would fire this guard on a seed that copies twenty bytes.
+//   lstat decides directory-ness, NOT Dirent.isDirectory() — that reads libuv's d_type, which is
+//   UV_DIRENT_UNKNOWN on filesystems that do not report it (XFS with ftype=0, several FUSE/NFS
+//   mounts, and $HOME is exactly where a network mount turns up). isDirectory() then answers false
+//   for a real directory, so the walk would lstat it and never recurse — silently undercounting the
+//   nested .local/share/claude bloat this guard exists for. The file branch already lstats, so
+//   deciding from the same stat costs nothing.
+//   THROWS on an unreadable entry rather than skipping it — a skipped entry undercounts, and an
+//   undercount is the permissive answer from a guard whose whole subject is an unnoticed 502 MB.
+export function measureDirBytes(dir, remaining = { entries: SEED_ENTRY_LIMIT }) {
+  let total = 0;
+  for (const name of readdirSync(dir)) {
+    if (--remaining.entries < 0) {
+      throw new Error(`the seed holds more than ${SEED_ENTRY_LIMIT} entries, so the walk was abandoned — a template that large by file COUNT is polluted too, and every session start copies all of it`);
+    }
+    const full = path.join(dir, name);
+    const stat = lstatSync(full);
+    total += stat.isDirectory() ? measureDirBytes(full, remaining) : stat.size;
+  }
+  return total;
+}
+
+// I/O half. An ABSENT seed is not a size fault: there is nothing to copy, and describeSeedCredential
+// already reports the missing credential — so it reads as 0. A read FAILURE is an error and must
+// never read as 0, which is the same answer as a healthy empty seed.
+//
+// statSync, NOT existsSync: existsSync answers `false` for ANY stat failure — an unreadable ancestor
+// (EACCES), a symlink loop (ELOOP), ENAMETOOLONG — so it erases the very distinction this function is
+// built on, and a 60 MB seed under a chmod-000 parent measured "✓ 0 B". statSync returns undefined
+// only for a genuine ENOENT and throws everything else into the error branch below.
+export function measureSeedSize(env = process.env) {
+  const dir = seedHomePath(env);
+  try {
+    if (statSync(dir, { throwIfNoEntry: false }) === undefined) return { dir, bytes: 0, error: null };
+    return { dir, bytes: measureDirBytes(dir), error: null };
+  } catch (err) {
+    return { dir, bytes: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+// Decision half — inputs to a verdict, no I/O, so the thresholds are unit-testable. Mirrors
+// describeSeedCredential's { level, message } shape; the preflight prints ✓/⚠ from it and
+// seedSessionHome logs only the warn.
+export function describeSeedSize({ bytes, error = null, dir = '', warnBytes = SEED_SIZE_WARN_BYTES } = {}) {
+  const where = dir ? ` (${dir})` : '';
+  const copied = 'Every embedded-terminal session start copies this directory whole.';
+  if (error) {
+    return { level: 'warn', message: `could not measure the terminal seed home${where}: ${error} — its size is UNKNOWN, not fine. ${copied}` };
+  }
+  // A caller handing us a non-measurement must not fall through to the comparison below: `null > n`
+  // is false, so an unmeasured seed would render as a passing one — the permissive answer again.
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+    return { level: 'warn', message: `terminal seed home${where} was not measured (got ${JSON.stringify(bytes)}) — treat its size as unknown. ${copied}` };
+  }
+  // The budget is a public knob (tests inject one), and it was the single input this function did not
+  // validate: `502e6 > NaN` is false, so a garbage budget rendered a 502 MB seed as healthy — the same
+  // permissive-on-garbage shape guarded against two lines up.
+  if (typeof warnBytes !== 'number' || !Number.isFinite(warnBytes) || warnBytes < 0) {
+    return { level: 'warn', message: `terminal seed home${where} was not checked: the size budget is ${JSON.stringify(warnBytes)}, not a usable number. ${copied}` };
+  }
+  if (bytes > warnBytes) {
+    return {
+      level: 'warn',
+      message: `terminal seed home${where} is ${formatBytes(bytes)}, over the ${formatBytes(warnBytes)} budget — ${copied} The seed is a template: a credential plus a little config, so something has polluted it. Find it with \`du -sh ${dir || seedHomePath()}/.[!.]* ${dir || seedHomePath()}/*\`; re-running scripts/terminal-setup-cred.mjs prunes the seed back to SEED_HOME_KEEP.`,
+    };
+  }
+  return { level: 'ok', message: `\u2713 terminal seed home is ${formatBytes(bytes)} (budget ${formatBytes(warnBytes)})` };
 }
 
 // Seed-home pruning keep-lists (tkt-fc6f493e2033). Both setup scripts (terminal-setup-cred +
