@@ -660,6 +660,234 @@ describe('kanban-workflow skill: the close checker itself', () => {
 });
 
 // ---------------------------------------------------------------------------
+// tkt-32f7c384bcad. A `/code-review` misdirected at another repo returns an EMPTY finding list,
+// which is byte-identical to the report of a review that ran correctly and found nothing. The
+// prevention half of this shipped as prose ("always name the target repo", §10) and prevention is
+// all it is: nothing stops a bare call, and the failure stays silent. §10's post-review table is the
+// detection half — the checks a run owes before `record_review`.
+//
+// WHAT IS ASSERTED: the table's structure — its columns, that its rows are exactly the checks the
+// run must perform, and that every "cannot be confirmed" cell reads EXACTLY `did not run`. That
+// allowlist has no permissive member, and the absence IS the invariant, exactly as GATE_VALUES.merge
+// has no `cross` and CLOSE_VALUES['wrap-up check'] has no skip. A dropped `scope` row, a cell reading
+// `treat as clean` or `proceed`, an exemption in a row NAME, and a cell qualified into a conditional
+// each redden this suite — the last two only because matching happens before normalization here.
+//
+// WHAT IS NOT ASSERTED, and must not be read as covered: that a run performs either check. Nothing
+// here observes a session, and in foreign mode this suite never runs at all — the same limit the
+// gate and close contracts state. A word-grep over §10's prose would be the assertion-word probe
+// CLAUDE.md measured at ~2% precision, so it is deliberately absent rather than approximated.
+//
+// The checker binds to the heading that NAMES the review, not to `## 10` — a section number is the
+// part of a heading most likely to move, and §15's renumbering is the precedent. Two headings
+// matching `review` is reported as ambiguity, never resolved by position.
+
+// `did not run` only, matched EXACTLY. The allowlist alone was NOT enough and the first cut of this
+// checker proved it: with normalization running in front, `**scope** (skip in foreign mode)` and
+// `did not run — except in foreign mode` both measured CLEAN — the permissive answer, from a guard
+// whose comment claimed it could not be given. Rejecting residue outright subsumes the SKIP_WORD
+// denylist, which knew `optional` but not `unless`/`except`: a denylist of qualifier words is
+// unclosable by construction, which is why this table matches rather than denies.
+const SCOPE_VALUES = {
+  'when it cannot be confirmed': ['did not run'],
+};
+const SCOPE_COLUMNS = ['check', ...Object.keys(SCOPE_VALUES)];
+// Both checks are load-bearing and neither subsumes the other: `finders ran` catches a review whose
+// agents died, `scope` catches a review that ran perfectly against the wrong repository.
+const SCOPE_CHECKS = ['finders ran', 'scope'];
+// Deliberately NOT levelLabel()/gateValue(): those strip a trailing `(…)` or `— …` BEFORE the
+// allowlist sees the cell, which is how an exemption bolted onto a row name passed clean. Nothing in
+// this table has a benign parenthetical, so any residue is a defect.
+const cellText = (cell) => stripMarkup(cell).toLowerCase();
+
+export function parseScopeTable(md) {
+  const lines = md.split('\n');
+  // Fence-aware, unlike its two siblings: §10 now CONTAINS a fenced block (the ground-truth git
+  // commands), and without this a fenced EXAMPLE table measured CLEAN with the real table deleted —
+  // a clean report for a file whose normative table is gone, the direction this must never fail in.
+  const fenced = fenceMask(lines);
+  const headings = lines
+    .map((line, i) => ({ line, i }))
+    .filter(({ line, i }) => !fenced[i] && /^##\s/.test(line) && /\breview\b/i.test(line));
+  if (headings.length !== 1) return { table: null, headings: headings.length };
+
+  const from = headings[0].i + 1;
+  const rest = lines.slice(from);
+  const restFenced = fenced.slice(from);
+  const endRel = rest.findIndex((l, i) => !restFenced[i] && /^##\s/.test(l));
+  const section = endRel === -1 ? rest : rest.slice(0, endRel);
+  const sectionFenced = endRel === -1 ? restFenced : restFenced.slice(0, endRel);
+
+  const rows = section.filter((l, i) => !sectionFenced[i] && l.trimStart().startsWith('|'));
+  if (rows.length < 3) return { table: null, headings: 1 };
+  return {
+    table: {
+      columns: splitRow(rows[0]).map((c) => stripMarkup(c).toLowerCase()),
+      body: rows.slice(2).map(splitRow),
+    },
+    headings: 1,
+  };
+}
+
+export function scopeTableProblems(md) {
+  const problems = [];
+  const { table, headings } = parseScopeTable(md);
+  if (!table) {
+    problems.push(
+      headings > 1
+        ? `${headings} headings match "review" — cannot tell which table is the post-review table`
+        : 'no post-review table found under a "review" heading',
+    );
+    return problems;
+  }
+
+  const { columns, body } = table;
+  if (columns.join(' | ') !== SCOPE_COLUMNS.join(' | ')) {
+    problems.push(`post-review columns are [${columns.join(', ')}], expected [${SCOPE_COLUMNS.join(', ')}]`);
+  }
+
+  const named = body.map((cells) => cellText(cells[0]));
+  const missing = SCOPE_CHECKS.filter((c) => !named.includes(c));
+  const extra = named.filter((c) => !SCOPE_CHECKS.includes(c));
+  if (missing.length) problems.push(`post-review checks with no row: ${missing.join(', ')}`);
+  if (extra.length) problems.push(`post-review rows naming no known check: ${extra.join(', ')}`);
+  const repeated = [...new Set(named.filter((c, i) => named.indexOf(c) !== i))];
+  if (repeated.length) problems.push(`post-review checks with more than one row: ${repeated.join(', ')}`);
+
+  for (const cells of body) {
+    const check = cellText(cells[0]);
+    for (let i = 1; i < columns.length; i += 1) {
+      const column = columns[i];
+      const allowed = SCOPE_VALUES[column];
+      if (!allowed) continue; // unknown column already reported above
+      const raw = cells[i] ?? '';
+      if (!allowed.includes(cellText(raw))) {
+        problems.push(`${check}'s ${column} value is "${raw.trim() || '<empty>'}", expected one of ${allowed.join('/')}`);
+      }
+    }
+  }
+  return problems;
+}
+
+describe('kanban-workflow skill: post-review table (tkt-32f7c384bcad)', () => {
+  it('parses a real table — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
+    const { table } = parseScopeTable(REAL);
+    expect(table, 'no post-review table parsed — every assertion below would pass vacuously').not.toBeNull();
+    expect(table.columns).toEqual(SCOPE_COLUMNS);
+    expect(table.body.length).toBe(SCOPE_CHECKS.length);
+  });
+
+  it('carries a scope check, which the finding count alone cannot substitute for', () => {
+    expect(scopeTableProblems(REAL)).toEqual([]);
+  });
+
+  it('leaves no check able to resolve permissively when it cannot be confirmed', () => {
+    const { table } = parseScopeTable(REAL);
+    const col = table.columns.indexOf('when it cannot be confirmed');
+    expect(table.body.map((cells) => cellText(cells[col]))).toEqual(table.body.map(() => 'did not run'));
+  });
+});
+
+describe('kanban-workflow skill: the post-review checker itself', () => {
+  const ROWS = [
+    '| check | when it cannot be confirmed |',
+    '|---|---|',
+    ...SCOPE_CHECKS.map((c) => `| **${c}** | did not run |`),
+  ];
+  const doc = (...rows) => ['## 10. Review — calibrated, and stated', '', ...rows, '', '## 11–13. The gates'].join('\n');
+
+  it('passes a correct table — so the flags below are not fired by everything', () => {
+    expect(scopeTableProblems(doc(...ROWS))).toEqual([]);
+  });
+
+  it('flags a DROPPED scope row — the whole point of this ticket', () => {
+    expect(scopeTableProblems(doc(...ROWS.filter((r) => !r.includes('**scope**')))))
+      .toContain('post-review checks with no row: scope');
+  });
+
+  it('flags a dropped finders-ran row, so scope did not replace the older check', () => {
+    expect(scopeTableProblems(doc(...ROWS.filter((r) => !r.includes('**finders ran**')))))
+      .toContain('post-review checks with no row: finders ran');
+  });
+
+  it('flags a check that resolves to a clean review when it cannot be confirmed', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | treat as clean |' : r)));
+    expect(scopeTableProblems(md))
+      .toContain('scope\'s when it cannot be confirmed value is "treat as clean", expected one of did not run');
+  });
+
+  it('flags a QUALIFIED skip, which a bare allowlist normalizes away', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run — optional when docs-only |' : r)));
+    expect(scopeTableProblems(md))
+      .toContain('scope\'s when it cannot be confirmed value is "did not run — optional when docs-only", expected one of did not run');
+  });
+
+  it('flags a DROPPED cannot-be-confirmed column, not just a bad cell value', () => {
+    const md = doc('| check |', '|---|', ...SCOPE_CHECKS.map((c) => `| **${c}** |`));
+    expect(scopeTableProblems(md))
+      .toContain('post-review columns are [check], expected [check, when it cannot be confirmed]');
+  });
+
+  it('flags an empty or dash-only cell', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | — |' : r)));
+    expect(scopeTableProblems(md)).toContain('scope\'s when it cannot be confirmed value is "—", expected one of did not run');
+  });
+
+  // tkt-32f7c384bcad, review findings 4-6. Each of these measured CLEAN against the first cut of
+  // this checker: normalization ran in FRONT of the allowlist, so the residue that carries the
+  // exemption was stripped before anything inspected it. One omission across a dimension, not five
+  // missing cases — the adversary list sampled the value cell and never the name cell, and sampled
+  // `optional` and never its synonyms.
+  it('flags an exemption bolted onto the check NAME, which levelLabel used to strip', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** (skip in foreign mode) | did not run |' : r)));
+    expect(scopeTableProblems(md)).toContain('post-review checks with no row: scope');
+  });
+
+  it('flags a docs-only exemption on the check name', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** (optional for docs-only) | did not run |' : r)));
+    expect(scopeTableProblems(md)).toContain('post-review checks with no row: scope');
+  });
+
+  it('flags a parenthetical qualifier the skip-word denylist never knew', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run (unless the diff is docs-only) |' : r)));
+    expect(scopeTableProblems(md))
+      .toContain('scope\'s when it cannot be confirmed value is "did not run (unless the diff is docs-only)", expected one of did not run');
+  });
+
+  it('flags a dash-clause qualifier the skip-word denylist never knew', () => {
+    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run — except in foreign mode |' : r)));
+    expect(scopeTableProblems(md))
+      .toContain('scope\'s when it cannot be confirmed value is "did not run — except in foreign mode", expected one of did not run');
+  });
+
+  it('reports a FENCED example table as no table, rather than as the real one', () => {
+    expect(scopeTableProblems(doc('```markdown', ...ROWS, '```')))
+      .toContain('no post-review table found under a "review" heading');
+  });
+
+  it('flags a check listed twice, which set comparison alone misses', () => {
+    expect(scopeTableProblems(doc(...ROWS, '| **scope** | did not run |')))
+      .toContain('post-review checks with more than one row: scope');
+  });
+
+  it('flags a row naming no known check', () => {
+    expect(scopeTableProblems(doc(...ROWS, '| **vibes** | did not run |')))
+      .toContain('post-review rows naming no known check: vibes');
+  });
+
+  it('reports a missing table rather than returning clean', () => {
+    expect(scopeTableProblems('# nothing here'))
+      .toContain('no post-review table found under a "review" heading');
+  });
+
+  it('refuses to guess when two headings match "review"', () => {
+    const md = '## 3. Review notes\n\n| a | b |\n|---|---|\n| x | y |\n\n' + doc(...ROWS);
+    expect(scopeTableProblems(md))
+      .toContain('2 headings match "review" — cannot tell which table is the post-review table');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // tkt-9fbe6c952590. The startup recommendation in kanban's CLAUDE.md and the close handoff in
 // SKILL.md §15 are the SAME invocation printed at the two ends of a session, living in two files
 // that nothing otherwise ties together. A hand-written "keep these in sync" note is not a mechanism

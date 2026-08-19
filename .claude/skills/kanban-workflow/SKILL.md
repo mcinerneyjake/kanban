@@ -443,6 +443,12 @@ stop looking. On `tkt-f54c6f43ea60` all four wrong safety claims lived in commen
 of *"measured, not assumed"*, and the one round whose prompt carried this line found the most defects
 of any — both fail-opens, plus two false statements in that repo's own `CLAUDE.md`.
 
+**Always append: "before any findings, state the repo root you resolved and every file you
+examined."** Without it the scope check below has nothing to read, and a check with no evidence
+source gets rationalized into a yes. A review reports `file:line` per *finding*, so a review with no
+findings names no path at all — precisely the run the check exists for. This line is the difference
+between a detection half that works and one that is decorative.
+
 **If the ticket adds or removes a guard, paste its adversary list in** (the tenet in
 `~/.claude/CLAUDE.md`) and ask the reviewer to sweep the dimensions it does *not* cover. Without it the
 reviewer finds one dimension per round — that ticket took four rounds at ~25 agents each, every round
@@ -456,10 +462,51 @@ re-reading a diff whose remaining hole nobody had named.
 > `ANTHROPIC_API_KEY`. Until it reports `CLEAN`, **do not delete an instruction on the strength of an
 > A/B** (`tkt-b86d2a318f8b`).
 
-Then `record_review({ id })`.
+### Before `record_review` — confirm the review reviewed *this*
 
-**Zero findings is trustworthy only if the finders ran.** Check `agents_error`; `verified: 0` *and*
-`refuted: 0` means no verification happened, whatever the prose says.
+| check | when it cannot be confirmed |
+|---|---|
+| **finders ran** | did not run |
+| **scope** | did not run |
+
+**That second column is the whole table's content.** A check you could not confirm is a review that
+did not run — never a review that came back clean. Run both, say which you ran, and only then
+`record_review({ id })`.
+
+**finders ran.** Check `agents_error`; `verified: 0` *and* `refuted: 0` means no verification
+happened, whatever the prose says.
+
+**scope — compare paths, never counts (`tkt-32f7c384bcad`).** Take the repo root and the file list
+the review was told to state, and check two things: the root is the **target** repo, and the files
+overlap what this ticket actually changed. Your ground truth is **both** of these, in the target
+(§2a's `cd` form):
+
+```bash
+git diff --name-only main...HEAD   # work already committed on this branch
+git status --porcelain             # uncommitted, including untracked `??` files
+```
+
+Neither alone is ground truth, and each fails in the direction that stops a *correct* review:
+porcelain is empty at the second review of a branch the workflow explicitly lets you commit to more
+than once, and `git diff` omits the untracked files a new-file ticket adds.
+
+**Do not reason from the finding count, and do not expect an empty report from a misdirected run.**
+The tempting version of this check — "a review pointed at the wrong repo meets a clean tree and says
+so" — does not hold. The harness falls back to a branch-vs-`main` range, and a checkout accumulates
+squash-merged branches that nothing in the cycle can clear (`git branch --list`; see the
+`gh pr merge --delete-branch` note in kanban's `CLAUDE.md`), so a misdirected review readily returns
+a **full, confident, plausible** report about a ticket that merged weeks ago. Zero findings is a
+legitimate result and proves nothing in either direction. What separates the two cases is *whose
+files were read*.
+
+Naming the target repo (above) is the *prevention* half, and it is honor-system prose: nothing stops
+a bare call. This is the *detection* half, which is why the two are not redundant — and the appended
+"state every file you examined" line above is what makes it performable at all.
+
+**A scope check that fails, or that you cannot perform, is a §14 hard stop.** Re-run the review with
+the target repo named; never carry an unconfirmed review across the commit gate. This is the one
+fail-open in the cycle that is silent by construction — it yields a confident, well-formatted report
+about a repository nobody asked about.
 
 ## 11–13. The gates
 
@@ -511,6 +558,8 @@ Stop, report, and wait on any of:
 - **In `auto-pr`: a repo with no enabled required checks.** Verify with `gh workflow list --all`.
   Absence of failing checks is not green — it means nothing ran. Never read it as a pass.
 - A red check, or a `/code-review` finding you rate significant.
+- **A review whose scope you could not confirm** (§10) — an empty finding list from a review
+  that never saw your diff reads exactly like a clean one.
 - A `guard-bash` block. Fix the environment; never route around the guard.
 - A merge conflict, or a non-empty `unreadable`.
 - The local LLM being down when a follow-up ticket needs filing.
