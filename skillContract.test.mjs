@@ -979,3 +979,173 @@ describe('kanban-workflow skill: the startup checker itself', () => {
     expect(startupPromptProblems(md, skill())).toEqual([]);
   });
 });
+
+// tkt-ec08d8af98f3. §0 gained a ticket-id argument, so a run can be pointed at a known ticket
+// instead of re-deriving the choice §4 exists to make. The argument surface is declared in TWO
+// places — the frontmatter `argument-hint` and §0's bullet list — and nothing but this check binds
+// them, so the failure to catch is one of them being edited alone: a hint promising `--ticket` that
+// §0 no longer parses reads, from the invocation line, exactly like one that works.
+//
+// WHAT IS ASSERTED: §0 declares both accepted spellings — the canonical `--ticket <id>` flag and the
+// bare `tkt-[0-9a-f]{12}` id shape, in PROSE and not merely inside a code fence — and that the
+// file's opening frontmatter block names the flag. Same treatment §0's
+// `--gates` already gets, and for the same reason: a spelling this file can parse is a spelling that
+// cannot silently disappear.
+//
+// WHAT IS NOT ASSERTED: that a run parses an id, skips §4, or stops when §5 fails on a named ticket.
+// Those are the consequential halves and they are prose an agent obeys — grepping §4/§5 for the
+// words would be the ~2%-precision assertion-word probe CLAUDE.md measured and rejected. The
+// declaration is the part that is structural; the behaviour stays honor-system, like the rest of §0.
+export function ticketArgProblems(md) {
+  const problems = [];
+  const { section, headings } = sliceSection(md, 2, /\bparse\b/i);
+  if (!section) {
+    // Fail closed. A checker that returns clean because it found nothing to check is the fail-open
+    // shape this repo rejects everywhere, and it is reachable by renaming one heading.
+    problems.push(
+      headings > 1
+        ? `${headings} headings match §0 — cannot tell which section parses the arguments`
+        : 'no §0 argument-parsing section found, so the ticket argument could not be checked',
+    );
+    return problems;
+  }
+  // sliceSection masks fences for HEADING detection only, so the returned lines still carry fenced
+  // content. A §0 that has demoted both declarations to a historical example inside a ``` block is
+  // documenting a rule it no longer applies — the same contamination adoption-markers.mjs strips.
+  const body = section.filter((_, i) => !fenceMask(section)[i]).join('\n');
+  if (!/`--ticket <id>`/.test(body)) {
+    problems.push('§0 does not declare the canonical `--ticket <id>` spelling');
+  }
+  // Escaped because the id shape is itself written as a regex inside the markdown.
+  if (!/`tkt-\[0-9a-f\]\{12\}`/.test(body)) {
+    problems.push('§0 does not declare the bare `tkt-[0-9a-f]{12}` id shape');
+  }
+  // Anchored to the head of the file and stopped at the CLOSING delimiter. Unanchored, `^---`
+  // matched any horizontal rule and the lazy body ran past the frontmatter to the first
+  // line-initial `argument-hint:` anywhere in the file — so a hint moved out of frontmatter into
+  // prose read as present while the invocation line no longer offered the flag.
+  const fm = md.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
+  const hint = fm ? fm[1].match(/^argument-hint:\s*(.+)$/m) : null;
+  if (!hint) {
+    problems.push('no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked');
+  } else if (!/--ticket/.test(hint[1])) {
+    problems.push('the `argument-hint` does not name `--ticket`, so it promises a different argument surface than §0 parses');
+  }
+  return problems;
+}
+
+describe('kanban-workflow skill: ticket-id argument (tkt-ec08d8af98f3)', () => {
+  it('declares both spellings in §0 and names the flag in the hint', () => {
+    expect(ticketArgProblems(REAL)).toEqual([]);
+  });
+
+  it('slices a real §0 — so "no problems" cannot mean "nothing scanned"', () => {
+    const { section, headings } = sliceSection(REAL, 2, /\bparse\b/i);
+    expect(headings, 'exactly one §0 heading must match, or every assertion above passes vacuously').toBe(1);
+    expect(section.join('\n')).toMatch(/--ticket/);
+  });
+});
+
+describe('kanban-workflow skill: the ticket-argument checker itself', () => {
+  const doc = (...bullets) => [
+    '---',
+    'name: kanban-workflow',
+    'argument-hint: "<project> [<ticket-id>|--ticket <id>] [--continuous]"',
+    '---',
+    '',
+    '## 0. Parse `$ARGUMENTS`',
+    '',
+    ...bullets,
+    '',
+    '## 1. Resolve the repos',
+  ].join('\n');
+  const BULLETS = [
+    '- A token matching `tkt-[0-9a-f]{12}` → the **named ticket**.',
+    '- `--ticket <id>` is the canonical spelling.',
+  ];
+
+  it('passes a well-formed fixture — so the flags below are not fired by everything', () => {
+    expect(ticketArgProblems(doc(...BULLETS))).toEqual([]);
+  });
+
+  it('flags a dropped flag spelling', () => {
+    expect(ticketArgProblems(doc(BULLETS[0]))).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
+  });
+
+  it('flags a dropped bare-id shape', () => {
+    expect(ticketArgProblems(doc(BULLETS[1]))).toContain('§0 does not declare the bare `tkt-[0-9a-f]{12}` id shape');
+  });
+
+  it('flags a hint that drifted from §0 — the half-edit this check exists for', () => {
+    const md = doc(...BULLETS).replace('[<ticket-id>|--ticket <id>] ', '');
+    expect(ticketArgProblems(md)).toContain(
+      'the `argument-hint` does not name `--ticket`, so it promises a different argument surface than §0 parses',
+    );
+  });
+
+  it('flags a missing argument-hint rather than passing it over', () => {
+    const md = doc(...BULLETS).replace(/^argument-hint:.*$/m, 'description: does things');
+    expect(ticketArgProblems(md)).toContain(
+      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
+    );
+  });
+
+  it('reports a RENAMED §0 rather than returning clean', () => {
+    const md = doc(...BULLETS).replace('## 0. Parse `$ARGUMENTS`', '## 0. Read the invocation');
+    expect(ticketArgProblems(md)).toEqual([
+      'no §0 argument-parsing section found, so the ticket argument could not be checked',
+    ]);
+  });
+
+  it('refuses to guess when two sections match', () => {
+    const md = doc(...BULLETS).replace('## 1. Resolve the repos', '## 1. Parse the rest\n\n## 2. Resolve the repos');
+    expect(ticketArgProblems(md)).toEqual([
+      '2 headings match §0 — cannot tell which section parses the arguments',
+    ]);
+  });
+
+  it('does not count a declaration that survives only inside a code FENCE', () => {
+    // The contamination path this repo already fixed once in scripts/probe/adoption-markers.mjs,
+    // which strips fences "precisely so paperwork can never count as adoption". A §0 that has
+    // demoted both declarations to a historical example parses as though they were still rules.
+    const md = doc('Ticket arguments are no longer parsed. Historical example only:', '', '```', ...BULLETS, '```');
+    expect(ticketArgProblems(md)).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
+  });
+
+  it('reads the hint from the FRONTMATTER, not from a line-initial copy in the body', () => {
+    // `^---` matches any horizontal rule, and a lazy body run past the closing delimiter finds the
+    // first `argument-hint:` anywhere in the file — so a hint MOVED OUT of frontmatter into prose
+    // left the advertised argument surface gone while this check stayed green.
+    const md = doc(...BULLETS).replace(/^argument-hint:.*$/m, 'description: does things')
+      + '\n\nThe hint used to read:\n\nargument-hint: "<project> [--ticket <id>]"\n';
+    expect(ticketArgProblems(md)).toContain(
+      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
+    );
+  });
+
+  it('requires frontmatter at the START of the file, not a stray rule', () => {
+    const md = ['# Title', '', '---', '', '## 0. Parse `$ARGUMENTS`', '', ...BULLETS, '',
+      'argument-hint: "<project> [--ticket <id>]"', '', '## 1. Next'].join('\n');
+    expect(ticketArgProblems(md)).toContain(
+      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
+    );
+  });
+
+  it('does not read a `---` block in the BODY as frontmatter', () => {
+    // Distinguishes an anchored `^` from a multiline one: a pseudo-frontmatter block further down
+    // the file is delimited exactly like the real thing, so only the anchor rejects it.
+    const md = ['# Title', '', '---', 'argument-hint: "<project> [--ticket <id>]"', '---', '',
+      '## 0. Parse `$ARGUMENTS`', '', ...BULLETS, '', '## 1. Next'].join('\n');
+    expect(ticketArgProblems(md)).toContain(
+      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
+    );
+  });
+
+  it('does not read a declaration from OUTSIDE §0', () => {
+    // A `--ticket` mention that has drifted into a later section is not a parsing rule, and reading
+    // one as though it were would let §0 lose the flag while this check stayed green.
+    const md = doc(...BULLETS).replace(/^- `--ticket <id>`.*$/m, '- nothing here')
+      + '\n\nLater on, pass `--ticket <id>` to name one.\n';
+    expect(ticketArgProblems(md)).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
+  });
+});

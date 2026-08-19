@@ -1,7 +1,7 @@
 ---
 name: kanban-workflow
 description: Run the kanban ticket cycle for one project — audit the board, pick the highest-value ticket, validate its premise, implement, review, commit, PR, and mark done. Use only when explicitly invoked.
-argument-hint: "<project> [--gates manual|auto-commit|auto-pr] [--continuous]"
+argument-hint: "<project> [<ticket-id>|--ticket <id>] [--gates manual|auto-commit|auto-pr] [--continuous]"
 disable-model-invocation: true
 ---
 
@@ -17,11 +17,59 @@ gate levels, hard stops, and the loop.
 
 ## 0. Parse `$ARGUMENTS`
 
-- First bare token → **project**. Flags may appear in any order.
+- A token matching `tkt-[0-9a-f]{12}` → the **named ticket**, wherever in the line it appears.
+  `--ticket <id>` is the canonical spelling; a bare id is accepted too, because an id cannot collide
+  with a project name. See **A named ticket** below for what naming one does and does not skip.
+- First bare token that is *not* a ticket id → **project**. Flags may appear in any order.
 - `--gates manual|auto-commit|auto-pr` → omitted means **ask** (see below), not a silent default; an
   unanswered menu resolves to `manual`.
 - `--continuous` → default **off**.
 - Unknown flag → stop and say so. Never guess.
+- **A leftover bare token — neither a ticket id nor the project — is not a flag, so the rule above
+  does not catch it.** Stop on it anyway. This is the gap that produced `tkt-ec08d8af98f3`: the
+  invocation `kanban --gates manual tkt-…` parsed as a project and a level, and the id fell through
+  in silence, which is indistinguishable from never having been typed.
+- Two ticket ids, or a `--ticket` whose next token is not a well-formed id → stop. Never pick one of
+  two, and never treat the malformed token as the project.
+- **A token that begins `tkt-` but does not match the full shape** — wrong length, non-hex,
+  uppercase — → stop and say it is not a well-formed ticket id. Without this it falls through to the
+  project rule below, and `--ticket tkt-abc` silently becomes *the project* `tkt-abc`, which then
+  fails in §1 as "no repo mapping" — a true sentence about the wrong mistake.
+
+### A named ticket
+
+Naming a ticket skips **§4's ranking, and nothing else.** What naming one buys is skipping the
+*choice*; it is never a claim that the ticket is still true, so **§5's premise validation runs
+unchanged.** A ticket a human named is exactly as likely to be stale as one this skill ranked — more
+so, if it was named from memory.
+
+- **If §5's premise check fails on a named ticket: report and stop.** Record the correction as §5
+  says, then stop — in every mode, `--continuous` included. Do **not** fall through to the
+  next-priority ticket. The user asked for *that* ticket, and quietly substituting another is work
+  nobody requested. This is the one premise failure that is a hard stop (§14); the ranked case
+  deliberately is not, because there no particular ticket was asked for.
+- **Blocked, `done`, `qa`, or already `in-progress` → warn and confirm** with `AskUserQuestion`,
+  naming which one it is. For a blocker, resolve the blocker ids' *statuses* per §4 and name the ones
+  still open. Never silently proceed — the state may be news to the user — and never silently
+  refuse: naming a ticket is an override, and a `done` ticket with follow-up work or an
+  `in-progress` one this session is resuming are both legitimate reasons to be here.
+- **Not on the board → stop.** Resolve it with **`get_ticket <id>`**, not by looking for it in §3's
+  `list_tickets({ project })`: that call is project-filtered, capped at 100, and excludes `archived`
+  by default, so "absent from that list" conflates *does not exist*, *belongs to another project*,
+  *archived*, and *past the cap* — four states, one of which the line below depends on telling apart.
+  `get_ticket` distinguishes them; say which one it was.
+- **A named ticket resolves its own project — do not ask for one.** `get_ticket` returns the
+  ticket's `project`, which is authoritative, so `/kanban-workflow tkt-…` with no project is a
+  complete invocation and must not trigger the project menu below. A user who knows the id rarely
+  knows the exact project string, and that is the most natural way to use this argument. If a
+  project was *also* given and the two disagree, stop and print both — never silently prefer one.
+- **`--continuous`:** the named ticket runs **first**, then §16 returns to §4 and the loop ranks
+  normally from there. A named ticket is consumed once; it does not pin the loop to itself.
+
+**When these run.** §0 only *records* the id — every check above needs the board. Run them after
+§3's audit and before §5, and do not reach §6's `start_ticket` or cut a branch until they have all
+passed. Naming a ticket removes the ranking, never the checks that stand between a typo and somebody
+else's ticket.
 
 No project given: call `list_tickets` per project, show open counts, and `AskUserQuestion`. The
 `project` field is free-form `string | null` — derive the live set from the board, never a hardcoded
@@ -52,7 +100,9 @@ when the two drift. Read the checks there rather than a summary here — enumera
 the transcription this repo's own rules forbid, and the first cut of this paragraph was already
 missing two of them. As with the gate table, it asserts the *list*, never that a run asks.
 
-State the resolved settings in one line before doing anything: `project=X gates=Y continuous=Z`.
+State the resolved settings in one line before doing anything:
+`project=X gates=Y continuous=Z ticket=<id|ranked>`. Say `ticket=ranked` when none was named, so
+"nobody named one" and "one was named and silently dropped" can never render identically.
 Reprint it with `mode=native|foreign` appended once §1 has resolved the repos — it cannot be known
 before then, since it needs the `git rev-parse` and the repo map.
 
@@ -240,6 +290,14 @@ protocol calls these a lie the next session has to untangle).
 
 ## 4. Select the ticket
 
+**Skip this section when §0 named a ticket *and that ticket has not been run yet*** — skipping the
+ranking is the whole of what naming one buys. Both halves matter: under `--continuous` §16 returns
+here every iteration, and a skip conditioned on the *parse* alone would skip ranking forever and
+arrive at §5 with nothing selected. A named ticket is consumed by its first run; every iteration
+after it ranks normally. Go straight to §5, which runs for a named ticket exactly as it does for a
+ranked one, and read §0's **A named ticket** for the blocked / `done` / `in-progress` cases this
+section's rules would otherwise decide silently.
+
 Rank, in order:
 
 1. Past-due `dueDate`.
@@ -261,8 +319,9 @@ Re-derive the ticket's **factual** claims against the current code. Agent-author
 their reporter's wrong premise verbatim, and a plan is stale on arrival.
 
 If a claim is false: `update_ticket({ appendBody })` with the correction, put the ticket in
-**`backlog`**, say plainly that it was filed on a wrong premise, and **return to step 4**. Do not
-quietly repair the ticket and implement it anyway.
+**`backlog`**, say plainly that it was filed on a wrong premise, and **return to step 4** — unless
+this is the ticket named in §0, which stops instead (see the exception below). Do not quietly repair
+the ticket and implement it anyway.
 
 **`backlog`, never `todo`.** `todo` means "ready to pick up", and a ticket whose premise just failed
 is the opposite of ready — leaving it there hands the next session a booby-trapped queue, and this
@@ -271,12 +330,24 @@ ticket usually needs no status change at all; say so rather than issuing a no-op
 only collapses after the ticket is already `in-progress`, move it back to `backlog` explicitly —
 never leave it `in-progress`, which the status protocol calls a lie the next session has to untangle.
 
-**This is not a hard stop, in any mode.** A wrong premise is a finding about the *ticket*, not about
+**For a ranked pick this is not a hard stop, in any mode** (the named-ticket exception below is the
+one case that is). A wrong premise is a finding about the *ticket*, not about
 the repo or the session — nothing is broken, nothing is half-applied, and the working tree is
 untouched because validation runs before the first edit. So in `--continuous`: record the correction,
 **abandon that ticket**, and take the next-priority one. Do not implement a re-scoped version of a
 ticket whose premise just failed; the corrected body is the input to a *later* pick, once a human has
 read it.
+
+**Exception — when the ticket *being validated* is the one named in §0.** Everything above describes
+a *ranked* pick, where abandoning one ticket and taking the next is right precisely because no
+particular ticket was asked for. For the named ticket, append the correction the same way and then
+**stop and report**: do not return to step 4, and do not implement a re-scoped version of it. That
+one *is* on §14's list. The asymmetry is the point — "pick something useful" survives a stale
+ticket, "work on this one" does not.
+
+Read the condition as scoped to *this* ticket, not to the invocation. Under `--continuous` the run
+was still started with a named ticket long after that ticket is done, and a premise failure on some
+*later ranked* pick is an ordinary abandon-and-continue — not a hard stop.
 
 Partial failure counts as failure. A ticket whose claims are half true is still mis-scoped, and
 salvaging "the true half" mid-loop is the quiet narrowing step 5 exists to prevent — record which
@@ -443,13 +514,15 @@ Stop, report, and wait on any of:
 - A `guard-bash` block. Fix the environment; never route around the guard.
 - A merge conflict, or a non-empty `unreadable`.
 - The local LLM being down when a follow-up ticket needs filing.
+- **A failed premise on a ticket named in §0** (§5). Naming one is a request for that ticket, so
+  there is nothing to fall through to.
 
 In `--continuous`, a hard stop **ends the loop**. It never skips to the next ticket.
 
-**A failed premise validation is deliberately NOT on that list** — see step 5. It fires before any
-edit, so there is nothing to leave half-done: the ticket is corrected, abandoned, and the loop moves
-to the next-priority one. Three consecutive failures *is* a hard stop, because that stops being a
-stale ticket and starts being a stale board.
+**A *ranked* pick's failed premise validation is deliberately NOT on that list** — see step 5. It
+fires before any edit, so there is nothing to leave half-done: the ticket is corrected, abandoned,
+and the loop moves to the next-priority one. Three consecutive failures *is* a hard stop, because
+that stops being a stale ticket and starts being a stale board.
 
 ## 15. Close the ticket — wrap-up check, then the handoff
 
@@ -526,7 +599,8 @@ then, in that session:
 `<board-repo-path>` is `$CLAUDE_PROJECT_DIR` **resolved at runtime** — print the resolved path, never
 the variable, because the block is pasted into a *new* terminal where it is unset, so a literal
 `cd "$CLAUDE_PROJECT_DIR"` succeeds and lands in `$HOME`: a handoff that fails silently in the wrong
-directory. `<project>` is this run's project name — §0 reads the first bare token *as* the project, so
+directory. `<project>` is this run's project name — §0 reads the first bare token that is not a
+ticket id *as* the project, and a literal `<project>` is not one, so
 a literal `<project>` resolves against a project that is not on the board rather than falling through
 to §0's menu. Equally, never write the resolved path into *this* file, which is public
 (`repoHygiene.test.mjs` fails kanban's suite on one). Two lines, not one: whether an initial prompt can
