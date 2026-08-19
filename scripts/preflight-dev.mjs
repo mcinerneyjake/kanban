@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { isDaemonUp, serverStatusFromJson, modelsLoaded, resolveProbeBase, parseYesNo, describeCheckoutFreshness, describeSeedCredential } from './preflight-lib.mjs';
-import { seedHomePath } from '../shared/terminalSeed.mjs';
+import { seedHomePath, measureSeedSize, describeSeedSize } from '../shared/terminalSeed.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(`preflight: ${m}`);
@@ -69,6 +69,14 @@ function checkTerminalCredential() {
     try { credential = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { error = e?.message ?? String(e); }
   }
   const { level, message } = describeSeedCredential({ credential, error });
+  if (level === 'warn') warn(message); else log(message);
+}
+
+// The seed is copied WHOLE into a fresh HOME on every session start, so bloat there is paid on every
+// session — and it reached 502 MB once with nothing noticing (tkt-ce65b2532e47). The preflight already
+// reads the seed for the credential check, which makes this the cheapest place to see it.
+function checkTerminalSeedSize() {
+  const { level, message } = describeSeedSize(measureSeedSize());
   if (level === 'warn') warn(message); else log(message);
 }
 
@@ -152,6 +160,7 @@ async function main() {
   // one that would have caught the stale-checkout bug that made the terminal die on restart.
   checkCheckout();
   checkTerminalCredential();
+  checkTerminalSeedSize();
   await checkDocker(interactive);
   await checkLmStudio(interactive, base);
 }

@@ -6,6 +6,20 @@ export function validateSetupToken(
   token: unknown,
   options?: { force?: boolean },
 ): { ok: boolean; reason: string | null };
+export const SEED_SIZE_WARN_BYTES: number;
+export const SEED_ENTRY_LIMIT: number;
+export function measureDirBytes(dir: string, remaining?: { entries: number }): number;
+export function measureSeedSize(env?: NodeJS.ProcessEnv): {
+  dir: string;
+  bytes: number | null;
+  error: string | null;
+};
+export function describeSeedSize(input?: {
+  bytes?: number | null;
+  error?: string | null;
+  dir?: string;
+  warnBytes?: number;
+}): { level: 'ok' | 'warn'; message: string };
 export const SEED_HOME_KEEP: string[];
 export const SEED_CLAUDE_KEEP: string[];
 export function validateGithubToken(
