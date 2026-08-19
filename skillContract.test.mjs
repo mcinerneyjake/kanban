@@ -17,6 +17,12 @@ import { fileURLToPath } from 'node:url';
 // (the target repo's mutation / red-first checks) and §10 (calibration) is likewise unenforced — a
 // word-grep for those would be the assertion-word probe CLAUDE.md measured at ~2% precision, so it is
 // deliberately absent rather than approximated.
+//
+// tkt-34f8a4b467e7 adds the same treatment to §0's gate-level menu — the list `AskUserQuestion` is
+// told to render when `--gates` is omitted. Asserted: every level the flag parses has a described
+// entry, exactly one entry is recommended, and the recommended one is the level whose gate-table row
+// asks at EVERY gate. Not asserted, for the same reason as above: that a run actually asks, or that
+// an unanswered menu resolves to `manual`. Both are prose an agent obeys, not code that executes.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_PATH = path.join(here, '.claude', 'skills', 'kanban-workflow', 'SKILL.md');
@@ -139,6 +145,100 @@ export function gateTableProblems(md) {
   return problems;
 }
 
+// The menu is bound to the section that DECLARES the flag, not to a heading name or a line number:
+// a menu that drifts out of §0 away from the flag it documents is reported, never hunted for.
+export function parseMenu(md) {
+  const lines = md.split('\n');
+  const flagIdx = lines.findIndex((l) => /`--gates [^`]+`/.test(l));
+  if (flagIdx === -1) return null;
+  let start = flagIdx;
+  while (start > 0 && !/^##\s/.test(lines[start])) start -= 1;
+  // A flag in an unheaded prologue has no heading line to step past; slicing past index 0 anyway
+  // would drop a menu entry sitting on the first line.
+  const rest = lines.slice(/^##\s/.test(lines[start]) ? start + 1 : start);
+  const endRel = rest.findIndex((l) => /^##\s/.test(l));
+  const section = endRel === -1 ? rest : rest.slice(0, endRel);
+
+  const entries = [];
+  for (const line of section) {
+    // `- \`level\` (Recommended) — description`. The em dash is what separates an option from the
+    // flag bullets above it, which use `→`; matching those would count the flag line as an entry.
+    const m = line.match(/^-\s+`([^`]+)`\s*(\(Recommended\))?\s*—\s*(.*)$/);
+    if (m) entries.push({ level: m[1].trim(), recommended: Boolean(m[2]), description: m[3].trim() });
+  }
+  return entries;
+}
+
+// "Safest" is DERIVED from the gate table, never named here: the level that asks at every gate. Hard-
+// coding `manual` would let the table and the menu drift apart in exactly the way this binds shut.
+function safestLevels(table) {
+  return table.body
+    // A row missing cells would pass `.every()` VACUOUSLY — `[].every()` is true — so a row that
+    // specifies no gates at all would be classified as the one that asks at all of them.
+    .filter((cells) => cells.length === table.columns.length)
+    .filter((cells) => cells.slice(1).every((c) => gateValue(c) === 'ask'))
+    .map((cells) => levelLabel(cells[0]));
+}
+
+export function gateMenuProblems(md) {
+  const problems = [];
+  const { levels, table } = parseSkill(md);
+  const entries = parseMenu(md);
+
+  if (!levels) problems.push('no `--gates <levels>` flag found in §0 — cannot derive the level set');
+  if (entries === null || entries.length === 0) {
+    problems.push('no gate-level menu found in the section that declares `--gates`');
+    return problems;
+  }
+
+  const named = entries.map((e) => e.level);
+  if (levels) {
+    const missing = levels.filter((l) => !named.includes(l));
+    const extra = named.filter((l) => !levels.includes(l));
+    if (missing.length) problems.push(`gate levels with no menu entry: ${missing.join(', ')}`);
+    if (extra.length) problems.push(`menu entries naming no parsed gate level: ${extra.join(', ')}`);
+  }
+
+  // `missing`/`extra` are set comparisons, so a level offered twice clears both while the menu
+  // renders two options for it — and two entries for one level can carry contradicting descriptions.
+  const repeated = [...new Set(named.filter((l, i) => named.indexOf(l) !== i))];
+  if (repeated.length) problems.push(`gate levels offered more than once: ${repeated.join(', ')}`);
+
+  for (const entry of entries) {
+    if (!entry.description) problems.push(`${entry.level}'s menu entry has no description`);
+  }
+
+  const recommended = entries.filter((e) => e.recommended);
+  if (recommended.length !== 1) {
+    problems.push(
+      `the menu marks ${recommended.length} entries (Recommended), expected exactly 1`
+        + (recommended.length ? `: ${recommended.map((e) => e.level).join(', ')}` : ''),
+    );
+  } else if (!table) {
+    // The recommendation is only ever checked AGAINST the gate table, so an unparseable table means
+    // the most consequential half of this checker did not run. Returning clean here would report
+    // "not checked" as "checked and fine" — the fail-open shape this repo rejects everywhere.
+    problems.push('no gate table parsed, so the recommendation could not be checked against it');
+  } else {
+    const safest = safestLevels(table);
+    // A table where no level asks everywhere, or where two do, cannot say which is safest — report
+    // that rather than picking one, or the recommendation check passes on an arbitrary answer.
+    if (safest.length !== 1) {
+      problems.push(`${safest.length} gate levels ask at every gate, so "safest" is undecidable: [${safest.join(', ')}]`);
+    } else if (recommended[0].level !== safest[0]) {
+      // NOT "crosses a gate": `run` in the review column crosses nothing (that column has no skip
+      // value), it pre-authorizes running the review. What disqualifies a level is asking less.
+      problems.push(`the menu recommends \`${recommended[0].level}\`, which does not ask at every gate; \`${safest[0]}\` does`);
+    }
+  }
+
+  // The first option is what a hurried reader takes, so its position is part of the default.
+  if (recommended.length === 1 && named[0] !== recommended[0].level) {
+    problems.push(`the recommended level \`${recommended[0].level}\` is not the first menu entry (\`${named[0]}\` is)`);
+  }
+  return problems;
+}
+
 const REAL = fs.readFileSync(SKILL_PATH, 'utf8');
 
 describe('kanban-workflow skill: gate table', () => {
@@ -161,6 +261,134 @@ describe('kanban-workflow skill: gate table', () => {
     const merge = table.columns.indexOf('merge');
     expect(table.body.map((cells) => gateValue(cells[merge]))).toEqual(
       table.body.map(() => 'ask'),
+    );
+  });
+});
+
+describe('kanban-workflow skill: gate-level menu (tkt-34f8a4b467e7)', () => {
+  it('parses a real menu — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
+    const entries = parseMenu(REAL);
+    expect(entries, 'no menu parsed — every assertion below would pass vacuously').not.toBeNull();
+    expect(entries.map((e) => e.level)).toEqual(['manual', 'auto-commit', 'auto-pr']);
+    expect(entries.every((e) => e.description.length > 0)).toBe(true);
+  });
+
+  it('offers every level, described, and recommends the one that asks at every gate', () => {
+    expect(gateMenuProblems(REAL)).toEqual([]);
+  });
+});
+
+describe('kanban-workflow skill: the menu checker itself', () => {
+  const MENU = [
+    '- `manual` (Recommended) — every gate asks.',
+    '- `auto-commit` — commits without asking; PR-open and merge still ask.',
+    '- `auto-pr` — commits and opens the PR without asking; merge still asks.',
+  ];
+  const doc = (...menu) => [
+    '## 0. Parse `$ARGUMENTS`',
+    '',
+    '- `--gates manual|auto-commit|auto-pr` → default **`manual`**.',
+    '',
+    ...menu,
+    '',
+    '## 11–13. The gates',
+    '',
+    '| level | review | commit | PR open | merge |',
+    '|---|---|---|---|---|',
+    '| `manual` (default) | ask | ask | ask | ask |',
+    '| `auto-commit` | run | cross | ask | ask |',
+    '| `auto-pr` | run | cross | cross | **ask — always** |',
+    '',
+    '## 14. Next',
+  ].join('\n');
+
+  it('passes a correct menu — so the flags below are not fired by everything', () => {
+    expect(gateMenuProblems(doc(...MENU))).toEqual([]);
+  });
+
+  it('flags a level the flag accepts but the menu never offers', () => {
+    expect(gateMenuProblems(doc(MENU[0], MENU[2]))).toContain('gate levels with no menu entry: auto-commit');
+  });
+
+  it('flags an entry with no description', () => {
+    expect(gateMenuProblems(doc('- `manual` (Recommended) — ', MENU[1], MENU[2])))
+      .toContain("manual's menu entry has no description");
+  });
+
+  it('flags a menu with no recommendation at all', () => {
+    expect(gateMenuProblems(doc('- `manual` — every gate asks.', MENU[1], MENU[2])))
+      .toContain('the menu marks 0 entries (Recommended), expected exactly 1');
+  });
+
+  it('flags two recommendations, which is no recommendation', () => {
+    expect(gateMenuProblems(doc(MENU[0], '- `auto-commit` (Recommended) — commits for you.', MENU[2])))
+      .toContain('the menu marks 2 entries (Recommended), expected exactly 1: manual, auto-commit');
+  });
+
+  it('flags a recommendation on a level that crosses a gate', () => {
+    const md = doc(
+      '- `auto-pr` (Recommended) — commits and opens the PR without asking.',
+      '- `manual` — every gate asks.',
+      MENU[1],
+    );
+    expect(gateMenuProblems(md)).toContain(
+      'the menu recommends `auto-pr`, which does not ask at every gate; `manual` does',
+    );
+  });
+
+  it('flags a recommendation that is not the first option', () => {
+    expect(gateMenuProblems(doc(MENU[1], MENU[0], MENU[2])))
+      .toContain('the recommended level `manual` is not the first menu entry (`auto-commit` is)');
+  });
+
+  it('flags a menu entry naming no parsed level', () => {
+    expect(gateMenuProblems(doc(...MENU, '- `auto-merge` — merges for you.')))
+      .toContain('menu entries naming no parsed gate level: auto-merge');
+  });
+
+  it('reports a missing menu rather than returning clean', () => {
+    expect(gateMenuProblems(doc())).toContain(
+      'no gate-level menu found in the section that declares `--gates`',
+    );
+  });
+
+  it('reports a menu that drifted out of the section declaring the flag', () => {
+    const md = doc().replace('## 11–13. The gates', ['## 0.5. Elsewhere', '', ...MENU, '', '## 11–13. The gates'].join('\n'));
+    expect(gateMenuProblems(md)).toContain(
+      'no gate-level menu found in the section that declares `--gates`',
+    );
+  });
+
+  it('reports an UNPARSEABLE gate table rather than clearing the recommendation', () => {
+    // The review found this returning [] for a menu recommending auto-pr: not checked, read as fine.
+    const bad = doc(
+      '- `auto-pr` (Recommended) — commits and opens the PR without asking.',
+      '- `manual` — every gate asks.',
+      MENU[1],
+    ).replace('## 11–13. The gates', '## 11–13. The approvals');
+    expect(gateMenuProblems(bad)).toContain(
+      'no gate table parsed, so the recommendation could not be checked against it',
+    );
+  });
+
+  it('does not treat a row with no gate cells as the level that asks at every gate', () => {
+    // `[].every()` is true, so a truncated row read as all-ask and validated the recommendation
+    // against a row specifying nothing.
+    const md = doc(...MENU).replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) |');
+    expect(gateMenuProblems(md)).toContain(
+      '0 gate levels ask at every gate, so "safest" is undecidable: []',
+    );
+  });
+
+  it('flags a level offered twice, which set comparison alone misses', () => {
+    const md = doc(MENU[0], '- `manual` — actually crosses everything.', MENU[1], MENU[2]);
+    expect(gateMenuProblems(md)).toContain('gate levels offered more than once: manual');
+  });
+
+  it('refuses to name a safest level when the table has none', () => {
+    const md = doc(...MENU).replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) | ask | cross | ask | ask |');
+    expect(gateMenuProblems(md)).toContain(
+      '0 gate levels ask at every gate, so "safest" is undecidable: []',
     );
   });
 });

@@ -18,13 +18,39 @@ gate levels, hard stops, and the loop.
 ## 0. Parse `$ARGUMENTS`
 
 - First bare token → **project**. Flags may appear in any order.
-- `--gates manual|auto-commit|auto-pr` → default **`manual`**.
+- `--gates manual|auto-commit|auto-pr` → omitted means **ask** (see below), not a silent default; an
+  unanswered menu resolves to `manual`.
 - `--continuous` → default **off**.
 - Unknown flag → stop and say so. Never guess.
 
 No project given: call `list_tickets` per project, show open counts, and `AskUserQuestion`. The
 `project` field is free-form `string | null` — derive the live set from the board, never a hardcoded
 list.
+
+**No `--gates` given: ask, with the same tool.** A level decides how many human approvals the rest of
+the run skips, so choosing it silently is the one default that should not be invisible. One option
+per level, `manual` first and labelled `(Recommended)`, each naming what the level crosses on your
+behalf:
+
+- `manual` (Recommended) — every gate asks. Nothing is crossed on your behalf.
+- `auto-commit` — you run the review and commit without asking; PR-open and merge still ask.
+- `auto-pr` — you run the review, commit and open the PR without asking; merge still asks.
+
+**An unaskable or unanswered menu resolves to `manual`** — never to an auto level, and never to a
+level inferred from the request's tone or from what was chosen last time. This is the fail-safe
+direction: "I could not ask" must not return the permissive answer, exactly as elsewhere in this
+repo's guards. A run that could not put the question is a run with no authorization to cross
+anything, which is what `manual` means.
+
+An explicit `--gates` flag is an answer already given: skip the menu, do not re-ask, and do not treat
+the flag as a suggestion to confirm. Ask the project and the gate level in one `AskUserQuestion` call
+when both are missing — it takes several questions, and two round-trips to start one ticket is
+friction the menu does not need to cost.
+
+`kanban`'s `skillContract.test.mjs` binds that list to the §11–13 table and fails that repo's suite
+when the two drift. Read the checks there rather than a summary here — enumerating them in prose is
+the transcription this repo's own rules forbid, and the first cut of this paragraph was already
+missing two of them. As with the gate table, it asserts the *list*, never that a run asks.
 
 State the resolved settings in one line before doing anything: `project=X gates=Y continuous=Z`.
 Reprint it with `mode=native|foreign` appended once §1 has resolved the repos — it cannot be known
