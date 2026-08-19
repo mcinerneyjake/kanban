@@ -592,10 +592,10 @@ cd <board-repo-path> && claude
 then, in that session:
 
 ```
-/kanban-workflow <project> --gates manual
+/kanban-workflow <project> --gates manual <next ticket id>
 ```
 
-**Substitute both placeholders before printing. A printed placeholder is a defect, not a template.**
+**Substitute every placeholder before printing. A printed placeholder is a defect, not a template.**
 `<board-repo-path>` is `$CLAUDE_PROJECT_DIR` **resolved at runtime** — print the resolved path, never
 the variable, because the block is pasted into a *new* terminal where it is unset, so a literal
 `cd "$CLAUDE_PROJECT_DIR"` succeeds and lands in `$HOME`: a handoff that fails silently in the wrong
@@ -607,18 +607,60 @@ to §0's menu. Equally, never write the resolved path into *this* file, which is
 carry a slash command is not something this file has measured, so do not print a one-liner that
 assumes it.
 
+**`<next ticket id>` is the ticket the next session should pick up, ranked at close time.** Re-read
+the board — `list_tickets({ project, limit: 100 })` — and run §4's ranking over what comes back. Do
+**not** reuse the ranking from the start of this run, or the runner-up §4 announced: the board moved
+while the ticket was open, not least because the wrap-up check immediately above routinely files
+follow-ups into it. A remembered ranking is stale by construction. Exclude what §4 already
+excludes, plus what cannot be worked at all: a ticket whose `blockers` name an id that is still open
+— resolve each blocker's *status* per §4, never the array's presence — and anything `done` or in
+`qa`. **Do not exclude an `in-progress` orphan.** §4 ranks those *above* fresh `todo` ("finish
+what's started") and §3 flags them for exactly this, so dropping them would make the handoff
+systematically recommend a ticket §4 ranks lower — with nothing on screen saying so. §0 treats a
+named `in-progress` ticket as a legitimate resume, not a refusal; it costs the next session one
+confirmation tap, which is the right price for handing back work somebody left open. Carrying the id
+is the whole point: without it the next session re-derives a ranking this one already has in hand,
+which is the friction `tkt-71229c9290b8` was filed against.
+
+**No candidate → omit the token entirely.** Print the invocation with the project and the level only,
+and say in prose that the board has nothing ready. Never print `<next ticket id>` itself, and never
+substitute a stand-in like `none` or `TBD`. Both stop the next session dead before it reaches the
+board: the project is already substituted and sits first, so a stand-in lands as a *second* bare
+token, which §0 stops on by name — and a stand-in beginning `tkt-` trips §0's malformed-id stop
+instead. Loud, in other words, not silent; the reason to omit the token is that a stop the next
+session must read and clear is exactly the friction this handoff exists to remove. (Do not reason
+from the `<project>` paragraph above: its "first bare token" premise does not hold in this
+position.)
+
+**Do not add a second worked example for that case.** `skillContract.test.mjs` permits exactly one
+line-initial slash command in this subsection — **any** name, not just this skill's, since
+`invocationsIn` matches `^/<name>`. So a stray `/clear` example reddens the contract as surely as a
+second `/kanban-workflow` block would, and fencing exempts neither: `fenceMask` governs heading
+detection only. Prose is the only form the no-candidate case can take here.
+
+**Say that the id is a recommendation, not a decision.** Under the block, print one line naming the
+ticket and its title and stating that the next session still owes it §5 premise validation. Without
+it the id reads as a choice already made — and the stakes are higher here than for a ranked pick,
+because §5 *stops* on a named ticket whose premise fails instead of moving to the next one. A handoff
+that hides that turns one stale ticket into a dead-ended session.
+
 **The handoff always says `--gates manual`, whatever level this run used.** A gate level authorizes
 *one* run to cross gates on the human's behalf; echoing `auto-pr` into the next session re-grants that
 authorization to a run nobody approved. `manual` crosses nothing, so pre-filling it costs no
 authorization — which is also why pre-filling it is not the invisible default §0's menu exists to
-prevent.
+prevent. The ticket id is the opposite case and carries no such hazard: naming a ticket skips §4's
+ranking and nothing else (§0), so it pre-fills a *choice*, never an authorization.
 
 **It prints at every close, `--continuous` included — that is why the table's column is per ticket
 type and not per mode.** In a loop it is not an instruction to stop; it is the resume point, correct
 at the moment it is printed, for a loop that can end at the very next hard stop or compaction. Say
 which it is: *"resuming here if the loop ends"* under `--continuous`, *"next session"* otherwise. The
-`--gates manual` it carries is not a contradiction of a loop still running at `auto-pr` — the level is
-this session's, and a new session re-earns its own.
+id it carries is then the ticket the loop is about to take, ranked off the same board state. It is
+still a **separate read** from §16's, which re-reads the board and returns to §4 on its own, so the
+two can diverge if the board moves between them — and §0 consumes a named ticket on its first run
+only, so the loop never actually consumes the printed id. Print it as the resume point it is, not as
+a promise about what §16 will pick. The `--gates manual` it carries is not a contradiction of a
+loop still running at `auto-pr` — the level is this session's, and a new session re-earns its own.
 
 ## 16. Loop or stop
 

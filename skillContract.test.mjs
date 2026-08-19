@@ -734,7 +734,7 @@ function invocationsIn(section) {
     .map((l) => l.trim())
     .map((l) => l.match(/^\/([A-Za-z][A-Za-z0-9-]*)(?=\s|$)(.*)$/))
     .filter(Boolean)
-    .map((m) => ({ skill: m[1], gates: (m[2].match(/--gates\s+(\S+)/) || [])[1] ?? null }));
+    .map((m) => ({ skill: m[1], rest: m[2], gates: (m[2].match(/--gates\s+(\S+)/) || [])[1] ?? null }));
 }
 
 function invocationOf(md, depth, nameRe, where) {
@@ -978,6 +978,30 @@ describe('kanban-workflow skill: the startup checker itself', () => {
     const md = claude('The API lives at', '', '```', '/api/tickets', '```', '', ...START);
     expect(startupPromptProblems(md, skill())).toEqual([]);
   });
+
+  // tkt-71229c9290b8. The handoff now carries the next ticket id and the startup recommendation
+  // still does not — a session opening cold has no ranking to carry. These pin that the asymmetry is
+  // LEGAL; that it is also REQUIRED is asserted separately, by handoffTicketSlotProblems (deletion)
+  // and startupTicketSlotProblems (bolting one on). Measured: these three alone leave a startup line
+  // carrying a stray id fully green, so they are not that check and must not be read as it.
+  it('tolerates a ticket id the handoff carries and the startup does not', () => {
+    const withId = skill('/kanban-workflow kanban --gates manual tkt-0123456789ab');
+    expect(startupPromptProblems(claude(...START), withId)).toEqual([]);
+  });
+
+  it('tolerates the id in either position around the flag', () => {
+    const withId = skill('/kanban-workflow kanban tkt-0123456789ab --gates manual');
+    expect(startupPromptProblems(claude(...START), withId)).toEqual([]);
+  });
+
+  it('still flags an auto level when an id is present — the id does not blind the level check', () => {
+    // The negative control for the two cases above. Without it, their "clean" is equally explained
+    // by a checker that stopped parsing AT the id, which would silently retire the level check the
+    // moment the handoff started carrying one.
+    const withId = skill('/kanban-workflow kanban --gates auto-pr tkt-0123456789ab');
+    expect(startupPromptProblems(claude(...START), withId))
+      .toContain('startup recommends `--gates manual` but the handoff prints `--gates auto-pr`');
+  });
 });
 
 // tkt-ec08d8af98f3. §0 gained a ticket-id argument, so a run can be pointed at a known ticket
@@ -1147,5 +1171,206 @@ describe('kanban-workflow skill: the ticket-argument checker itself', () => {
     const md = doc(...BULLETS).replace(/^- `--ticket <id>`.*$/m, '- nothing here')
       + '\n\nLater on, pass `--ticket <id>` to name one.\n';
     expect(ticketArgProblems(md)).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tkt-71229c9290b8. §15's handoff now carries the NEXT ticket's id, so the incoming session skips
+// §4's ranking instead of re-deriving one this session already had in hand. The whole capability is
+// one token inside one templated line — precisely the shape an unrelated edit deletes without
+// anyone noticing, leaving §15's surrounding prose describing a feature the template no longer has.
+//
+// WHAT IS ASSERTED: the handoff's single invocation carries a ticket SLOT, and (in the startup
+// fixtures above) carrying one neither breaks the startup/handoff agreement nor blinds the
+// gate-level check.
+//
+// WHAT IS NOT ASSERTED: that a run substitutes the slot, ranks the board correctly at close time,
+// or omits the token when nothing is ready. Those are prose obligations in §15, and a word-grep for
+// them would be the assertion-word probe CLAUDE.md measured at ~2% precision.
+
+// A well-formed id, or an angle-bracket placeholder that names a ticket, in either spelling §0
+// accepts. The placeholder branches are not laxity: SKILL.md is a template and is public, so a check
+// demanding a literal `tkt-…` could only be satisfied by hardcoding one real ticket id into it.
+// The `--ticket` alternative comes FIRST so it consumes its own argument — otherwise
+// `--ticket tkt-…` would count as two slots and trip the doubled-id check below.
+// It also carries the looser `<[^<>]+>` placeholder, because §0 calls `--ticket <id>` the canonical
+// spelling and `<id>` does not contain the word "ticket" — the flag supplies that context.
+const TICKET_SLOT_SRC = '(?:^|\\s)(?:--ticket\\s+(?:tkt-[0-9a-f]{12}|<[^<>]+>)'
+  + '|tkt-[0-9a-f]{12}|<[^<>]*\\bticket\\b[^<>]*>)(?=\\s|$)';
+const TICKET_SLOT = new RegExp(TICKET_SLOT_SRC);
+const NO_SLOT_PROBLEM = 'the close handoff invocation carries no ticket slot, so it cannot pass the next ticket id';
+
+export function handoffTicketSlotProblems(skillMd) {
+  const handoff = invocationOf(skillMd, 3, /\bhandoff\b/i, 'SKILL.md\'s "The handoff" subsection');
+  // Not `[]` — a handoff that could not be parsed is UNCHECKED, and reporting unchecked as fine is
+  // the fail-open every other checker in this file refuses.
+  if (handoff.problem) return [handoff.problem];
+  // Counted, not merely tested: §0 stops outright on two ticket ids, so a template carrying two
+  // would hand every future session a guaranteed stop — a slot check that only asked "is there one?"
+  // reports that as healthy.
+  const slots = handoff.invocation.rest.match(new RegExp(TICKET_SLOT_SRC, 'g')) ?? [];
+  if (slots.length === 0) return [NO_SLOT_PROBLEM];
+  if (slots.length > 1) {
+    return [`the close handoff invocation carries ${slots.length} ticket slots — §0 stops on two ids`];
+  }
+  return [];
+}
+
+// tkt-71229c9290b8, review finding 4. The asymmetry is stated as fact in CLAUDE.md's Project
+// structure bullet, so it owes an assertion rather than a comment: the DELETION half was pinned by
+// the checker above, while bolting a meaningless id onto the startup line stayed green. A cold
+// session has no prior run to rank from, so an id there could only ever be a guess.
+export function startupTicketSlotProblems(claudeMd) {
+  const startup = invocationOf(claudeMd, 2, /session startup/i, 'CLAUDE.md\'s "Session startup" section');
+  if (startup.problem) return [startup.problem];
+  if (TICKET_SLOT.test(startup.invocation.rest)) {
+    return ['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry'];
+  }
+  return [];
+}
+
+describe('kanban-workflow skill: handoff ticket slot (tkt-71229c9290b8)', () => {
+  it('the real handoff carries a ticket slot', () => {
+    expect(handoffTicketSlotProblems(REAL)).toEqual([]);
+  });
+});
+
+describe('kanban-workflow skill: the ticket-slot checker itself', () => {
+  const skillWith = (...handoff) => [
+    '## 15. Close the ticket — wrap-up check, then the handoff',
+    '',
+    '### The handoff',
+    '',
+    ...handoff,
+    '',
+    '## 16. Loop or stop',
+  ].join('\n');
+  const skill = (invocation) => skillWith('```', invocation, '```');
+  const NO_SLOT = 'the close handoff invocation carries no ticket slot, so it cannot pass the next ticket id';
+
+  it('passes a slot-carrying handoff — so the flags below are not fired by everything', () => {
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual <next ticket id>'))).toEqual([]);
+  });
+
+  it('accepts a substituted, well-formed id', () => {
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789ab'))).toEqual([]);
+  });
+
+  it('flags a handoff whose ticket slot was DELETED', () => {
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual'))).toEqual([NO_SLOT]);
+  });
+
+  it('does not accept just any angle-bracket placeholder as the slot', () => {
+    // `<project>` sits beside the ticket slot in the real template, so a check matching any
+    // angle-bracket token would stay green after the ticket one was removed.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual <id>'))).toEqual([NO_SLOT]);
+  });
+
+  it('does not accept a MALFORMED id as the slot', () => {
+    // §0 stops on a `tkt-`-prefixed token that is not well formed, so a handoff printing one hands
+    // the next session a guaranteed stop. Same shape rule as §0 parses by.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual tkt-abc'))).toEqual([NO_SLOT]);
+  });
+
+  it('does not read a slot out of PROSE beside an invocation that lost it', () => {
+    // The failure this is the control for: §15 keeps explaining how to substitute the id long after
+    // the template stopped having one, which reads correct to a human skimming the section.
+    const md = skillWith('```', '/kanban-workflow <project> --gates manual', '```', '',
+      'Substitute `<next ticket id>` before printing.');
+    expect(handoffTicketSlotProblems(md)).toEqual([NO_SLOT]);
+  });
+
+  it('reports a MISSING handoff section rather than returning clean', () => {
+    const md = ['## 15. Close', '', 'No handoff here.', '', '## 16. Loop or stop'].join('\n');
+    expect(handoffTicketSlotProblems(md)).toEqual(['no section found for SKILL.md\'s "The handoff" subsection']);
+  });
+
+  it('reports a handoff with NO invocation rather than returning clean', () => {
+    expect(handoffTicketSlotProblems(skillWith('Just go back to the board.')))
+      .toEqual(['no slash-command invocation in SKILL.md\'s "The handoff" subsection']);
+  });
+
+  it('accepts the canonical `--ticket <id>` spelling from §0', () => {
+    // §0 calls this the canonical spelling, so a future editor aligning the handoff with it must
+    // not get a red suite claiming the handoff "carries no ticket slot" when it plainly does.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual --ticket <id>'))).toEqual([]);
+  });
+
+  it('counts `--ticket tkt-…` as ONE slot, not two', () => {
+    // The flag alternative must consume its own argument; if it did not, the canonical spelling
+    // would trip the doubled-id check below and the fix for one finding would cause another.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual --ticket tkt-0123456789ab'))).toEqual([]);
+  });
+
+  it('flags TWO ticket ids, which §0 stops on outright', () => {
+    // A template carrying two hands every future session a guaranteed stop. A check that only
+    // asked "is there a slot?" reports that as healthy — hence counting rather than testing.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789ab tkt-ba9876543210')))
+      .toEqual(['the close handoff invocation carries 2 ticket slots — §0 stops on two ids']);
+  });
+
+  it('flags an UPPERCASE or non-hex id, which §0 does not accept either', () => {
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789AB'))).toEqual([NO_SLOT]);
+  });
+
+  it('flags an OVER-LONG id rather than matching its well-formed prefix', () => {
+    // The `(?=\s|$)` lookahead is what makes this red; without it the regex would match the first
+    // 12 hex characters of a longer token and call a malformed id healthy.
+    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789abcdef'))).toEqual([NO_SLOT]);
+  });
+
+  it('reports TWO handoff headings rather than resolving them by position', () => {
+    // The fail-closed branch of the shared invocationOf, asserted here for THIS checker: nothing
+    // else pins that an ambiguous section reaches the caller as a problem rather than as clean.
+    const md = [
+      '## 15. Close', '', '### The handoff', '', '```',
+      '/kanban-workflow <project> --gates manual <next ticket id>', '```', '',
+      '### The handoff, continued', '', '## 16. Loop or stop',
+    ].join('\n');
+    expect(handoffTicketSlotProblems(md))
+      .toEqual(['2 headings match SKILL.md\'s "The handoff" subsection — cannot tell which section carries the invocation']);
+  });
+
+  it('reports a SECOND invocation rather than picking the one that happens to carry a slot', () => {
+    // The no-candidate case is prose in §15 for exactly this reason: a second worked example turns
+    // the contract red, and a slot check that scanned for "any invocation with an id" would hide it.
+    const md = skillWith('```', '/kanban-workflow <project> --gates manual <next ticket id>', '```', '',
+      'When the board has nothing ready:', '', '```', '/kanban-workflow <project> --gates manual', '```');
+    expect(handoffTicketSlotProblems(md))
+      .toEqual(['2 slash-command invocations in SKILL.md\'s "The handoff" subsection — expected 1']);
+  });
+});
+
+describe('kanban-workflow skill: startup carries NO ticket slot (tkt-71229c9290b8)', () => {
+  it('the real startup recommendation carries no ticket slot', () => {
+    expect(startupTicketSlotProblems(REAL_CLAUDE)).toEqual([]);
+  });
+});
+
+describe('kanban-workflow skill: the startup-slot checker itself', () => {
+  const claude = (...body) => [
+    '# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server',
+  ].join('\n');
+
+  it('passes a slot-free startup — so the flags below are not fired by everything', () => {
+    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual', '```'))).toEqual([]);
+  });
+
+  it('flags an id bolted onto the startup line', () => {
+    // The half that was green before this checker existed, while a comment two files away claimed
+    // it could not be. A cold session has no prior run to rank from, so the id could only be a guess.
+    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow kanban --gates manual tkt-0123456789ab', '```')))
+      .toEqual(['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry']);
+  });
+
+  it('flags a placeholder slot too, not only a substituted id', () => {
+    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual <next ticket id>', '```')))
+      .not.toEqual([]);
+  });
+
+  it('reports a MISSING startup section rather than returning clean', () => {
+    const md = ['# Kanban Project', '', '## MCP server', '', 'nothing here'].join('\n');
+    expect(startupTicketSlotProblems(md))
+      .toEqual(['no section found for CLAUDE.md\'s "Session startup" section']);
   });
 });
