@@ -658,3 +658,324 @@ describe('kanban-workflow skill: the close checker itself', () => {
       .toContain('2 headings match "wrap-up" — cannot tell which table is the close table');
   });
 });
+
+// ---------------------------------------------------------------------------
+// tkt-9fbe6c952590. The startup recommendation in kanban's CLAUDE.md and the close handoff in
+// SKILL.md §15 are the SAME invocation printed at the two ends of a session, living in two files
+// that nothing otherwise ties together. A hand-written "keep these in sync" note is not a mechanism
+// (CLAUDE.md, "Generate, don't transcribe"), so the agreement is asserted here instead.
+//
+// WHAT IS ASSERTED: both files carry exactly one slash-command invocation in the bound section, they
+// name the same skill, they pass the same `--gates` level, and that level is the one the gate table
+// says asks at EVERY gate. The last is derived from the table via safestLevels(), never hardcoded to
+// `manual` — hardcoding it is precisely what would let the table and the two prompts drift apart in
+// three directions at once.
+//
+// WHAT IS NOT ASSERTED: that a session actually prints either line, that a run infers its level from
+// anything, or that `<project>` is substituted before printing. The substitution obligation is prose
+// in both files and a word-grep for it would be the assertion-word probe CLAUDE.md measured at ~2%
+// precision — deliberately absent rather than approximated, exactly as in the two contracts above.
+//
+// TWO KNOWN FALSE-RED SHAPES, both loud rather than fail-open: a heading-shaped line inside a fenced
+// block is excluded from slicing (fenceMask), but an unfenced markdown table or list item beginning
+// with `#` is not; and a line that looks like a slash command but is not one would be counted. Loud
+// is the acceptable direction here — the direction this checker must never fail in is clean.
+//
+// The adversarial fixtures below cover BOTH sides. The first cut mutated only the CLAUDE.md side, and
+// two fail-opens survived all 60 tests: dropping the handoff-problem push made the checker return
+// CLEAN for a SKILL.md with no handoff section at all, and dropping the handoff from the safest-level
+// loop went unnoticed. One omission across a whole dimension, exactly as the adversary-list tenet in
+// `~/.claude/CLAUDE.md` predicts — not five missing cases.
+
+const CLAUDE_PATH = path.join(here, 'CLAUDE.md');
+
+// A fenced line is never a heading. Without this a ```bash block inside the section whose body opens
+// with `# ` truncates the slice there, and a legitimate edit is reported as having no invocation.
+function fenceMask(lines) {
+  let inFence = false;
+  return lines.map((l) => {
+    if (/^\s*(?:```|~~~)/.test(l)) { inFence = !inFence; return true; }
+    return inFence;
+  });
+}
+
+// Slices by heading DEPTH. What the depth buys is precision, NOT protection from mis-binding: the
+// ambiguity guard below already refuses to resolve two matches by position, so a depth-blind anchor
+// would go red rather than bind wrongly. It would go red on the CORRECT file, though — `## 15. Close
+// the ticket — wrap-up check, then the handoff` also matches /handoff/ — which is a checker that
+// cannot be satisfied, not a checker that lies.
+// A same-or-shallower heading closes the slice; deeper ones are part of it (the `### Recommending`
+// subsection lives inside `## Session startup`, and must not be cut off from it).
+function sliceSection(md, depth, nameRe) {
+  const lines = md.split('\n');
+  const fenced = fenceMask(lines);
+  const opens = new RegExp(`^#{${depth}}\\s`);
+  const closes = new RegExp(`^#{1,${depth}}\\s`);
+  const heads = lines
+    .map((line, i) => ({ line, i }))
+    .filter(({ line, i }) => !fenced[i] && opens.test(line) && nameRe.test(line));
+  // Ambiguity is reported, never resolved by position — the same rule the gate-table parser follows.
+  if (heads.length !== 1) return { section: null, headings: heads.length };
+  const start = heads[0].i + 1;
+  let end = lines.length;
+  for (let i = start; i < lines.length; i += 1) {
+    if (!fenced[i] && closes.test(lines[i])) { end = i; break; }
+  }
+  return { section: lines.slice(start, end), headings: 1 };
+}
+
+// A slash-command shape at the start of a line. Two things it deliberately excludes: inline mentions
+// (`` `/kanban-workflow` `` in prose or in a heading), because matching those would let a file whose
+// real invocation had been deleted still parse off a sentence that merely names the skill; and paths
+// like `/api/tickets`, hence the single-segment name — a second `/` fails the lookahead rather than
+// parsing as a command with no `--gates`.
+function invocationsIn(section) {
+  return section
+    .map((l) => l.trim())
+    .map((l) => l.match(/^\/([A-Za-z][A-Za-z0-9-]*)(?=\s|$)(.*)$/))
+    .filter(Boolean)
+    .map((m) => ({ skill: m[1], gates: (m[2].match(/--gates\s+(\S+)/) || [])[1] ?? null }));
+}
+
+function invocationOf(md, depth, nameRe, where) {
+  const { section, headings } = sliceSection(md, depth, nameRe);
+  if (!section) {
+    return {
+      invocation: null,
+      problem: headings > 1
+        ? `${headings} headings match ${where} — cannot tell which section carries the invocation`
+        : `no section found for ${where}`,
+    };
+  }
+  const found = invocationsIn(section);
+  if (found.length === 0) return { invocation: null, problem: `no slash-command invocation in ${where}` };
+  // Two invocations in one section can disagree with each other, and a set comparison downstream
+  // would clear that by matching whichever one happened to come first.
+  if (found.length > 1) {
+    return { invocation: null, problem: `${found.length} slash-command invocations in ${where} — expected 1` };
+  }
+  return { invocation: found[0], problem: null };
+}
+
+export function startupPromptProblems(claudeMd, skillMd) {
+  const problems = [];
+  const startup = invocationOf(claudeMd, 2, /session startup/i, "CLAUDE.md's \"Session startup\" section");
+  const handoff = invocationOf(skillMd, 3, /\bhandoff\b/i, "SKILL.md's \"The handoff\" subsection");
+  if (startup.problem) problems.push(startup.problem);
+  if (handoff.problem) problems.push(handoff.problem);
+  // Returning here rather than comparing nulls: two missing invocations are trivially "equal", and
+  // reporting that as agreement is the fail-open this whole file exists to refuse.
+  if (!startup.invocation || !handoff.invocation) return problems;
+
+  if (startup.invocation.skill !== handoff.invocation.skill) {
+    problems.push(`startup recommends \`/${startup.invocation.skill}\` but the handoff prints \`/${handoff.invocation.skill}\``);
+  }
+  for (const [name, side] of [['startup recommendation', startup], ['close handoff', handoff]]) {
+    if (!side.invocation.gates) problems.push(`the ${name} passes no \`--gates\` level`);
+  }
+  if (!startup.invocation.gates || !handoff.invocation.gates) return problems;
+
+  if (startup.invocation.gates !== handoff.invocation.gates) {
+    problems.push(
+      `startup recommends \`--gates ${startup.invocation.gates}\` but the handoff prints \`--gates ${handoff.invocation.gates}\``,
+    );
+  }
+
+  const { table } = parseSkill(skillMd);
+  if (!table) {
+    // Same reasoning as the menu checker: an unparseable table means the most consequential half of
+    // this check did not run, and "not checked" must never be reported as "checked and fine".
+    problems.push('no gate table parsed, so the recommended level could not be checked against it');
+    return problems;
+  }
+  const safest = safestLevels(table);
+  if (safest.length !== 1) {
+    problems.push(`${safest.length} gate levels ask at every gate, so "safest" is undecidable: [${safest.join(', ')}]`);
+    return problems;
+  }
+  for (const [name, side] of [['startup recommendation', startup], ['close handoff', handoff]]) {
+    if (side.invocation.gates !== safest[0]) {
+      problems.push(
+        `the ${name} pre-fills \`--gates ${side.invocation.gates}\`, which does not ask at every gate; \`${safest[0]}\` does`,
+      );
+    }
+  }
+  return problems;
+}
+
+const REAL_CLAUDE = fs.readFileSync(CLAUDE_PATH, 'utf8');
+
+describe('kanban-workflow skill: startup recommendation (tkt-9fbe6c952590)', () => {
+  it('parses a real invocation from BOTH files — so "no problems" cannot mean "nothing scanned"', () => {
+    const startup = invocationOf(REAL_CLAUDE, 2, /session startup/i, 'startup');
+    const handoff = invocationOf(REAL, 3, /\bhandoff\b/i, 'handoff');
+    expect(startup.problem, 'no startup invocation parsed — every assertion below would pass vacuously').toBeNull();
+    expect(handoff.problem, 'no handoff invocation parsed — every assertion below would pass vacuously').toBeNull();
+    expect(startup.invocation.skill).toBe('kanban-workflow');
+    expect(handoff.invocation.skill).toBe('kanban-workflow');
+  });
+
+  it('opens and closes a session with the same invocation, at a level that asks at every gate', () => {
+    expect(startupPromptProblems(REAL_CLAUDE, REAL)).toEqual([]);
+  });
+
+  it('pre-fills a gate level that crosses nothing', () => {
+    const { invocation } = invocationOf(REAL_CLAUDE, 2, /session startup/i, 'startup');
+    const { table } = parseSkill(REAL);
+    expect(safestLevels(table)).toEqual([invocation.gates]);
+  });
+});
+
+describe('kanban-workflow skill: the startup checker itself', () => {
+  const GATES = [
+    '## 11–13. The gates',
+    '',
+    '| level | review | commit | PR open | merge |',
+    '|---|---|---|---|---|',
+    '| `manual` (default) | ask | ask | ask | ask |',
+    '| `auto-commit` | run | cross | ask | ask |',
+    '| `auto-pr` | run | cross | cross | **ask — always** |',
+  ].join('\n');
+  const skillWith = (...handoff) => [
+    '## 15. Close the ticket — wrap-up check, then the handoff',
+    '',
+    '### The handoff',
+    '',
+    ...handoff,
+    '',
+    GATES,
+  ].join('\n');
+  const skill = (invocation = '/kanban-workflow <project> --gates manual') => skillWith('```', invocation, '```');
+  const claude = (...body) => ['# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
+  const START = ['```', '/kanban-workflow <project> --gates manual', '```'];
+
+  it('passes a matching pair — so the flags below are not fired by everything', () => {
+    expect(startupPromptProblems(claude(...START), skill())).toEqual([]);
+  });
+
+  it('flags a startup prompt pre-filling an auto level', () => {
+    const md = claude('```', '/kanban-workflow <project> --gates auto-pr', '```');
+    expect(startupPromptProblems(md, skill())).toContain(
+      'startup recommends `--gates auto-pr` but the handoff prints `--gates manual`',
+    );
+  });
+
+  it('flags BOTH ends drifting together, which comparing them to each other alone misses', () => {
+    // The two agreeing is not sufficient: an auto level pre-filled in both files agrees perfectly
+    // and re-grants an authorization nobody gave. This is why the level is checked against the table.
+    const md = claude('```', '/kanban-workflow <project> --gates auto-pr', '```');
+    expect(startupPromptProblems(md, skill('/kanban-workflow <project> --gates auto-pr'))).toContain(
+      'the startup recommendation pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does',
+    );
+  });
+
+  it('flags an invocation carrying no --gates at all', () => {
+    const md = claude('```', '/kanban-workflow <project>', '```');
+    expect(startupPromptProblems(md, skill())).toContain('the startup recommendation passes no `--gates` level');
+  });
+
+  it('flags a startup prompt naming a different skill', () => {
+    const md = claude('```', '/kanban-start <project> --gates manual', '```');
+    expect(startupPromptProblems(md, skill())).toContain(
+      'startup recommends `/kanban-start` but the handoff prints `/kanban-workflow`',
+    );
+  });
+
+  it('reports a DELETED startup invocation rather than returning clean', () => {
+    const md = claude('Just load the board and ask which ticket to start.');
+    expect(startupPromptProblems(md, skill())).toContain(
+      'no slash-command invocation in CLAUDE.md\'s "Session startup" section',
+    );
+  });
+
+  it('does not count an inline mention in prose as the invocation', () => {
+    // A file whose real invocation was deleted must not still parse off a sentence naming the skill.
+    const md = claude('Consider using the `/kanban-workflow` skill for this.');
+    expect(startupPromptProblems(md, skill())).toContain(
+      'no slash-command invocation in CLAUDE.md\'s "Session startup" section',
+    );
+  });
+
+  it('reports a missing startup SECTION rather than returning clean', () => {
+    const md = ['# Kanban Project', '', '## MCP server', '', ...START].join('\n');
+    expect(startupPromptProblems(md, skill())).toContain(
+      'no section found for CLAUDE.md\'s "Session startup" section',
+    );
+  });
+
+  it('refuses to guess when two sections match', () => {
+    const md = claude(...START).replace('## MCP server', '## Session startup, continued\n\n## MCP server');
+    expect(startupPromptProblems(md, skill())).toContain(
+      '2 headings match CLAUDE.md\'s "Session startup" section — cannot tell which section carries the invocation',
+    );
+  });
+
+  it('refuses to guess between two invocations in one section', () => {
+    const md = claude('```', '/kanban-workflow <project> --gates manual', '/kanban-workflow <project> --gates auto-pr', '```');
+    expect(startupPromptProblems(md, skill())).toContain(
+      '2 slash-command invocations in CLAUDE.md\'s "Session startup" section — expected 1',
+    );
+  });
+
+  it('keeps a `###` subsection inside its `##` section', () => {
+    // The invocation lives under `### Recommending …` nested in `## Session startup`. A slicer that
+    // ended the section at any heading would cut it off and report the invocation missing.
+    const md = claude('### Recommending the skill', '', ...START);
+    expect(startupPromptProblems(md, skill())).toEqual([]);
+  });
+
+  it('reports an UNPARSEABLE gate table rather than clearing the level check', () => {
+    const bad = skill().replace('## 11–13. The gates', '## 11–13. The approvals');
+    expect(startupPromptProblems(claude(...START), bad)).toContain(
+      'no gate table parsed, so the recommended level could not be checked against it',
+    );
+  });
+
+  it('refuses to name a safest level when the table has none', () => {
+    const bad = skill().replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) | ask | cross | ask | ask |');
+    expect(startupPromptProblems(claude(...START), bad)).toContain(
+      '0 gate levels ask at every gate, so "safest" is undecidable: []',
+    );
+  });
+
+  // The SKILL.md side. Every case above mutates CLAUDE.md; with none of these, the checker returned
+  // CLEAN for a SKILL.md whose handoff was gone, and nothing produced a `close handoff` message.
+  it('reports a DELETED handoff invocation rather than returning clean', () => {
+    expect(startupPromptProblems(claude(...START), skillWith('Print something helpful, then stop.')))
+      .toContain('no slash-command invocation in SKILL.md\'s "The handoff" subsection');
+  });
+
+  it('reports a missing handoff SECTION rather than returning clean', () => {
+    const bad = skill().replace('### The handoff', '### The parting words');
+    expect(startupPromptProblems(claude(...START), bad))
+      .toContain('no section found for SKILL.md\'s "The handoff" subsection');
+  });
+
+  it('refuses to guess between two invocations in the handoff', () => {
+    const bad = skillWith('```', '/kanban-workflow <project> --gates manual', '/kanban-workflow <project> --gates auto-pr', '```');
+    expect(startupPromptProblems(claude(...START), bad))
+      .toContain('2 slash-command invocations in SKILL.md\'s "The handoff" subsection — expected 1');
+  });
+
+  it('flags a handoff carrying no --gates at all', () => {
+    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project>')))
+      .toContain('the close handoff passes no `--gates` level');
+  });
+
+  it('flags a handoff pre-filling an auto level', () => {
+    // Produces the `close handoff` safest-level message, which no CLAUDE.md-side fixture can reach.
+    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project> --gates auto-pr')))
+      .toContain('the close handoff pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
+  });
+
+  it('does not truncate a section at a heading-shaped line inside a fenced block', () => {
+    // A ```bash example whose body opens with `# ` used to end the slice, hiding the invocation below.
+    const md = claude('```bash', '# how to resume', 'cd /somewhere && claude', '```', '', ...START);
+    expect(startupPromptProblems(md, skill())).toEqual([]);
+  });
+
+  it('does not read a bare path as a slash-command invocation', () => {
+    const md = claude('The API lives at', '', '```', '/api/tickets', '```', '', ...START);
+    expect(startupPromptProblems(md, skill())).toEqual([]);
+  });
+});
