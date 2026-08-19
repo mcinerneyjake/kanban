@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TYPES } from './shared/constants.ts';
 
 // tkt-abaff4ebd8b3. The /kanban-workflow skill's gate table is a claim about a file tracked in THIS
 // repo, so per CLAUDE.md ("Writing these documents", rule 2) it belongs in a test rather than in
@@ -485,5 +486,175 @@ describe('kanban-workflow skill: the checker itself', () => {
   it('refuses to guess when two headings match "gates"', () => {
     const md = FLAG + '## 3. Board gates\n\n| a | b |\n|---|---|\n| x | y |\n\n' + table(HEADER, ...GOOD);
     expect(gateTableProblems(md)).toContain('2 headings match "gates" — cannot tell which table is the gate table');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tkt-6dbfbd65a71c. §15's close table, given the same treatment as the gate table above.
+//
+// WHAT IS ASSERTED: that the close table names EVERY ticket type the board defines — derived from
+// `TYPES` in shared/constants.ts, so adding a type upstream reddens this rather than quietly leaving
+// it unconsidered — and that no cell holds a value letting a type close without the wrap-up check.
+// That is the whole content of the ticket's "regardless of type": the rows are identical on purpose.
+//
+// WHAT IS NOT ASSERTED: that a run performs the check, or prints the handoff. Nothing here observes a
+// session, and in foreign mode this suite never runs at all — the same limit §15 states in prose.
+
+// `ask` only. There is deliberately no value here that closes a ticket without asking, exactly as
+// GATE_VALUES.merge has no `cross`: that absence IS the invariant, and a denylist of skip words would
+// have let `defer`, `auto` or a dropped column through.
+const CLOSE_VALUES = {
+  'wrap-up check': ['ask'],
+  handoff: ['print'],
+};
+const CLOSE_COLUMNS = ['ticket type', ...Object.keys(CLOSE_VALUES)];
+
+export function parseCloseTable(md) {
+  const lines = md.split('\n');
+  // Bound to the heading that NAMES the wrap-up check, not to a section number: §15 has been
+  // renumbered once already, and a number is the part of a heading most likely to move.
+  const headings = lines
+    .map((line, i) => ({ line, i }))
+    .filter(({ line }) => /^##\s/.test(line) && /\bwrap-up\b/i.test(line));
+  if (headings.length !== 1) return { table: null, headings: headings.length };
+
+  const rest = lines.slice(headings[0].i + 1);
+  const endRel = rest.findIndex((l) => /^##\s/.test(l));
+  const section = endRel === -1 ? rest : rest.slice(0, endRel);
+
+  const rows = section.filter((l) => l.trimStart().startsWith('|'));
+  if (rows.length < 3) return { table: null, headings: 1 };
+  return {
+    table: {
+      columns: splitRow(rows[0]).map((c) => stripMarkup(c).toLowerCase()),
+      body: rows.slice(2).map(splitRow),
+    },
+    headings: 1,
+  };
+}
+
+export function closeTableProblems(md, types) {
+  const problems = [];
+  const { table, headings } = parseCloseTable(md);
+  if (!table) {
+    problems.push(
+      headings > 1
+        ? `${headings} headings match "wrap-up" — cannot tell which table is the close table`
+        : 'no close table found under a "wrap-up" heading',
+    );
+    return problems;
+  }
+
+  const { columns, body } = table;
+  if (columns.join(' | ') !== CLOSE_COLUMNS.join(' | ')) {
+    problems.push(`close columns are [${columns.join(', ')}], expected [${CLOSE_COLUMNS.join(', ')}]`);
+  }
+
+  const named = body.map((cells) => levelLabel(cells[0]));
+  const missing = types.filter((t) => !named.includes(t));
+  const extra = named.filter((t) => !types.includes(t));
+  if (missing.length) problems.push(`ticket types with no close row: ${missing.join(', ')}`);
+  if (extra.length) problems.push(`close rows naming no ticket type: ${extra.join(', ')}`);
+  // Set comparison clears a type listed twice, and two rows for one type can contradict each other.
+  const repeated = [...new Set(named.filter((t, i) => named.indexOf(t) !== i))];
+  if (repeated.length) problems.push(`ticket types with more than one close row: ${repeated.join(', ')}`);
+
+  for (const cells of body) {
+    const type = levelLabel(cells[0]);
+    for (let i = 1; i < columns.length; i += 1) {
+      const column = columns[i];
+      const allowed = CLOSE_VALUES[column];
+      if (!allowed) continue; // unknown column already reported above
+      const raw = cells[i] ?? '';
+      if (!allowed.includes(gateValue(raw))) {
+        problems.push(`${type}'s ${column} value is "${raw.trim() || '<empty>'}", expected one of ${allowed.join('/')}`);
+      } else if (SKIP_WORD.test(raw)) {
+        problems.push(`${type} may skip the ${column} ("${raw.trim()}")`);
+      }
+    }
+  }
+  return problems;
+}
+
+describe('kanban-workflow skill: close table (tkt-6dbfbd65a71c)', () => {
+  it('parses a real table — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
+    const { table } = parseCloseTable(REAL);
+    expect(table, 'no close table parsed — every assertion below would pass vacuously').not.toBeNull();
+    expect(table.columns).toEqual(CLOSE_COLUMNS);
+    expect(table.body.length).toBe(TYPES.length);
+  });
+
+  it('asks the wrap-up check for every ticket type, with no skip value', () => {
+    expect(closeTableProblems(REAL, TYPES)).toEqual([]);
+  });
+
+  it('leaves no ticket type able to close unasked', () => {
+    const { table } = parseCloseTable(REAL);
+    const wrapUp = table.columns.indexOf('wrap-up check');
+    expect(table.body.map((cells) => gateValue(cells[wrapUp]))).toEqual(table.body.map(() => 'ask'));
+  });
+});
+
+describe('kanban-workflow skill: the close checker itself', () => {
+  const CLOSE = [
+    '| ticket type | wrap-up check | handoff |',
+    '|---|---|---|',
+    ...TYPES.map((t) => `| \`${t}\` | ask | print |`),
+  ];
+  const doc = (...rows) => ['## 15. Close — wrap-up check, then the handoff', '', ...rows, '', '## 16. Next'].join('\n');
+
+  it('passes a correct table — so the flags below are not fired by everything', () => {
+    expect(closeTableProblems(doc(...CLOSE), TYPES)).toEqual([]);
+  });
+
+  it('flags a ticket type the board defines but the table never lists', () => {
+    expect(closeTableProblems(doc(...CLOSE.filter((r) => !r.includes('`chore`'))), TYPES))
+      .toContain('ticket types with no close row: chore');
+  });
+
+  it('flags a type allowed to skip the wrap-up check', () => {
+    const md = doc(...CLOSE.map((r) => (r.includes('`chore`') ? '| `chore` | skip | print |' : r)));
+    expect(closeTableProblems(md, TYPES)).toContain('chore\'s wrap-up check value is "skip", expected one of ask');
+  });
+
+  it('flags a QUALIFIED skip, which a bare allowlist normalizes away', () => {
+    const md = doc(...CLOSE.map((r) => (r.includes('`chore`') ? '| `chore` | ask — skip when docs-only | print |' : r)));
+    expect(closeTableProblems(md, TYPES)).toContain('chore may skip the wrap-up check ("ask — skip when docs-only")');
+  });
+
+  it('flags a DROPPED wrap-up column, not just a bad cell value', () => {
+    const md = doc(
+      '| ticket type | handoff |',
+      '|---|---|',
+      ...TYPES.map((t) => `| \`${t}\` | print |`),
+    );
+    expect(closeTableProblems(md, TYPES))
+      .toContain('close columns are [ticket type, handoff], expected [ticket type, wrap-up check, handoff]');
+  });
+
+  it('flags an empty or dash-only cell', () => {
+    const md = doc(...CLOSE.map((r) => (r.includes('`bug`') ? '| `bug` | — | print |' : r)));
+    expect(closeTableProblems(md, TYPES)).toContain('bug\'s wrap-up check value is "—", expected one of ask');
+  });
+
+  it('flags a type listed twice, which set comparison alone misses', () => {
+    expect(closeTableProblems(doc(...CLOSE, '| `chore` | ask | print |'), TYPES))
+      .toContain('ticket types with more than one close row: chore');
+  });
+
+  it('flags a row naming no ticket type', () => {
+    expect(closeTableProblems(doc(...CLOSE, '| `epic` | ask | print |'), TYPES))
+      .toContain('close rows naming no ticket type: epic');
+  });
+
+  it('reports a missing table rather than returning clean', () => {
+    expect(closeTableProblems('# nothing here', TYPES))
+      .toContain('no close table found under a "wrap-up" heading');
+  });
+
+  it('refuses to guess when two headings match "wrap-up"', () => {
+    const md = '## 3. Wrap-up notes\n\n| a | b |\n|---|---|\n| x | y |\n\n' + doc(...CLOSE);
+    expect(closeTableProblems(md, TYPES))
+      .toContain('2 headings match "wrap-up" — cannot tell which table is the close table');
   });
 });
