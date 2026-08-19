@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -432,5 +432,145 @@ describe('.claude/settings.json permission allowlist — hook backstops', () => 
     const matchers = settings.hooks?.PostToolUse ?? [];
     const commands = matchers.flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
     expect(commands.filter((c) => c.includes('track-steps'))).toEqual([]);
+  });
+});
+
+// The machine-wide runtime at ~/.claude/tools carries its OWN ticket-workflow pin, invisible to every
+// repo's audit — so it skews silently. Found 2026-08-18 at v0.16.0 against repos on v0.18.0+: the
+// NUL-byte write guard was live only for kanban-rooted sessions, while every other repo drove the
+// central board through a server without it (tkt-876ab4261e69).
+//
+// That install is where the USER-SCOPE guards actually resolve from: ~/.claude/settings.json wires
+// each one as `run-hook.mjs <name> <closed|open>`, which imports `ticket-workflow/hooks/<name>.mjs`
+// from this prefix. So its version is not a detail of one repo — it is the version of guard-bash on
+// the machine.
+//
+// Like the settings.local.json block above, this can never be a CI gate: ~/.claude/tools is
+// legitimately absent there. Every read below therefore happens INSIDE a test, never in this describe
+// body — an unguarded JSON.parse out here fails the whole FILE with a SyntaxError naming no path,
+// taking every settings.json and guard-bash assertion with it, and .husky/pre-commit runs `npm test`,
+// so that would block every local commit while pointing at nothing.
+describe('~/.claude/tools ticket-workflow pin (machine-local runtime, audited only where it exists)', () => {
+  const TOOLS_DIR = join(homedir(), '.claude', 'tools');
+  const toolsPkg = join(TOOLS_DIR, 'package.json');
+  const toolsInstalledPkg = join(TOOLS_DIR, 'node_modules', 'ticket-workflow', 'package.json');
+  const userSettings = join(homedir(), '.claude', 'settings.json');
+
+  // Presence keys on EITHER file. The thing that guards the machine is the node_modules tree, and
+  // run-hook.mjs resolves into it by walking up — it needs no package.json at the prefix. Keying on
+  // the pin file alone reports a live, LOADING, stale install as "absent" and skips every assertion
+  // below, which is precisely the skew this block exists to catch.
+  const present = existsSync(toolsPkg) || existsSync(toolsInstalledPkg);
+
+  const VERSION = /^v\d+\.\d+\.\d+(?:-[\w.]+)?$/; // prerelease pins are legitimate, e.g. v0.20.0-rc.1
+
+  // Returns null rather than a fallback: a spec this cannot read must never compare EQUAL to another
+  // one it also cannot read.
+  const parsePin = (spec) => /#(v\d+\.\d+\.\d+(?:-[\w.]+)?)$/.exec(spec ?? '')?.[1] ?? null;
+
+  const readJson = (p) => {
+    try {
+      return JSON.parse(readFileSync(p, 'utf8'));
+    } catch (err) {
+      // Fail THIS assertion with the path, rather than throwing out of the file.
+      return expect.fail(`${p} is not readable JSON: ${err.message}`);
+    }
+  };
+
+  const pinnedTag = (pkgPath) => {
+    const pkg = readJson(pkgPath);
+    return parsePin({ ...pkg.dependencies, ...pkg.devDependencies }['ticket-workflow']);
+  };
+
+  const repoTag = () => pinnedTag(join(REPO_ROOT, 'package.json'));
+
+  // "absent" must cost something locally, or finding a missing runtime reads as a normal green.
+  it('treats a missing machine-wide runtime as a failure anywhere but CI', () => {
+    if (present) return;
+    expect(process.env.CI, `${TOOLS_DIR} is missing and this is not CI — the user-scope guards are not installed`).toBeTruthy();
+  });
+
+  // Guards the comparisons below against their own vacuous mode: two unreadable specs both parse to
+  // null, and null === null would pass forever with nothing pinned at all.
+  it('reads this repo\'s own pin, so the comparison has a real reference value', () => {
+    expect(repoTag(), 'could not parse a ticket-workflow git tag from this repo\'s package.json').toMatch(VERSION);
+  });
+
+  it.runIf(present)('pins the same tag this repo does', () => {
+    expect(existsSync(toolsPkg), `${TOOLS_DIR} has an install but no package.json to pin it`).toBe(true);
+    const tag = pinnedTag(toolsPkg);
+    expect(tag, `${toolsPkg} has no readable ticket-workflow git-tag pin`).toMatch(VERSION);
+    expect(tag, 'bump ~/.claude/tools in the same pass as this repo (memory project_user_scope_tools_install)').toBe(repoTag());
+  });
+
+  // The tag is what was REQUESTED; this is what is actually loaded. npm can satisfy a bumped git tag
+  // from a cached sha and leave the old build in place (reference_npm_git_pin_cached_resolution), so a
+  // tag-only assertion would pass on exactly the install this ticket was filed about.
+  it.runIf(present)('has that tag INSTALLED, not merely requested', () => {
+    expect(existsSync(toolsInstalledPkg), `no ticket-workflow installed under ${TOOLS_DIR}`).toBe(true);
+    expect(`v${readJson(toolsInstalledPkg).version}`, 'npm resolved the pin from cache — reinstall and re-verify the installed version').toBe(repoTag());
+  });
+
+  // Same requested-vs-loaded hazard, applied to the install THIS repo's guard-bash launcher and
+  // packageContract.test.ts resolve from. repoTag() is only what was requested; nothing else asserts
+  // what is actually on disk here.
+  it('has this repo\'s own pin INSTALLED too', () => {
+    const installed = join(REPO_ROOT, 'node_modules', 'ticket-workflow', 'package.json');
+    expect(existsSync(installed), 'this repo has no ticket-workflow installed').toBe(true);
+    expect(`v${readJson(installed).version}`, 'run npm install — the installed build is not the pinned tag').toBe(repoTag());
+  });
+
+  // Derived from the wiring, not retyped: a guard added at user scope tomorrow must not be silently
+  // unaudited by a test whose name promises "every hook the dispatcher resolves".
+  const dispatchedHooks = () => {
+    const s = readJson(userSettings);
+    const commands = Object.values(s.hooks ?? {})
+      .flat()
+      .flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
+    return [...new Set(commands.map((c) => /run-hook\.mjs\s+([\w-]+)\s+(?:closed|open)/.exec(c)?.[1]).filter(Boolean))];
+  };
+
+  // existsSync is NOT the resolution run-hook.mjs performs: it imports the bare specifier
+  // `ticket-workflow/hooks/<name>.mjs`, and the package declares an explicit per-hook `exports` map.
+  // A hook dropped from `exports` while the file still sits on disk throws ERR_PACKAGE_PATH_NOT_EXPORTED
+  // at runtime. What that costs differs per hook and the difference is worth knowing when this goes
+  // red: four are wired `closed`, but only guard-bash and guard-subagent-gates match Bash, so only
+  // those two block a Bash call — including the npm install that would fix it. guard-ticket gates an
+  // MCP tool and guard-review-target is a UserPromptExpansion hook, so those two fail closed on their
+  // own trigger only; warn-stale-worktree is `open` and merely records nothing.
+  it.runIf(present)('exports every hook the user-scope dispatcher imports', () => {
+    const hooks = dispatchedHooks();
+    expect(hooks.length, `parsed no run-hook.mjs wiring out of ${userSettings} — the matcher has gone stale`).toBeGreaterThan(0);
+    const resolveFrom = createRequire(join(TOOLS_DIR, 'hooks', 'run-hook.mjs'));
+    const unresolvable = hooks.filter((h) => {
+      try {
+        resolveFrom.resolve(`ticket-workflow/hooks/${h}.mjs`);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(unresolvable, 'run-hook.mjs imports these by bare specifier and cannot load them').toEqual([]);
+  });
+
+  // The control, bound to the REAL parser via fixture files — a hand-copied regex here would pass
+  // every mutation to pinnedTag, which is the shape that let v0.16.0 sit against v0.18.0 unnoticed.
+  it('extracts a pin from a real package.json, tells two versions apart, and refuses to guess', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audit-pin-'));
+    try {
+      const fixture = (name, spec) => {
+        const p = join(dir, name);
+        writeFileSync(p, JSON.stringify(spec === null ? { dependencies: {} } : { dependencies: { 'ticket-workflow': spec } }));
+        return p;
+      };
+      expect(pinnedTag(fixture('a.json', 'github:mcinerneyjake/ticket-workflow#v0.19.0'))).toBe('v0.19.0');
+      expect(pinnedTag(fixture('b.json', 'github:mcinerneyjake/ticket-workflow#v0.16.0')))
+        .not.toBe(pinnedTag(fixture('c.json', 'github:mcinerneyjake/ticket-workflow#v0.19.0')));
+      for (const spec of ['', '^1.2.3', 'github:mcinerneyjake/ticket-workflow', 'github:mcinerneyjake/ticket-workflow#main', null]) {
+        expect(pinnedTag(fixture('d.json', spec)), `${spec} is not a version pin and must not parse as one`).toBeNull();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
