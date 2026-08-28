@@ -15,8 +15,9 @@
 // are freeform, and greps over them have measured false negatives in both directions), so a human
 // reading the actual words is the check on this instrument — not the instrument itself.
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const WINDOW_DAYS = Number(process.env.WINDOW_DAYS ?? 7);
 
@@ -35,16 +36,20 @@ const INTENT = [
   /\bhuman-only\b/i,
   /\bPAUSED\b/,
   /\bsession\s+parked\s+here\b/i,
-  /\bblocked\s+on\b/i,
   /\bresume\s+here\b/i,
 ];
+// REMOVED, do not restore: /\bblocked\s+on\b/i. Measured against the live board it matched 73 of
+// 1264 ticket files — ordinary prose, including a *dependent* ticket's blockage, a negation, and a
+// heading (`## Blocked on the Articles, genuinely`) whose own section then says it is satisfied.
+// That last one silenced a real orphan while the probe printed "all accounted for". The structured
+// `blockers` field already carries this signal precisely; prose cannot (tkt-3d25ae0626c6).
 
 const OPEN = new Set(['backlog', 'todo', 'in-progress', 'qa']);
 
 // Strip fenced code blocks: a body quoting one of these phrases inside a fence is documentation of
 // the marker, not a use of it. Same contamination path adoption-markers.mjs guards against.
 function stripFences(body) {
-  return body.replace(/^```[\s\S]*?^```/gm, '');
+  return body.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '');
 }
 
 // Minimal frontmatter reader for the shapes these files actually use: `key: value` and a block list
@@ -74,9 +79,23 @@ export function parseTicket(raw) {
   return out;
 }
 
-export function hasIntent(body) {
+// Returns the matched text, not a boolean: a ticket excused by a phrase is the direction where this
+// instrument is dangerous (a false positive silences an orphan), and it was also the direction the
+// output gave a human nothing to check — `DECLARED in body` named no phrase. tkt-3d25ae0626c6.
+export function intentMatch(body) {
   const clean = stripFences(body);
-  return INTENT.some((re) => re.test(clean));
+  for (const re of INTENT) {
+    const m = clean.match(re);
+    if (!m) continue;
+    const line = clean.slice(0, m.index).split('\n').length;
+    const ctx = clean.split('\n')[line - 1].trim();
+    return { phrase: m[0], line, excerpt: ctx.length > 90 ? `${ctx.slice(0, 87)}...` : ctx };
+  }
+  return null;
+}
+
+export function hasIntent(body) {
+  return intentMatch(body) !== null;
 }
 
 // Classify one in-progress ticket. `statusOf` resolves another ticket id to its status, or
@@ -91,7 +110,8 @@ export function classify(t, statusOf, now) {
     else if (OPEN.has(s)) openBlockers.push(`${b}(${s})`);
   }
   if (openBlockers.length) reasons.push(`BLOCKED by ${openBlockers.join(', ')}`);
-  if (hasIntent(t.body)) reasons.push('DECLARED in body');
+  const intent = intentMatch(t.body);
+  if (intent) reasons.push(`DECLARED L${intent.line}: "${intent.excerpt}"`);
 
   const updated = Date.parse(t.updated ?? '');
   const ageDays = Number.isNaN(updated) ? null : Math.floor((now - updated) / 86400000);
@@ -158,8 +178,12 @@ function assertInstruments() {
   if (rot.tier !== 'unaccounted') throw new Error('instrument: link-rot must not excuse a ticket');
 }
 
+// Deliberately does NOT strip fences, unlike intentMatch(). Stripping is right when deciding whether
+// a marker COUNTS (a quoted one is paperwork) and wrong when showing a human the ticket's own words:
+// checkpoints routinely put the branch, the failing command or the next step inside a fence, and
+// dropping those silently shows older, less relevant prose instead (tkt-3d25ae0626c6).
 function tail(body, n = 12) {
-  const lines = stripFences(body).split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+  const lines = body.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
   return lines.slice(-n);
 }
 
@@ -170,12 +194,14 @@ function main() {
   const dir = path.resolve(root, 'tickets');
   if (!existsSync(dir)) {
     console.error(`stale-in-progress: no tickets/ directory under ${root} — cannot scan, refusing to report a clean board.`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   const files = readdirSync(dir).filter((f) => f.endsWith('.md'));
   if (files.length === 0) {
     console.error(`stale-in-progress: scanned 0 ticket files under ${dir} — an empty scan is not a clean board.`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const all = new Map();
@@ -195,6 +221,10 @@ function main() {
 
   const statusOf = (id) => all.get(id)?.status;
   const now = Date.now();
+  // Frontmatter values are not guaranteed strings: an empty-valued key parses to [] (the block-list
+  // shape), and [] has no padEnd/localeCompare. Normalize at the display seam rather than trusting
+  // the parser's union to be a string (tkt-3d25ae0626c6).
+  const label = (v, fallback) => (typeof v === 'string' && v ? v : fallback);
   const inProgress = [...all.entries()].filter(([, t]) => t.status === 'in-progress');
 
   console.log(`board: ${dir}`);
@@ -202,11 +232,11 @@ function main() {
 
   const findings = [];
   const rot = [];
-  for (const [id, t] of inProgress.sort((a, b) => (a[1].project ?? '').localeCompare(b[1].project ?? ''))) {
+  for (const [id, t] of inProgress.sort((a, b) => label(a[1].project, '').localeCompare(label(b[1].project, '')))) {
     const c = classify(t, statusOf, now);
     const age = c.ageDays === null ? '?' : `${c.ageDays}d`;
-    const label = c.tier === 'accounted' ? 'ok  ' : 'FLAG';
-    console.log(`${label} ${id}  ${(t.project ?? '(no project)').padEnd(20)} idle ${age.padStart(4)}  ${c.reasons.join(' · ') || '— no blocker, no stated intent, not recently touched'}`);
+    const tier = c.tier === 'accounted' ? 'ok  ' : 'FLAG';
+    console.log(`${tier} ${id}  ${label(t.project, '(no project)').padEnd(20)} idle ${age.padStart(4)}  ${c.reasons.join(' · ') || '— no blocker, no stated intent, not recently touched'}`);
     if (c.rottenBlockers.length) rot.push([id, c.rottenBlockers]);
     if (c.tier !== 'accounted') findings.push([id, t]);
   }
@@ -221,7 +251,7 @@ function main() {
     console.log('The phrase list in this probe is incomplete by construction; a ticket flagged here may');
     console.log('still be legitimately in-progress for a reason nobody wrote in a form a regex can see.\n');
     for (const [id, t] of findings) {
-      console.log(`### ${id} — ${t.title ?? '(untitled)'}`);
+      console.log(`### ${id} — ${label(t.title, '(untitled)')}`);
       for (const l of tail(t.body)) console.log(`    ${l}`);
       console.log('');
     }
@@ -232,11 +262,41 @@ function main() {
     for (const u of unreadable) console.log(`  ${u}`);
   }
 
-  const bad = findings.length + unreadable.length + rot.length;
-  console.log(bad === 0
+  const bad = findings.length + rot.length;
+  console.log(bad === 0 && unreadable.length === 0
     ? `\nAll ${inProgress.length} in-progress tickets are accounted for.`
     : `\n${findings.length} unaccounted · ${rot.length} link-rot · ${unreadable.length} unreadable.`);
-  process.exit(bad === 0 ? 0 : 1);
+
+  // Two different failures, two different codes. `unreadable` is board-wide and means the scan was
+  // PARTIAL — every count above under-reports — so it belongs with the other cannot-scan cases in 2,
+  // not in the advisory bucket §15 tells sessions to expect. Checked first: a partial scan makes the
+  // findings count unreliable, so it must not be reported as a mere advisory 1.
+  process.exitCode = unreadable.length ? 2 : (bad === 0 ? 0 : 1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+// Compare REAL paths, and tolerate a missing argv[1]. A raw `file://` string comparison makes the
+// CLI do nothing when invoked through a symlink — exit 0 with no output, i.e. a clean-board reading
+// from a probe that never scanned, which is the one result this file exists to refuse. Same fix, and
+// the same reason, as nul-bytes.mjs (tkt-b86d2a318f8b).
+function isMainModule() {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch (e) {
+    // "Cannot tell" must not be silent here: returning false means the CLI prints nothing and exits
+    // 0, which is the clean-board reading this whole file refuses. Say so on stderr.
+    console.error(`stale-in-progress: could not resolve own module path (${e?.message ?? e}) — not running as a CLI.`);
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  try {
+    main();
+  } catch (e) {
+    console.error(`stale-in-progress: crashed mid-scan — ${e?.stack ?? e}`);
+    console.error('Treat this as a scan that did not happen, NOT as an advisory result.');
+    process.exitCode = 2;
+  }
+}
