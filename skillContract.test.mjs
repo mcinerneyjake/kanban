@@ -2,36 +2,52 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TYPES } from './shared/constants.ts';
 
-// tkt-abaff4ebd8b3. The /kanban-workflow skill's gate table is a claim about a file tracked in THIS
-// repo, so per CLAUDE.md ("Writing these documents", rule 2) it belongs in a test rather than in
-// prose — CLAUDE.md previously asserted the table's shape by hand and the sentence went stale.
+// Binds the /kanban-workflow skill's SKILL.md to this repo's CLAUDE.md. Five surfaces survive the
+// tkt-5a4ff25d4e74 trim, kept by one rule: a drift in each would be SILENT. The rest were dropped
+// because a run stops or degrades visibly instead — see docs/skillContract-dropped-assertions.md
+// for what went, why, how to restore it, and the two the first cut dropped wrongly.
 //
-// WHAT IS ASSERTED: the gate table's structure — that its columns are exactly the expected gates in
-// the expected order, that its rows are exactly the `--gates` levels §0 parses, and that every cell
-// holds a value from that gate's allowlist. That is the structural half of the review gate: a level
-// that crosses `commit` cannot have skipped `review`, because `review` has no skip value to hold.
-//
-// WHAT IS NOT ASSERTED, and must not be read as covered: that a run of the skill OBEYS the table.
-// Nothing here observes a session, and in foreign mode this suite never runs at all. The prose in §9
-// (the target repo's mutation / red-first checks) and §10 (calibration) is likewise unenforced — a
-// word-grep for those would be the assertion-word probe CLAUDE.md measured at ~2% precision, so it is
-// deliberately absent rather than approximated.
-//
-// tkt-34f8a4b467e7 adds the same treatment to §0's gate-level menu — the list `AskUserQuestion` is
-// told to render when `--gates` is omitted. Asserted: every level the flag parses has a described
-// entry, exactly one entry is recommended, and the recommended one is the level whose gate-table row
-// asks at EVERY gate. Not asserted, for the same reason as above: that a run actually asks, or that
-// an unanswered menu resolves to `manual`. Both are prose an agent obeys, not code that executes.
+// NOT asserted: that a RUN obeys any of it. Nothing here observes a session, and in foreign mode
+// this suite never runs. A word-grep over the prose would be the assertion-word probe CLAUDE.md
+// measured at ~2% precision — deliberately absent rather than approximated.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_PATH = path.join(here, '.claude', 'skills', 'kanban-workflow', 'SKILL.md');
+const CLAUDE_PATH = path.join(here, 'CLAUDE.md');
 
-// An ALLOWLIST per gate, not a denylist of skip words. The first cut checked only "no cell says
-// skip", and measured false-cleans on both halves of the table's real invariant: dropping the
-// `merge` column entirely passed, and so did `auto-pr | … | cross` for merge — i.e. "merge is human
-// in every mode" was the most consequential claim in the file and the one nothing asserted.
+const stripMarkup = (cell) => cell.replace(/[*`]/g, '').trim();
+const splitRow = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+
+// `| \`manual\` (default) |` names the level `manual`; the parenthetical is prose.
+const levelLabel = (cell) => stripMarkup(cell).replace(/\s*\(.*\)\s*/, '').trim();
+
+// `**ask — always**` is the value `ask` with an emphasis qualifier. The dash form requires a
+// FOLLOWING space so a hyphenated token is never split.
+const gateValue = (cell) => stripMarkup(cell)
+  .replace(/\s*\(.*\)\s*$/, '')
+  .replace(/\s*[—–-]\s.*$/, '')
+  .trim()
+  .toLowerCase();
+
+// A fenced line is never a heading, and never a table row. Every parser below masks with it: a
+// ```bash block whose body opens with `# ` would otherwise truncate a section slice, and a fenced
+// EXAMPLE table would parse as the real one. Measured on the gate table before this was threaded
+// through parseSkill/parseMenu: deleting the real §11–13 table and leaving a ```markdown copy of it
+// returned NO problems (tkt-5a4ff25d4e74 review, finding 4).
+function fenceMask(lines) {
+  let inFence = false;
+  return lines.map((l) => {
+    if (/^\s*(?:```|~~~)/.test(l)) { inFence = !inFence; return true; }
+    return inFence;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Gate table (tkt-abaff4ebd8b3)
+
+// An ALLOWLIST per gate, not a denylist of skip words: a denylist measured false-clean on both
+// halves of the real invariant (a dropped `merge` column, and `cross` for merge).
 // Adding a gate or a value here must be a deliberate edit, which is the point.
 const GATE_VALUES = {
   review: ['ask', 'run'],
@@ -40,69 +56,50 @@ const GATE_VALUES = {
   // Human in every mode. There is deliberately no `cross` here.
   merge: ['ask'],
 };
-// Order is load-bearing, not cosmetic: the review resolves BEFORE the commit, and that ordering has
-// been "corrected" backwards once already (see CLAUDE.md's note on it).
+// Order is load-bearing: the review resolves BEFORE the commit, and that has been "corrected"
+// backwards once already (see CLAUDE.md's note on it).
 const COLUMNS = ['level', ...Object.keys(GATE_VALUES)];
 
-// Second layer, and NOT redundant with the allowlist: a qualified crossing like `ask — but skip when
-// docs-only` normalizes to `ask` and would clear the allowlist. Unanchored on purpose — the first
-// cut anchored `^…$` and let `n/a (docs-only)`, `skip if docs-only` and `optional — see §14` through.
+// Second layer, not redundant: a qualified crossing like `ask — but skip when docs-only` normalizes
+// to `ask` and clears the allowlist. Unanchored on purpose — an anchored `^…$` let three shapes through.
 const SKIP_WORD = /\b(?:skip(?:s|ped)?|none|n\/?a|optional|waive[ds]?|never)\b/i;
 
-function stripMarkup(cell) {
-  return cell.replace(/[*`]/g, '').trim();
-}
-
-// `| \`manual\` (default) |` names the level `manual`; the parenthetical is prose.
-function levelLabel(cell) {
-  return stripMarkup(cell).replace(/\s*\(.*\)\s*/, '').trim();
-}
-
-// `**ask — always**` is the value `ask` with an emphasis qualifier. The dash form requires a
-// FOLLOWING space so a hyphenated token is never split.
-function gateValue(cell) {
-  return stripMarkup(cell)
-    .replace(/\s*\(.*\)\s*$/, '')
-    .replace(/\s*[—–-]\s.*$/, '')
-    .trim()
-    .toLowerCase();
-}
-
-function splitRow(line) {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-}
-
-export function parseSkill(md) {
+function parseSkill(md) {
   const lines = md.split('\n');
-  const flag = md.match(/`--gates ([^`]+)`/);
+  const fenced = fenceMask(lines);
+  // The flag must come from prose too, or a fenced worked example supplies the level set for a file
+  // that no longer declares one.
+  const flagIdx = lines.findIndex((l, i) => !fenced[i] && /`--gates [^`]+`/.test(l));
+  const flag = flagIdx === -1 ? null : lines[flagIdx].match(/`--gates ([^`]+)`/);
   const levels = flag ? flag[1].split('|').map((s) => s.trim()) : null;
 
   const gateHeadings = lines
     .map((line, i) => ({ line, i }))
-    .filter(({ line }) => /^##\s/.test(line) && /\bgates\b/i.test(line));
-  // Binding to the FIRST match would let a later-added section titled "…gates…" retarget the parser
-  // at some other table, silently. Ambiguity is reported, never resolved by position.
+    .filter(({ line, i }) => !fenced[i] && /^##\s/.test(line) && /\bgates\b/i.test(line));
+  // Ambiguity is reported, never resolved by position: binding to the FIRST match would let a later
+  // "…gates…" section silently retarget the parser.
   if (gateHeadings.length !== 1) return { levels, table: null, gateHeadings: gateHeadings.length };
 
-  const rest = lines.slice(gateHeadings[0].i + 1);
-  const endRel = rest.findIndex((l) => /^##\s/.test(l));
+  const from = gateHeadings[0].i + 1;
+  const rest = lines.slice(from);
+  const restFenced = fenced.slice(from);
+  const endRel = rest.findIndex((l, i) => !restFenced[i] && /^##\s/.test(l));
   const section = endRel === -1 ? rest : rest.slice(0, endRel);
+  const sectionFenced = endRel === -1 ? restFenced : restFenced.slice(0, endRel);
 
-  const rows = section.filter((l) => l.trimStart().startsWith('|'));
-  // header + separator + at least one level
-  if (rows.length < 3) return { levels, table: null, gateHeadings: 1 };
+  const rows = section.filter((l, i) => !sectionFenced[i] && l.trimStart().startsWith('|'));
+  if (rows.length < 3) return { levels, table: null, gateHeadings: 1 }; // header + separator + a level
   return {
     levels,
     gateHeadings: 1,
     table: {
       columns: splitRow(rows[0]).map((c) => stripMarkup(c).toLowerCase()),
-      // rows[1] is the `|---|` separator.
-      body: rows.slice(2).map(splitRow),
+      body: rows.slice(2).map(splitRow), // rows[1] is the `|---|` separator
     },
   };
 }
 
-export function gateTableProblems(md) {
+function gateTableProblems(md) {
   const problems = [];
   const { levels, table, gateHeadings } = parseSkill(md);
 
@@ -146,42 +143,49 @@ export function gateTableProblems(md) {
   return problems;
 }
 
-// The menu is bound to the section that DECLARES the flag, not to a heading name or a line number:
-// a menu that drifts out of §0 away from the flag it documents is reported, never hunted for.
-export function parseMenu(md) {
+// ---------------------------------------------------------------------------
+// Gate-level menu (tkt-34f8a4b467e7) — the list §0 renders when `--gates` is omitted.
+
+// Bound to the section that DECLARES the flag, not a heading name: a menu that drifts away from the
+// flag it documents is reported, never hunted for.
+function parseMenu(md) {
   const lines = md.split('\n');
-  const flagIdx = lines.findIndex((l) => /`--gates [^`]+`/.test(l));
+  const fenced = fenceMask(lines);
+  const flagIdx = lines.findIndex((l, i) => !fenced[i] && /`--gates [^`]+`/.test(l));
   if (flagIdx === -1) return null;
   let start = flagIdx;
-  while (start > 0 && !/^##\s/.test(lines[start])) start -= 1;
-  // A flag in an unheaded prologue has no heading line to step past; slicing past index 0 anyway
-  // would drop a menu entry sitting on the first line.
-  const rest = lines.slice(/^##\s/.test(lines[start]) ? start + 1 : start);
-  const endRel = rest.findIndex((l) => /^##\s/.test(l));
+  while (start > 0 && !(!fenced[start] && /^##\s/.test(lines[start]))) start -= 1;
+  // A flag in an unheaded prologue has no heading to step past; slicing past index 0 anyway would
+  // drop a menu entry sitting on the first line.
+  const headed = !fenced[start] && /^##\s/.test(lines[start]);
+  const from = headed ? start + 1 : start;
+  const rest = lines.slice(from);
+  const restFenced = fenced.slice(from);
+  const endRel = rest.findIndex((l, i) => !restFenced[i] && /^##\s/.test(l));
   const section = endRel === -1 ? rest : rest.slice(0, endRel);
+  const sectionFenced = endRel === -1 ? restFenced : restFenced.slice(0, endRel);
 
   const entries = [];
-  for (const line of section) {
-    // `- \`level\` (Recommended) — description`. The em dash is what separates an option from the
-    // flag bullets above it, which use `→`; matching those would count the flag line as an entry.
+  for (const [i, line] of section.entries()) {
+    if (sectionFenced[i]) continue; // a fenced example menu is not the menu
+    // The em dash separates an option from the flag bullets above it, which use `→`.
     const m = line.match(/^-\s+`([^`]+)`\s*(\(Recommended\))?\s*—\s*(.*)$/);
     if (m) entries.push({ level: m[1].trim(), recommended: Boolean(m[2]), description: m[3].trim() });
   }
   return entries;
 }
 
-// "Safest" is DERIVED from the gate table, never named here: the level that asks at every gate. Hard-
-// coding `manual` would let the table and the menu drift apart in exactly the way this binds shut.
+// DERIVED from the gate table, never named here. Hardcoding `manual` would let the table and the
+// two prompts drift apart in three directions at once.
 function safestLevels(table) {
   return table.body
-    // A row missing cells would pass `.every()` VACUOUSLY — `[].every()` is true — so a row that
-    // specifies no gates at all would be classified as the one that asks at all of them.
+    // `[].every()` is true, so without this a row specifying NO gates reads as asking at all of them.
     .filter((cells) => cells.length === table.columns.length)
     .filter((cells) => cells.slice(1).every((c) => gateValue(c) === 'ask'))
     .map((cells) => levelLabel(cells[0]));
 }
 
-export function gateMenuProblems(md) {
+function gateMenuProblems(md) {
   const problems = [];
   const { levels, table } = parseSkill(md);
   const entries = parseMenu(md);
@@ -200,8 +204,7 @@ export function gateMenuProblems(md) {
     if (extra.length) problems.push(`menu entries naming no parsed gate level: ${extra.join(', ')}`);
   }
 
-  // `missing`/`extra` are set comparisons, so a level offered twice clears both while the menu
-  // renders two options for it — and two entries for one level can carry contradicting descriptions.
+  // Set comparison clears a level offered twice, while the menu renders two contradicting options.
   const repeated = [...new Set(named.filter((l, i) => named.indexOf(l) !== i))];
   if (repeated.length) problems.push(`gate levels offered more than once: ${repeated.join(', ')}`);
 
@@ -216,19 +219,17 @@ export function gateMenuProblems(md) {
         + (recommended.length ? `: ${recommended.map((e) => e.level).join(', ')}` : ''),
     );
   } else if (!table) {
-    // The recommendation is only ever checked AGAINST the gate table, so an unparseable table means
-    // the most consequential half of this checker did not run. Returning clean here would report
-    // "not checked" as "checked and fine" — the fail-open shape this repo rejects everywhere.
+    // An unparseable table means the most consequential half did not run; returning clean would
+    // report "not checked" as "checked and fine".
     problems.push('no gate table parsed, so the recommendation could not be checked against it');
   } else {
     const safest = safestLevels(table);
-    // A table where no level asks everywhere, or where two do, cannot say which is safest — report
-    // that rather than picking one, or the recommendation check passes on an arbitrary answer.
+    // No level asking everywhere, or two, cannot say which is safest — report rather than pick.
     if (safest.length !== 1) {
       problems.push(`${safest.length} gate levels ask at every gate, so "safest" is undecidable: [${safest.join(', ')}]`);
     } else if (recommended[0].level !== safest[0]) {
-      // NOT "crosses a gate": `run` in the review column crosses nothing (that column has no skip
-      // value), it pre-authorizes running the review. What disqualifies a level is asking less.
+      // NOT "crosses a gate": `run` pre-authorizes running the review, it crosses nothing. What
+      // disqualifies a level is asking less.
       problems.push(`the menu recommends \`${recommended[0].level}\`, which does not ask at every gate; \`${safest[0]}\` does`);
     }
   }
@@ -240,471 +241,26 @@ export function gateMenuProblems(md) {
   return problems;
 }
 
-const REAL = fs.readFileSync(SKILL_PATH, 'utf8');
-
-describe('kanban-workflow skill: gate table', () => {
-  it('parses a real table — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
-    const { levels, table } = parseSkill(REAL);
-    expect(levels, 'the `--gates` flag line is what the row set is checked against').toEqual(
-      ['manual', 'auto-commit', 'auto-pr'],
-    );
-    expect(table, 'no table parsed — every assertion below would pass vacuously').not.toBeNull();
-    expect(table.columns).toEqual(COLUMNS);
-    expect(table.body.length).toBe(levels.length);
-  });
-
-  it('carries a review gate no level can skip', () => {
-    expect(gateTableProblems(REAL)).toEqual([]);
-  });
-
-  it('keeps merge human at every level', () => {
-    const { table } = parseSkill(REAL);
-    const merge = table.columns.indexOf('merge');
-    expect(table.body.map((cells) => gateValue(cells[merge]))).toEqual(
-      table.body.map(() => 'ask'),
-    );
-  });
-});
-
-describe('kanban-workflow skill: gate-level menu (tkt-34f8a4b467e7)', () => {
-  it('parses a real menu — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
-    const entries = parseMenu(REAL);
-    expect(entries, 'no menu parsed — every assertion below would pass vacuously').not.toBeNull();
-    expect(entries.map((e) => e.level)).toEqual(['manual', 'auto-commit', 'auto-pr']);
-    expect(entries.every((e) => e.description.length > 0)).toBe(true);
-  });
-
-  it('offers every level, described, and recommends the one that asks at every gate', () => {
-    expect(gateMenuProblems(REAL)).toEqual([]);
-  });
-});
-
-describe('kanban-workflow skill: the menu checker itself', () => {
-  const MENU = [
-    '- `manual` (Recommended) — every gate asks.',
-    '- `auto-commit` — commits without asking; PR-open and merge still ask.',
-    '- `auto-pr` — commits and opens the PR without asking; merge still asks.',
-  ];
-  const doc = (...menu) => [
-    '## 0. Parse `$ARGUMENTS`',
-    '',
-    '- `--gates manual|auto-commit|auto-pr` → default **`manual`**.',
-    '',
-    ...menu,
-    '',
-    '## 11–13. The gates',
-    '',
-    '| level | review | commit | PR open | merge |',
-    '|---|---|---|---|---|',
-    '| `manual` (default) | ask | ask | ask | ask |',
-    '| `auto-commit` | run | cross | ask | ask |',
-    '| `auto-pr` | run | cross | cross | **ask — always** |',
-    '',
-    '## 14. Next',
-  ].join('\n');
-
-  it('passes a correct menu — so the flags below are not fired by everything', () => {
-    expect(gateMenuProblems(doc(...MENU))).toEqual([]);
-  });
-
-  it('flags a level the flag accepts but the menu never offers', () => {
-    expect(gateMenuProblems(doc(MENU[0], MENU[2]))).toContain('gate levels with no menu entry: auto-commit');
-  });
-
-  it('flags an entry with no description', () => {
-    expect(gateMenuProblems(doc('- `manual` (Recommended) — ', MENU[1], MENU[2])))
-      .toContain("manual's menu entry has no description");
-  });
-
-  it('flags a menu with no recommendation at all', () => {
-    expect(gateMenuProblems(doc('- `manual` — every gate asks.', MENU[1], MENU[2])))
-      .toContain('the menu marks 0 entries (Recommended), expected exactly 1');
-  });
-
-  it('flags two recommendations, which is no recommendation', () => {
-    expect(gateMenuProblems(doc(MENU[0], '- `auto-commit` (Recommended) — commits for you.', MENU[2])))
-      .toContain('the menu marks 2 entries (Recommended), expected exactly 1: manual, auto-commit');
-  });
-
-  it('flags a recommendation on a level that crosses a gate', () => {
-    const md = doc(
-      '- `auto-pr` (Recommended) — commits and opens the PR without asking.',
-      '- `manual` — every gate asks.',
-      MENU[1],
-    );
-    expect(gateMenuProblems(md)).toContain(
-      'the menu recommends `auto-pr`, which does not ask at every gate; `manual` does',
-    );
-  });
-
-  it('flags a recommendation that is not the first option', () => {
-    expect(gateMenuProblems(doc(MENU[1], MENU[0], MENU[2])))
-      .toContain('the recommended level `manual` is not the first menu entry (`auto-commit` is)');
-  });
-
-  it('flags a menu entry naming no parsed level', () => {
-    expect(gateMenuProblems(doc(...MENU, '- `auto-merge` — merges for you.')))
-      .toContain('menu entries naming no parsed gate level: auto-merge');
-  });
-
-  it('reports a missing menu rather than returning clean', () => {
-    expect(gateMenuProblems(doc())).toContain(
-      'no gate-level menu found in the section that declares `--gates`',
-    );
-  });
-
-  it('reports a menu that drifted out of the section declaring the flag', () => {
-    const md = doc().replace('## 11–13. The gates', ['## 0.5. Elsewhere', '', ...MENU, '', '## 11–13. The gates'].join('\n'));
-    expect(gateMenuProblems(md)).toContain(
-      'no gate-level menu found in the section that declares `--gates`',
-    );
-  });
-
-  it('reports an UNPARSEABLE gate table rather than clearing the recommendation', () => {
-    // The review found this returning [] for a menu recommending auto-pr: not checked, read as fine.
-    const bad = doc(
-      '- `auto-pr` (Recommended) — commits and opens the PR without asking.',
-      '- `manual` — every gate asks.',
-      MENU[1],
-    ).replace('## 11–13. The gates', '## 11–13. The approvals');
-    expect(gateMenuProblems(bad)).toContain(
-      'no gate table parsed, so the recommendation could not be checked against it',
-    );
-  });
-
-  it('does not treat a row with no gate cells as the level that asks at every gate', () => {
-    // `[].every()` is true, so a truncated row read as all-ask and validated the recommendation
-    // against a row specifying nothing.
-    const md = doc(...MENU).replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) |');
-    expect(gateMenuProblems(md)).toContain(
-      '0 gate levels ask at every gate, so "safest" is undecidable: []',
-    );
-  });
-
-  it('flags a level offered twice, which set comparison alone misses', () => {
-    const md = doc(MENU[0], '- `manual` — actually crosses everything.', MENU[1], MENU[2]);
-    expect(gateMenuProblems(md)).toContain('gate levels offered more than once: manual');
-  });
-
-  it('refuses to name a safest level when the table has none', () => {
-    const md = doc(...MENU).replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) | ask | cross | ask | ask |');
-    expect(gateMenuProblems(md)).toContain(
-      '0 gate levels ask at every gate, so "safest" is undecidable: []',
-    );
-  });
-});
-
-// Controls. Without these, a parser that quietly matched nothing would report the file clean —
-// the failure shape this repo's probe discipline exists to catch.
-describe('kanban-workflow skill: the checker itself', () => {
-  const FLAG = '- `--gates manual|auto-commit|auto-pr` → default **`manual`**.\n\n';
-  const table = (header, ...rows) =>
-    ['## 11–13. The gates', '', header, '|---|---|---|---|---|', ...rows, '', '## 14. Next'].join('\n');
-  const HEADER = '| level | review | commit | PR open | merge |';
-  const GOOD = [
-    '| `manual` (default) | ask | ask | ask | ask |',
-    '| `auto-commit` | run | cross | ask | ask |',
-    '| `auto-pr` | run | cross | cross | **ask — always** |',
-  ];
-
-  it('passes a correct table — so the flags below are not fired by everything', () => {
-    expect(gateTableProblems(FLAG + table(HEADER, ...GOOD))).toEqual([]);
-  });
-
-  it('flags a table with no review column', () => {
-    const md = FLAG + table(
-      '| level | commit | PR open | merge |',
-      '| `manual` (default) | ask | ask | ask |',
-      '| `auto-commit` | cross | ask | ask |',
-      '| `auto-pr` | cross | cross | **ask — always** |',
-    );
-    expect(gateTableProblems(md)).toContain(
-      'gate columns are [level, commit, pr open, merge], expected [level, review, commit, pr open, merge]',
-    );
-  });
-
-  it('flags a DROPPED merge column, not just a bad merge value', () => {
-    const md = FLAG + table(
-      '| level | review | commit | PR open |',
-      '| `manual` (default) | ask | ask | ask |',
-      '| `auto-commit` | run | cross | ask |',
-      '| `auto-pr` | run | cross | cross |',
-    );
-    expect(gateTableProblems(md)).toContain(
-      'gate columns are [level, review, commit, pr open], expected [level, review, commit, pr open, merge]',
-    );
-  });
-
-  it('flags an auto level that crosses the merge gate', () => {
-    const md = FLAG + table(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | run | cross | cross | cross |');
-    expect(gateTableProblems(md)).toContain('auto-pr\'s merge value is "cross", expected one of ask');
-  });
-
-  it('flags a review cell that skips', () => {
-    const md = FLAG + table(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | skip | cross | cross | ask |');
-    expect(gateTableProblems(md)).toContain('auto-pr\'s review value is "skip", expected one of ask/run');
-  });
-
-  it('flags a QUALIFIED skip in a non-review column', () => {
-    const md = FLAG + table(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | run | cross | ask — skip if docs-only | ask |');
-    expect(gateTableProblems(md)).toContain('auto-pr may skip the pr open gate ("ask — skip if docs-only")');
-  });
-
-  it('flags "n/a (…)" and "optional — …", which an anchored matcher let through', () => {
-    const na = FLAG + table(HEADER, '| `manual` (default) | n/a (docs-only) | ask | ask | ask |', GOOD[1], GOOD[2]);
-    expect(gateTableProblems(na)).toContain('manual\'s review value is "n/a (docs-only)", expected one of ask/run');
-    const opt = FLAG + table(HEADER, '| `manual` (default) | optional — see §14 | ask | ask | ask |', GOOD[1], GOOD[2]);
-    expect(gateTableProblems(opt)).toContain('manual\'s review value is "optional — see §14", expected one of ask/run');
-  });
-
-  it('flags an empty or dash-only cell', () => {
-    const md = FLAG + table(HEADER, '| `manual` (default) | — | ask | ask | ask |', GOOD[1], GOOD[2]);
-    expect(gateTableProblems(md)).toContain('manual\'s review value is "—", expected one of ask/run');
-  });
-
-  it('flags review ordered after commit', () => {
-    const md = FLAG + table(
-      '| level | commit | review | PR open | merge |',
-      '| `manual` (default) | ask | ask | ask | ask |',
-      '| `auto-commit` | cross | run | ask | ask |',
-      '| `auto-pr` | cross | run | cross | **ask — always** |',
-    );
-    expect(gateTableProblems(md)).toContain(
-      'gate columns are [level, commit, review, pr open, merge], expected [level, review, commit, pr open, merge]',
-    );
-  });
-
-  it('flags a gate level the flag accepts but the table never lists', () => {
-    const md = FLAG + table(HEADER, GOOD[0], GOOD[2]);
-    expect(gateTableProblems(md)).toContain('gate levels with no table row: auto-commit');
-  });
-
-  it('reports a missing table rather than returning clean', () => {
-    expect(gateTableProblems('# nothing here')).toContain('no gate table found under a "gates" heading');
-  });
-
-  it('refuses to guess when two headings match "gates"', () => {
-    const md = FLAG + '## 3. Board gates\n\n| a | b |\n|---|---|\n| x | y |\n\n' + table(HEADER, ...GOOD);
-    expect(gateTableProblems(md)).toContain('2 headings match "gates" — cannot tell which table is the gate table');
-  });
-});
-
 // ---------------------------------------------------------------------------
-// tkt-6dbfbd65a71c. §15's close table, given the same treatment as the gate table above.
-//
-// WHAT IS ASSERTED: that the close table names EVERY ticket type the board defines — derived from
-// `TYPES` in shared/constants.ts, so adding a type upstream reddens this rather than quietly leaving
-// it unconsidered — and that no cell holds a value letting a type close without the wrap-up check.
-// That is the whole content of the ticket's "regardless of type": the rows are identical on purpose.
-//
-// WHAT IS NOT ASSERTED: that a run performs the check, or prints the handoff. Nothing here observes a
-// session, and in foreign mode this suite never runs at all — the same limit §15 states in prose.
+// Post-review table (tkt-32f7c384bcad) — §10's checks a run owes before `record_review`. A review
+// misdirected at another repo returns an EMPTY finding list, byte-identical to a clean one. "Name
+// the target repo" is prose, i.e. prevention only; this table is the only DETECTION half.
 
-// `ask` only. There is deliberately no value here that closes a ticket without asking, exactly as
-// GATE_VALUES.merge has no `cross`: that absence IS the invariant, and a denylist of skip words would
-// have let `defer`, `auto` or a dropped column through.
-const CLOSE_VALUES = {
-  'wrap-up check': ['ask'],
-  handoff: ['print'],
-};
-const CLOSE_COLUMNS = ['ticket type', ...Object.keys(CLOSE_VALUES)];
-
-export function parseCloseTable(md) {
-  const lines = md.split('\n');
-  // Bound to the heading that NAMES the wrap-up check, not to a section number: §15 has been
-  // renumbered once already, and a number is the part of a heading most likely to move.
-  const headings = lines
-    .map((line, i) => ({ line, i }))
-    .filter(({ line }) => /^##\s/.test(line) && /\bwrap-up\b/i.test(line));
-  if (headings.length !== 1) return { table: null, headings: headings.length };
-
-  const rest = lines.slice(headings[0].i + 1);
-  const endRel = rest.findIndex((l) => /^##\s/.test(l));
-  const section = endRel === -1 ? rest : rest.slice(0, endRel);
-
-  const rows = section.filter((l) => l.trimStart().startsWith('|'));
-  if (rows.length < 3) return { table: null, headings: 1 };
-  return {
-    table: {
-      columns: splitRow(rows[0]).map((c) => stripMarkup(c).toLowerCase()),
-      body: rows.slice(2).map(splitRow),
-    },
-    headings: 1,
-  };
-}
-
-export function closeTableProblems(md, types) {
-  const problems = [];
-  const { table, headings } = parseCloseTable(md);
-  if (!table) {
-    problems.push(
-      headings > 1
-        ? `${headings} headings match "wrap-up" — cannot tell which table is the close table`
-        : 'no close table found under a "wrap-up" heading',
-    );
-    return problems;
-  }
-
-  const { columns, body } = table;
-  if (columns.join(' | ') !== CLOSE_COLUMNS.join(' | ')) {
-    problems.push(`close columns are [${columns.join(', ')}], expected [${CLOSE_COLUMNS.join(', ')}]`);
-  }
-
-  const named = body.map((cells) => levelLabel(cells[0]));
-  const missing = types.filter((t) => !named.includes(t));
-  const extra = named.filter((t) => !types.includes(t));
-  if (missing.length) problems.push(`ticket types with no close row: ${missing.join(', ')}`);
-  if (extra.length) problems.push(`close rows naming no ticket type: ${extra.join(', ')}`);
-  // Set comparison clears a type listed twice, and two rows for one type can contradict each other.
-  const repeated = [...new Set(named.filter((t, i) => named.indexOf(t) !== i))];
-  if (repeated.length) problems.push(`ticket types with more than one close row: ${repeated.join(', ')}`);
-
-  for (const cells of body) {
-    const type = levelLabel(cells[0]);
-    for (let i = 1; i < columns.length; i += 1) {
-      const column = columns[i];
-      const allowed = CLOSE_VALUES[column];
-      if (!allowed) continue; // unknown column already reported above
-      const raw = cells[i] ?? '';
-      if (!allowed.includes(gateValue(raw))) {
-        problems.push(`${type}'s ${column} value is "${raw.trim() || '<empty>'}", expected one of ${allowed.join('/')}`);
-      } else if (SKIP_WORD.test(raw)) {
-        problems.push(`${type} may skip the ${column} ("${raw.trim()}")`);
-      }
-    }
-  }
-  return problems;
-}
-
-describe('kanban-workflow skill: close table (tkt-6dbfbd65a71c)', () => {
-  it('parses a real table — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
-    const { table } = parseCloseTable(REAL);
-    expect(table, 'no close table parsed — every assertion below would pass vacuously').not.toBeNull();
-    expect(table.columns).toEqual(CLOSE_COLUMNS);
-    expect(table.body.length).toBe(TYPES.length);
-  });
-
-  it('asks the wrap-up check for every ticket type, with no skip value', () => {
-    expect(closeTableProblems(REAL, TYPES)).toEqual([]);
-  });
-
-  it('leaves no ticket type able to close unasked', () => {
-    const { table } = parseCloseTable(REAL);
-    const wrapUp = table.columns.indexOf('wrap-up check');
-    expect(table.body.map((cells) => gateValue(cells[wrapUp]))).toEqual(table.body.map(() => 'ask'));
-  });
-});
-
-describe('kanban-workflow skill: the close checker itself', () => {
-  const CLOSE = [
-    '| ticket type | wrap-up check | handoff |',
-    '|---|---|---|',
-    ...TYPES.map((t) => `| \`${t}\` | ask | print |`),
-  ];
-  const doc = (...rows) => ['## 15. Close — wrap-up check, then the handoff', '', ...rows, '', '## 16. Next'].join('\n');
-
-  it('passes a correct table — so the flags below are not fired by everything', () => {
-    expect(closeTableProblems(doc(...CLOSE), TYPES)).toEqual([]);
-  });
-
-  it('flags a ticket type the board defines but the table never lists', () => {
-    expect(closeTableProblems(doc(...CLOSE.filter((r) => !r.includes('`chore`'))), TYPES))
-      .toContain('ticket types with no close row: chore');
-  });
-
-  it('flags a type allowed to skip the wrap-up check', () => {
-    const md = doc(...CLOSE.map((r) => (r.includes('`chore`') ? '| `chore` | skip | print |' : r)));
-    expect(closeTableProblems(md, TYPES)).toContain('chore\'s wrap-up check value is "skip", expected one of ask');
-  });
-
-  it('flags a QUALIFIED skip, which a bare allowlist normalizes away', () => {
-    const md = doc(...CLOSE.map((r) => (r.includes('`chore`') ? '| `chore` | ask — skip when docs-only | print |' : r)));
-    expect(closeTableProblems(md, TYPES)).toContain('chore may skip the wrap-up check ("ask — skip when docs-only")');
-  });
-
-  it('flags a DROPPED wrap-up column, not just a bad cell value', () => {
-    const md = doc(
-      '| ticket type | handoff |',
-      '|---|---|',
-      ...TYPES.map((t) => `| \`${t}\` | print |`),
-    );
-    expect(closeTableProblems(md, TYPES))
-      .toContain('close columns are [ticket type, handoff], expected [ticket type, wrap-up check, handoff]');
-  });
-
-  it('flags an empty or dash-only cell', () => {
-    const md = doc(...CLOSE.map((r) => (r.includes('`bug`') ? '| `bug` | — | print |' : r)));
-    expect(closeTableProblems(md, TYPES)).toContain('bug\'s wrap-up check value is "—", expected one of ask');
-  });
-
-  it('flags a type listed twice, which set comparison alone misses', () => {
-    expect(closeTableProblems(doc(...CLOSE, '| `chore` | ask | print |'), TYPES))
-      .toContain('ticket types with more than one close row: chore');
-  });
-
-  it('flags a row naming no ticket type', () => {
-    expect(closeTableProblems(doc(...CLOSE, '| `epic` | ask | print |'), TYPES))
-      .toContain('close rows naming no ticket type: epic');
-  });
-
-  it('reports a missing table rather than returning clean', () => {
-    expect(closeTableProblems('# nothing here', TYPES))
-      .toContain('no close table found under a "wrap-up" heading');
-  });
-
-  it('refuses to guess when two headings match "wrap-up"', () => {
-    const md = '## 3. Wrap-up notes\n\n| a | b |\n|---|---|\n| x | y |\n\n' + doc(...CLOSE);
-    expect(closeTableProblems(md, TYPES))
-      .toContain('2 headings match "wrap-up" — cannot tell which table is the close table');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tkt-32f7c384bcad. A `/code-review` misdirected at another repo returns an EMPTY finding list,
-// which is byte-identical to the report of a review that ran correctly and found nothing. The
-// prevention half of this shipped as prose ("always name the target repo", §10) and prevention is
-// all it is: nothing stops a bare call, and the failure stays silent. §10's post-review table is the
-// detection half — the checks a run owes before `record_review`.
-//
-// WHAT IS ASSERTED: the table's structure — its columns, that its rows are exactly the checks the
-// run must perform, and that every "cannot be confirmed" cell reads EXACTLY `did not run`. That
-// allowlist has no permissive member, and the absence IS the invariant, exactly as GATE_VALUES.merge
-// has no `cross` and CLOSE_VALUES['wrap-up check'] has no skip. A dropped `scope` row, a cell reading
-// `treat as clean` or `proceed`, an exemption in a row NAME, and a cell qualified into a conditional
-// each redden this suite — the last two only because matching happens before normalization here.
-//
-// WHAT IS NOT ASSERTED, and must not be read as covered: that a run performs either check. Nothing
-// here observes a session, and in foreign mode this suite never runs at all — the same limit the
-// gate and close contracts state. A word-grep over §10's prose would be the assertion-word probe
-// CLAUDE.md measured at ~2% precision, so it is deliberately absent rather than approximated.
-//
-// The checker binds to the heading that NAMES the review, not to `## 10` — a section number is the
-// part of a heading most likely to move, and §15's renumbering is the precedent. Two headings
-// matching `review` is reported as ambiguity, never resolved by position.
-
-// `did not run` only, matched EXACTLY. The allowlist alone was NOT enough and the first cut of this
-// checker proved it: with normalization running in front, `**scope** (skip in foreign mode)` and
-// `did not run — except in foreign mode` both measured CLEAN — the permissive answer, from a guard
-// whose comment claimed it could not be given. Rejecting residue outright subsumes the SKIP_WORD
-// denylist, which knew `optional` but not `unless`/`except`: a denylist of qualifier words is
-// unclosable by construction, which is why this table matches rather than denies.
+// `did not run` only, matched EXACTLY — normalization in front of the allowlist measured CLEAN on
+// two exemption shapes. A denylist of qualifier words is unclosable by construction (SKIP_WORD knew
+// `optional`, not `unless`/`except`), which is why this matches rather than denies.
 const SCOPE_VALUES = {
   'when it cannot be confirmed': ['did not run'],
 };
 const SCOPE_COLUMNS = ['check', ...Object.keys(SCOPE_VALUES)];
-// Both checks are load-bearing and neither subsumes the other: `finders ran` catches a review whose
-// agents died, `scope` catches a review that ran perfectly against the wrong repository.
+// Neither subsumes the other: `finders ran` catches dead agents, `scope` catches the wrong repo.
 const SCOPE_CHECKS = ['finders ran', 'scope'];
-// Deliberately NOT levelLabel()/gateValue(): those strip a trailing `(…)` or `— …` BEFORE the
-// allowlist sees the cell, which is how an exemption bolted onto a row name passed clean. Nothing in
-// this table has a benign parenthetical, so any residue is a defect.
+// Deliberately NOT levelLabel()/gateValue(): stripping a trailing `(…)`/`— …` before the allowlist
+// sees the cell is how an exemption bolted onto a row name passed clean. Any residue is a defect.
 const cellText = (cell) => stripMarkup(cell).toLowerCase();
 
-export function parseScopeTable(md) {
+function parseScopeTable(md) {
   const lines = md.split('\n');
-  // Fence-aware, unlike its two siblings: §10 now CONTAINS a fenced block (the ground-truth git
-  // commands), and without this a fenced EXAMPLE table measured CLEAN with the real table deleted —
-  // a clean report for a file whose normative table is gone, the direction this must never fail in.
   const fenced = fenceMask(lines);
   const headings = lines
     .map((line, i) => ({ line, i }))
@@ -729,7 +285,7 @@ export function parseScopeTable(md) {
   };
 }
 
-export function scopeTableProblems(md) {
+function scopeTableProblems(md) {
   const problems = [];
   const { table, headings } = parseScopeTable(md);
   if (!table) {
@@ -769,171 +325,13 @@ export function scopeTableProblems(md) {
   return problems;
 }
 
-describe('kanban-workflow skill: post-review table (tkt-32f7c384bcad)', () => {
-  it('parses a real table — non-vacuity, so "no problems" cannot mean "nothing scanned"', () => {
-    const { table } = parseScopeTable(REAL);
-    expect(table, 'no post-review table parsed — every assertion below would pass vacuously').not.toBeNull();
-    expect(table.columns).toEqual(SCOPE_COLUMNS);
-    expect(table.body.length).toBe(SCOPE_CHECKS.length);
-  });
-
-  it('carries a scope check, which the finding count alone cannot substitute for', () => {
-    expect(scopeTableProblems(REAL)).toEqual([]);
-  });
-
-  it('leaves no check able to resolve permissively when it cannot be confirmed', () => {
-    const { table } = parseScopeTable(REAL);
-    const col = table.columns.indexOf('when it cannot be confirmed');
-    expect(table.body.map((cells) => cellText(cells[col]))).toEqual(table.body.map(() => 'did not run'));
-  });
-});
-
-describe('kanban-workflow skill: the post-review checker itself', () => {
-  const ROWS = [
-    '| check | when it cannot be confirmed |',
-    '|---|---|',
-    ...SCOPE_CHECKS.map((c) => `| **${c}** | did not run |`),
-  ];
-  const doc = (...rows) => ['## 10. Review — calibrated, and stated', '', ...rows, '', '## 11–13. The gates'].join('\n');
-
-  it('passes a correct table — so the flags below are not fired by everything', () => {
-    expect(scopeTableProblems(doc(...ROWS))).toEqual([]);
-  });
-
-  it('flags a DROPPED scope row — the whole point of this ticket', () => {
-    expect(scopeTableProblems(doc(...ROWS.filter((r) => !r.includes('**scope**')))))
-      .toContain('post-review checks with no row: scope');
-  });
-
-  it('flags a dropped finders-ran row, so scope did not replace the older check', () => {
-    expect(scopeTableProblems(doc(...ROWS.filter((r) => !r.includes('**finders ran**')))))
-      .toContain('post-review checks with no row: finders ran');
-  });
-
-  it('flags a check that resolves to a clean review when it cannot be confirmed', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | treat as clean |' : r)));
-    expect(scopeTableProblems(md))
-      .toContain('scope\'s when it cannot be confirmed value is "treat as clean", expected one of did not run');
-  });
-
-  it('flags a QUALIFIED skip, which a bare allowlist normalizes away', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run — optional when docs-only |' : r)));
-    expect(scopeTableProblems(md))
-      .toContain('scope\'s when it cannot be confirmed value is "did not run — optional when docs-only", expected one of did not run');
-  });
-
-  it('flags a DROPPED cannot-be-confirmed column, not just a bad cell value', () => {
-    const md = doc('| check |', '|---|', ...SCOPE_CHECKS.map((c) => `| **${c}** |`));
-    expect(scopeTableProblems(md))
-      .toContain('post-review columns are [check], expected [check, when it cannot be confirmed]');
-  });
-
-  it('flags an empty or dash-only cell', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | — |' : r)));
-    expect(scopeTableProblems(md)).toContain('scope\'s when it cannot be confirmed value is "—", expected one of did not run');
-  });
-
-  // tkt-32f7c384bcad, review findings 4-6. Each of these measured CLEAN against the first cut of
-  // this checker: normalization ran in FRONT of the allowlist, so the residue that carries the
-  // exemption was stripped before anything inspected it. One omission across a dimension, not five
-  // missing cases — the adversary list sampled the value cell and never the name cell, and sampled
-  // `optional` and never its synonyms.
-  it('flags an exemption bolted onto the check NAME, which levelLabel used to strip', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** (skip in foreign mode) | did not run |' : r)));
-    expect(scopeTableProblems(md)).toContain('post-review checks with no row: scope');
-  });
-
-  it('flags a docs-only exemption on the check name', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** (optional for docs-only) | did not run |' : r)));
-    expect(scopeTableProblems(md)).toContain('post-review checks with no row: scope');
-  });
-
-  it('flags a parenthetical qualifier the skip-word denylist never knew', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run (unless the diff is docs-only) |' : r)));
-    expect(scopeTableProblems(md))
-      .toContain('scope\'s when it cannot be confirmed value is "did not run (unless the diff is docs-only)", expected one of did not run');
-  });
-
-  it('flags a dash-clause qualifier the skip-word denylist never knew', () => {
-    const md = doc(...ROWS.map((r) => (r.includes('**scope**') ? '| **scope** | did not run — except in foreign mode |' : r)));
-    expect(scopeTableProblems(md))
-      .toContain('scope\'s when it cannot be confirmed value is "did not run — except in foreign mode", expected one of did not run');
-  });
-
-  it('reports a FENCED example table as no table, rather than as the real one', () => {
-    expect(scopeTableProblems(doc('```markdown', ...ROWS, '```')))
-      .toContain('no post-review table found under a "review" heading');
-  });
-
-  it('flags a check listed twice, which set comparison alone misses', () => {
-    expect(scopeTableProblems(doc(...ROWS, '| **scope** | did not run |')))
-      .toContain('post-review checks with more than one row: scope');
-  });
-
-  it('flags a row naming no known check', () => {
-    expect(scopeTableProblems(doc(...ROWS, '| **vibes** | did not run |')))
-      .toContain('post-review rows naming no known check: vibes');
-  });
-
-  it('reports a missing table rather than returning clean', () => {
-    expect(scopeTableProblems('# nothing here'))
-      .toContain('no post-review table found under a "review" heading');
-  });
-
-  it('refuses to guess when two headings match "review"', () => {
-    const md = '## 3. Review notes\n\n| a | b |\n|---|---|\n| x | y |\n\n' + doc(...ROWS);
-    expect(scopeTableProblems(md))
-      .toContain('2 headings match "review" — cannot tell which table is the post-review table');
-  });
-});
-
 // ---------------------------------------------------------------------------
-// tkt-9fbe6c952590. The startup recommendation in kanban's CLAUDE.md and the close handoff in
-// SKILL.md §15 are the SAME invocation printed at the two ends of a session, living in two files
-// that nothing otherwise ties together. A hand-written "keep these in sync" note is not a mechanism
-// (CLAUDE.md, "Generate, don't transcribe"), so the agreement is asserted here instead.
-//
-// WHAT IS ASSERTED: both files carry exactly one slash-command invocation in the bound section, they
-// name the same skill, they pass the same `--gates` level, and that level is the one the gate table
-// says asks at EVERY gate. The last is derived from the table via safestLevels(), never hardcoded to
-// `manual` — hardcoding it is precisely what would let the table and the two prompts drift apart in
-// three directions at once.
-//
-// WHAT IS NOT ASSERTED: that a session actually prints either line, that a run infers its level from
-// anything, or that `<project>` is substituted before printing. The substitution obligation is prose
-// in both files and a word-grep for it would be the assertion-word probe CLAUDE.md measured at ~2%
-// precision — deliberately absent rather than approximated, exactly as in the two contracts above.
-//
-// TWO KNOWN FALSE-RED SHAPES, both loud rather than fail-open: a heading-shaped line inside a fenced
-// block is excluded from slicing (fenceMask), but an unfenced markdown table or list item beginning
-// with `#` is not; and a line that looks like a slash command but is not one would be counted. Loud
-// is the acceptable direction here — the direction this checker must never fail in is clean.
-//
-// The adversarial fixtures below cover BOTH sides. The first cut mutated only the CLAUDE.md side, and
-// two fail-opens survived all 60 tests: dropping the handoff-problem push made the checker return
-// CLEAN for a SKILL.md with no handoff section at all, and dropping the handoff from the safest-level
-// loop went unnoticed. One omission across a whole dimension, exactly as the adversary-list tenet in
-// `~/.claude/CLAUDE.md` predicts — not five missing cases.
+// Startup recommendation <-> close handoff (tkt-9fbe6c952590) — the same invocation printed at the
+// two ends of a session, in two files nothing otherwise ties together. "Keep these in sync" is not a
+// mechanism (CLAUDE.md, "Generate, don't transcribe"), so the agreement is asserted here.
 
-const CLAUDE_PATH = path.join(here, 'CLAUDE.md');
-
-// A fenced line is never a heading. Without this a ```bash block inside the section whose body opens
-// with `# ` truncates the slice there, and a legitimate edit is reported as having no invocation.
-function fenceMask(lines) {
-  let inFence = false;
-  return lines.map((l) => {
-    if (/^\s*(?:```|~~~)/.test(l)) { inFence = !inFence; return true; }
-    return inFence;
-  });
-}
-
-// Slices by heading DEPTH. What the depth buys is precision, NOT protection from mis-binding: the
-// ambiguity guard below already refuses to resolve two matches by position, so a depth-blind anchor
-// would go red rather than bind wrongly. It would go red on the CORRECT file, though — `## 15. Close
-// the ticket — wrap-up check, then the handoff` also matches /handoff/ — which is a checker that
-// cannot be satisfied, not a checker that lies.
-// A same-or-shallower heading closes the slice; deeper ones are part of it (the `### Recommending`
-// subsection lives inside `## Session startup`, and must not be cut off from it).
+// Slices by heading DEPTH: a same-or-shallower heading closes the slice, deeper ones are part of it
+// (`### Recommending` lives inside `## Session startup`).
 function sliceSection(md, depth, nameRe) {
   const lines = md.split('\n');
   const fenced = fenceMask(lines);
@@ -942,7 +340,6 @@ function sliceSection(md, depth, nameRe) {
   const heads = lines
     .map((line, i) => ({ line, i }))
     .filter(({ line, i }) => !fenced[i] && opens.test(line) && nameRe.test(line));
-  // Ambiguity is reported, never resolved by position — the same rule the gate-table parser follows.
   if (heads.length !== 1) return { section: null, headings: heads.length };
   const start = heads[0].i + 1;
   let end = lines.length;
@@ -952,11 +349,8 @@ function sliceSection(md, depth, nameRe) {
   return { section: lines.slice(start, end), headings: 1 };
 }
 
-// A slash-command shape at the start of a line. Two things it deliberately excludes: inline mentions
-// (`` `/kanban-workflow` `` in prose or in a heading), because matching those would let a file whose
-// real invocation had been deleted still parse off a sentence that merely names the skill; and paths
-// like `/api/tickets`, hence the single-segment name — a second `/` fails the lookahead rather than
-// parsing as a command with no `--gates`.
+// Line-initial only, excluding inline prose mentions (a file whose invocation was DELETED would
+// otherwise parse off a sentence naming the skill) and paths like `/api/tickets`.
 function invocationsIn(section) {
   return section
     .map((l) => l.trim())
@@ -977,22 +371,20 @@ function invocationOf(md, depth, nameRe, where) {
   }
   const found = invocationsIn(section);
   if (found.length === 0) return { invocation: null, problem: `no slash-command invocation in ${where}` };
-  // Two invocations in one section can disagree with each other, and a set comparison downstream
-  // would clear that by matching whichever one happened to come first.
+  // Two invocations can disagree; comparing whichever came first would clear that.
   if (found.length > 1) {
     return { invocation: null, problem: `${found.length} slash-command invocations in ${where} — expected 1` };
   }
   return { invocation: found[0], problem: null };
 }
 
-export function startupPromptProblems(claudeMd, skillMd) {
+function startupPromptProblems(claudeMd, skillMd) {
   const problems = [];
   const startup = invocationOf(claudeMd, 2, /session startup/i, "CLAUDE.md's \"Session startup\" section");
   const handoff = invocationOf(skillMd, 3, /\bhandoff\b/i, "SKILL.md's \"The handoff\" subsection");
   if (startup.problem) problems.push(startup.problem);
   if (handoff.problem) problems.push(handoff.problem);
-  // Returning here rather than comparing nulls: two missing invocations are trivially "equal", and
-  // reporting that as agreement is the fail-open this whole file exists to refuse.
+  // Two MISSING invocations are trivially "equal"; reporting that as agreement is the fail-open.
   if (!startup.invocation || !handoff.invocation) return problems;
 
   if (startup.invocation.skill !== handoff.invocation.skill) {
@@ -1011,8 +403,6 @@ export function startupPromptProblems(claudeMd, skillMd) {
 
   const { table } = parseSkill(skillMd);
   if (!table) {
-    // Same reasoning as the menu checker: an unparseable table means the most consequential half of
-    // this check did not run, and "not checked" must never be reported as "checked and fine".
     problems.push('no gate table parsed, so the recommended level could not be checked against it');
     return problems;
   }
@@ -1021,6 +411,7 @@ export function startupPromptProblems(claudeMd, skillMd) {
     problems.push(`${safest.length} gate levels ask at every gate, so "safest" is undecidable: [${safest.join(', ')}]`);
     return problems;
   }
+  // Both sides: looping over the startup alone let a handoff pre-filling an auto level through.
   for (const [name, side] of [['startup recommendation', startup], ['close handoff', handoff]]) {
     if (side.invocation.gates !== safest[0]) {
       problems.push(
@@ -1031,39 +422,287 @@ export function startupPromptProblems(claudeMd, skillMd) {
   return problems;
 }
 
+// The startup line must carry NO ticket slot (tkt-71229c9290b8). Kept when the handoff half of this
+// binding was dropped: the drop rationale — "a pasted id is a guess, and §5 catches it" — holds only
+// for a STALE id. A valid one passes §5, and §0's named-ticket path then skips §4's ranking, so every
+// session opened from that prompt silently works a ticket nobody chose (tkt-5a4ff25d4e74 review,
+// finding 6). The handoff's own slot has no such failure: losing it costs one re-ranking, visibly.
+const TICKET_SLOT = new RegExp('(?:^|\\s)(?:--ticket\\s+(?:tkt-[0-9a-f]{12}|<[^<>]+>)'
+  + '|tkt-[0-9a-f]{12}|<[^<>]*\\bticket\\b[^<>]*>)(?=\\s|$)');
+
+function startupTicketSlotProblems(claudeMd) {
+  const startup = invocationOf(claudeMd, 2, /session startup/i, 'CLAUDE.md\'s "Session startup" section');
+  // Not `[]` — an unparseable startup is UNCHECKED, and reporting unchecked as fine is the fail-open
+  // every other checker here refuses.
+  if (startup.problem) return [startup.problem];
+  if (TICKET_SLOT.test(startup.invocation.rest)) {
+    return ['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry'];
+  }
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// The real files.
+
+const REAL = fs.readFileSync(SKILL_PATH, 'utf8');
 const REAL_CLAUDE = fs.readFileSync(CLAUDE_PATH, 'utf8');
 
-describe('kanban-workflow skill: startup recommendation (tkt-9fbe6c952590)', () => {
-  it('parses a real invocation from BOTH files — so "no problems" cannot mean "nothing scanned"', () => {
-    const startup = invocationOf(REAL_CLAUDE, 2, /session startup/i, 'startup');
-    const handoff = invocationOf(REAL, 3, /\bhandoff\b/i, 'handoff');
-    expect(startup.problem, 'no startup invocation parsed — every assertion below would pass vacuously').toBeNull();
-    expect(handoff.problem, 'no handoff invocation parsed — every assertion below would pass vacuously').toBeNull();
-    expect(startup.invocation.skill).toBe('kanban-workflow');
-    expect(handoff.invocation.skill).toBe('kanban-workflow');
+describe('kanban-workflow skill: the real SKILL.md and CLAUDE.md', () => {
+  it('parses a real gate table, menu, post-review table and both invocations', () => {
+    // Non-vacuity for everything below: without this, "no problems" and "nothing scanned" are the
+    // same result.
+    const { levels, table } = parseSkill(REAL);
+    expect(levels, 'the `--gates` flag line is what every row/entry set is checked against').toEqual(
+      ['manual', 'auto-commit', 'auto-pr'],
+    );
+    expect(table, 'no gate table parsed').not.toBeNull();
+    expect(table.columns).toEqual(COLUMNS);
+    expect(table.body.length).toBe(levels.length);
+
+    expect(parseMenu(REAL)?.map((e) => e.level)).toEqual(levels);
+
+    const { table: scope } = parseScopeTable(REAL);
+    expect(scope, 'no post-review table parsed').not.toBeNull();
+    expect(scope.columns).toEqual(SCOPE_COLUMNS);
+    expect(scope.body.length).toBe(SCOPE_CHECKS.length);
+
+    expect(invocationOf(REAL_CLAUDE, 2, /session startup/i, 'startup').problem).toBeNull();
+    expect(invocationOf(REAL, 3, /\bhandoff\b/i, 'handoff').problem).toBeNull();
   });
 
-  it('opens and closes a session with the same invocation, at a level that asks at every gate', () => {
+  it('carries a review gate no level can skip', () => {
+    expect(gateTableProblems(REAL)).toEqual([]);
+  });
+
+  it('keeps merge human at every level', () => {
+    const { table } = parseSkill(REAL);
+    const merge = table.columns.indexOf('merge');
+    expect(table.body.map((cells) => gateValue(cells[merge]))).toEqual(table.body.map(() => 'ask'));
+  });
+
+  it('offers every level, described, and recommends the one that asks at every gate', () => {
+    expect(gateMenuProblems(REAL)).toEqual([]);
+  });
+
+  it('carries a scope check that cannot resolve permissively when it cannot be confirmed', () => {
+    expect(scopeTableProblems(REAL)).toEqual([]);
+    const { table } = parseScopeTable(REAL);
+    const col = table.columns.indexOf('when it cannot be confirmed');
+    expect(table.body.map((cells) => cellText(cells[col]))).toEqual(table.body.map(() => 'did not run'));
+  });
+
+  it('opens and closes a session with the same invocation, at a level that crosses nothing', () => {
     expect(startupPromptProblems(REAL_CLAUDE, REAL)).toEqual([]);
-  });
-
-  it('pre-fills a gate level that crosses nothing', () => {
     const { invocation } = invocationOf(REAL_CLAUDE, 2, /session startup/i, 'startup');
     const { table } = parseSkill(REAL);
     expect(safestLevels(table)).toEqual([invocation.gates]);
   });
+
+  it('carries no ticket slot on the startup line', () => {
+    expect(startupTicketSlotProblems(REAL_CLAUDE)).toEqual([]);
+  });
 });
 
-describe('kanban-workflow skill: the startup checker itself', () => {
-  const GATES = [
-    '## 11–13. The gates',
+// ---------------------------------------------------------------------------
+// Controls on the checkers. Each negative case pins either a MEASURED past false-clean or the
+// "cannot check must not read as clean" direction — not every shape a parser could mishandle. The
+// cases the trim dropped, and the incidents behind the ones kept, are in
+// docs/skillContract-dropped-assertions.md.
+
+const FLAG = '- `--gates manual|auto-commit|auto-pr` → default **`manual`**.\n\n';
+const HEADER = '| level | review | commit | PR open | merge |';
+const GOOD = [
+  '| `manual` (default) | ask | ask | ask | ask |',
+  '| `auto-commit` | run | cross | ask | ask |',
+  '| `auto-pr` | run | cross | cross | **ask — always** |',
+];
+const gateDoc = (header, ...rows) =>
+  ['## 11–13. The gates', '', header, '|---|---|---|---|---|', ...rows, '', '## 14. Next'].join('\n');
+
+describe('the gate-table checker itself', () => {
+  it('passes a correct table — so the flags below are not fired by everything', () => {
+    expect(gateTableProblems(FLAG + gateDoc(HEADER, ...GOOD))).toEqual([]);
+  });
+
+  it('flags a table with no review column', () => {
+    const md = FLAG + gateDoc(
+      '| level | commit | PR open | merge |',
+      '| `manual` (default) | ask | ask | ask |',
+      '| `auto-commit` | cross | ask | ask |',
+      '| `auto-pr` | cross | cross | **ask — always** |',
+    );
+    expect(gateTableProblems(md)).toContain(
+      'gate columns are [level, commit, pr open, merge], expected [level, review, commit, pr open, merge]',
+    );
+  });
+
+  it('flags a review cell that skips', () => {
+    const md = FLAG + gateDoc(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | skip | cross | cross | ask |');
+    expect(gateTableProblems(md)).toContain('auto-pr\'s review value is "skip", expected one of ask/run');
+  });
+
+  // Both halves measured CLEAN against the first cut, which checked only "no cell says skip".
+  it('flags a DROPPED merge column, not just a bad merge value', () => {
+    const md = FLAG + gateDoc(
+      '| level | review | commit | PR open |',
+      '| `manual` (default) | ask | ask | ask |',
+      '| `auto-commit` | run | cross | ask |',
+      '| `auto-pr` | run | cross | cross |',
+    );
+    expect(gateTableProblems(md)).toContain(
+      'gate columns are [level, review, commit, pr open], expected [level, review, commit, pr open, merge]',
+    );
+  });
+
+  it('flags an auto level that crosses the merge gate', () => {
+    const md = FLAG + gateDoc(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | run | cross | cross | cross |');
+    expect(gateTableProblems(md)).toContain('auto-pr\'s merge value is "cross", expected one of ask');
+  });
+
+  // These three passed the first cut's ANCHORED `^…$` matcher.
+  it('flags qualified and parenthesised skips an anchored matcher let through', () => {
+    const na = FLAG + gateDoc(HEADER, '| `manual` (default) | n/a (docs-only) | ask | ask | ask |', GOOD[1], GOOD[2]);
+    expect(gateTableProblems(na)).toContain('manual\'s review value is "n/a (docs-only)", expected one of ask/run');
+    const opt = FLAG + gateDoc(HEADER, '| `manual` (default) | optional — see §14 | ask | ask | ask |', GOOD[1], GOOD[2]);
+    expect(gateTableProblems(opt)).toContain('manual\'s review value is "optional — see §14", expected one of ask/run');
+    const qual = FLAG + gateDoc(HEADER, GOOD[0], GOOD[1], '| `auto-pr` | run | cross | ask — skip if docs-only | ask |');
+    expect(gateTableProblems(qual)).toContain('auto-pr may skip the pr open gate ("ask — skip if docs-only")');
+  });
+
+  it('reports a missing table rather than returning clean', () => {
+    expect(gateTableProblems('# nothing here')).toContain('no gate table found under a "gates" heading');
+  });
+
+  it('refuses to guess when two headings match "gates"', () => {
+    const md = FLAG + '## 3. Board gates\n\n| a | b |\n|---|---|\n| x | y |\n\n' + gateDoc(HEADER, ...GOOD);
+    expect(gateTableProblems(md)).toContain('2 headings match "gates" — cannot tell which table is the gate table');
+  });
+
+  it('reports a FENCED example table as no table, rather than as the real one', () => {
+    // Measured returning [] before fenceMask was threaded through parseSkill: the real table deleted,
+    // a ```markdown copy of it left behind, and the most consequential binding read CLEAN.
+    const fencedOnly = FLAG + ['## 11–13. The gates', '', '```markdown', HEADER, '|---|---|---|---|---|',
+      ...GOOD, '```', '', '## 14. Next'].join('\n');
+    expect(gateTableProblems(fencedOnly)).toContain('no gate table found under a "gates" heading');
+  });
+});
+
+describe('the gate-menu checker itself', () => {
+  const MENU = [
+    '- `manual` (Recommended) — every gate asks.',
+    '- `auto-commit` — commits without asking; PR-open and merge still ask.',
+    '- `auto-pr` — commits and opens the PR without asking; merge still asks.',
+  ];
+  const doc = (...menu) => [
+    '## 0. Parse `$ARGUMENTS`',
     '',
-    '| level | review | commit | PR open | merge |',
-    '|---|---|---|---|---|',
-    '| `manual` (default) | ask | ask | ask | ask |',
-    '| `auto-commit` | run | cross | ask | ask |',
-    '| `auto-pr` | run | cross | cross | **ask — always** |',
+    FLAG.trim(),
+    '',
+    ...menu,
+    '',
+    gateDoc(HEADER, ...GOOD),
   ].join('\n');
+
+  it('passes a correct menu — so the flags below are not fired by everything', () => {
+    expect(gateMenuProblems(doc(...MENU))).toEqual([]);
+  });
+
+  it('flags a recommendation on a level that crosses a gate', () => {
+    const md = doc('- `auto-pr` (Recommended) — commits and opens the PR without asking.', '- `manual` — every gate asks.', MENU[1]);
+    expect(gateMenuProblems(md)).toContain('the menu recommends `auto-pr`, which does not ask at every gate; `manual` does');
+  });
+
+  it('flags two recommendations, which is no recommendation', () => {
+    expect(gateMenuProblems(doc(MENU[0], '- `auto-commit` (Recommended) — commits for you.', MENU[2])))
+      .toContain('the menu marks 2 entries (Recommended), expected exactly 1: manual, auto-commit');
+  });
+
+  it('reports an UNPARSEABLE gate table rather than clearing the recommendation', () => {
+    // A review found this returning [] for a menu recommending auto-pr: not checked, read as fine.
+    const bad = doc('- `auto-pr` (Recommended) — commits and opens the PR without asking.', '- `manual` — every gate asks.', MENU[1])
+      .replace('## 11–13. The gates', '## 11–13. The approvals');
+    expect(gateMenuProblems(bad)).toContain('no gate table parsed, so the recommendation could not be checked against it');
+  });
+
+  it('does not treat a row with no gate cells as the level that asks at every gate', () => {
+    // `[].every()` is true, so a truncated row read as all-ask.
+    const md = doc(...MENU).replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) |');
+    expect(gateMenuProblems(md)).toContain('0 gate levels ask at every gate, so "safest" is undecidable: []');
+  });
+
+  it('flags a recommendation that is not the first option', () => {
+    // The first option is what a hurried reader takes, so a menu listing `auto-pr` first with
+    // `manual` marked lower down pre-authorizes crossing commit AND PR-open, indistinguishably from
+    // a correct menu at the point of use. Silent drift — it belongs with the kept set.
+    expect(gateMenuProblems(doc(MENU[1], MENU[0], MENU[2])))
+      .toContain('the recommended level `manual` is not the first menu entry (`auto-commit` is)');
+  });
+
+  it('reports a missing menu rather than returning clean', () => {
+    expect(gateMenuProblems(doc())).toContain('no gate-level menu found in the section that declares `--gates`');
+  });
+
+  it('does not read a FENCED example menu as the menu', () => {
+    expect(gateMenuProblems(doc('```markdown', ...MENU, '```')))
+      .toContain('no gate-level menu found in the section that declares `--gates`');
+  });
+});
+
+describe('the post-review checker itself', () => {
+  const ROWS = [
+    '| check | when it cannot be confirmed |',
+    '|---|---|',
+    ...SCOPE_CHECKS.map((c) => `| **${c}** | did not run |`),
+  ];
+  const doc = (...rows) => ['## 10. Review — calibrated, and stated', '', ...rows, '', '## 11–13. The gates'].join('\n');
+  const withScope = (row) => doc(...ROWS.map((r) => (r.includes('**scope**') ? row : r)));
+
+  it('passes a correct table — so the flags below are not fired by everything', () => {
+    expect(scopeTableProblems(doc(...ROWS))).toEqual([]);
+  });
+
+  it('flags a DROPPED scope row — the whole point of this binding', () => {
+    expect(scopeTableProblems(doc(...ROWS.filter((r) => !r.includes('**scope**')))))
+      .toContain('post-review checks with no row: scope');
+  });
+
+  it('flags a check that resolves to a clean review when it cannot be confirmed', () => {
+    expect(scopeTableProblems(withScope('| **scope** | treat as clean |')))
+      .toContain('scope\'s when it cannot be confirmed value is "treat as clean", expected one of did not run');
+  });
+
+  // tkt-32f7c384bcad findings 4-6, each measured CLEAN against the first cut. One omission across a
+  // dimension: the adversary list sampled the value cell and never the NAME cell.
+  it('flags an exemption bolted onto the check NAME, which levelLabel used to strip', () => {
+    expect(scopeTableProblems(withScope('| **scope** (skip in foreign mode) | did not run |')))
+      .toContain('post-review checks with no row: scope');
+  });
+
+  it('flags qualifiers the skip-word denylist never knew', () => {
+    expect(scopeTableProblems(withScope('| **scope** | did not run (unless the diff is docs-only) |')))
+      .toContain('scope\'s when it cannot be confirmed value is "did not run (unless the diff is docs-only)", expected one of did not run');
+    expect(scopeTableProblems(withScope('| **scope** | did not run — except in foreign mode |')))
+      .toContain('scope\'s when it cannot be confirmed value is "did not run — except in foreign mode", expected one of did not run');
+  });
+
+  it('reports a FENCED example table as no table, rather than as the real one', () => {
+    // With the real table deleted, a fenced EXAMPLE measured CLEAN.
+    expect(scopeTableProblems(doc('```markdown', ...ROWS, '```')))
+      .toContain('no post-review table found under a "review" heading');
+  });
+
+  it('reports a missing table rather than returning clean', () => {
+    expect(scopeTableProblems('# nothing here')).toContain('no post-review table found under a "review" heading');
+  });
+
+  it('refuses to guess when two headings match "review"', () => {
+    const md = '## 3. Review notes\n\n| a | b |\n|---|---|\n| x | y |\n\n' + doc(...ROWS);
+    expect(scopeTableProblems(md))
+      .toContain('2 headings match "review" — cannot tell which table is the post-review table');
+  });
+});
+
+describe('the startup/handoff checker itself', () => {
   const skillWith = (...handoff) => [
     '## 15. Close the ticket — wrap-up check, then the handoff',
     '',
@@ -1071,7 +710,7 @@ describe('kanban-workflow skill: the startup checker itself', () => {
     '',
     ...handoff,
     '',
-    GATES,
+    gateDoc(HEADER, ...GOOD),
   ].join('\n');
   const skill = (invocation = '/kanban-workflow <project> --gates manual') => skillWith('```', invocation, '```');
   const claude = (...body) => ['# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
@@ -1082,511 +721,74 @@ describe('kanban-workflow skill: the startup checker itself', () => {
   });
 
   it('flags a startup prompt pre-filling an auto level', () => {
-    const md = claude('```', '/kanban-workflow <project> --gates auto-pr', '```');
-    expect(startupPromptProblems(md, skill())).toContain(
-      'startup recommends `--gates auto-pr` but the handoff prints `--gates manual`',
-    );
+    expect(startupPromptProblems(claude('```', '/kanban-workflow <project> --gates auto-pr', '```'), skill()))
+      .toContain('startup recommends `--gates auto-pr` but the handoff prints `--gates manual`');
   });
 
   it('flags BOTH ends drifting together, which comparing them to each other alone misses', () => {
-    // The two agreeing is not sufficient: an auto level pre-filled in both files agrees perfectly
-    // and re-grants an authorization nobody gave. This is why the level is checked against the table.
+    // Agreement is not sufficient: an auto level pre-filled in BOTH files agrees perfectly and
+    // re-grants an authorization nobody gave. Hence checking the level against the table.
     const md = claude('```', '/kanban-workflow <project> --gates auto-pr', '```');
-    expect(startupPromptProblems(md, skill('/kanban-workflow <project> --gates auto-pr'))).toContain(
-      'the startup recommendation pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does',
-    );
+    expect(startupPromptProblems(md, skill('/kanban-workflow <project> --gates auto-pr')))
+      .toContain('the startup recommendation pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
   });
 
-  it('flags an invocation carrying no --gates at all', () => {
-    const md = claude('```', '/kanban-workflow <project>', '```');
-    expect(startupPromptProblems(md, skill())).toContain('the startup recommendation passes no `--gates` level');
-  });
-
-  it('flags a startup prompt naming a different skill', () => {
-    const md = claude('```', '/kanban-start <project> --gates manual', '```');
-    expect(startupPromptProblems(md, skill())).toContain(
-      'startup recommends `/kanban-start` but the handoff prints `/kanban-workflow`',
-    );
-  });
-
-  it('reports a DELETED startup invocation rather than returning clean', () => {
-    const md = claude('Just load the board and ask which ticket to start.');
-    expect(startupPromptProblems(md, skill())).toContain(
-      'no slash-command invocation in CLAUDE.md\'s "Session startup" section',
-    );
-  });
-
-  it('does not count an inline mention in prose as the invocation', () => {
-    // A file whose real invocation was deleted must not still parse off a sentence naming the skill.
-    const md = claude('Consider using the `/kanban-workflow` skill for this.');
-    expect(startupPromptProblems(md, skill())).toContain(
-      'no slash-command invocation in CLAUDE.md\'s "Session startup" section',
-    );
-  });
-
-  it('reports a missing startup SECTION rather than returning clean', () => {
-    const md = ['# Kanban Project', '', '## MCP server', '', ...START].join('\n');
-    expect(startupPromptProblems(md, skill())).toContain(
-      'no section found for CLAUDE.md\'s "Session startup" section',
-    );
-  });
-
-  it('refuses to guess when two sections match', () => {
-    const md = claude(...START).replace('## MCP server', '## Session startup, continued\n\n## MCP server');
-    expect(startupPromptProblems(md, skill())).toContain(
-      '2 headings match CLAUDE.md\'s "Session startup" section — cannot tell which section carries the invocation',
-    );
-  });
-
-  it('refuses to guess between two invocations in one section', () => {
-    const md = claude('```', '/kanban-workflow <project> --gates manual', '/kanban-workflow <project> --gates auto-pr', '```');
-    expect(startupPromptProblems(md, skill())).toContain(
-      '2 slash-command invocations in CLAUDE.md\'s "Session startup" section — expected 1',
-    );
-  });
-
-  it('keeps a `###` subsection inside its `##` section', () => {
-    // The invocation lives under `### Recommending …` nested in `## Session startup`. A slicer that
-    // ended the section at any heading would cut it off and report the invocation missing.
-    const md = claude('### Recommending the skill', '', ...START);
-    expect(startupPromptProblems(md, skill())).toEqual([]);
-  });
-
-  it('reports an UNPARSEABLE gate table rather than clearing the level check', () => {
-    const bad = skill().replace('## 11–13. The gates', '## 11–13. The approvals');
-    expect(startupPromptProblems(claude(...START), bad)).toContain(
-      'no gate table parsed, so the recommended level could not be checked against it',
-    );
-  });
-
-  it('refuses to name a safest level when the table has none', () => {
-    const bad = skill().replace('| `manual` (default) | ask | ask | ask | ask |', '| `manual` (default) | ask | cross | ask | ask |');
-    expect(startupPromptProblems(claude(...START), bad)).toContain(
-      '0 gate levels ask at every gate, so "safest" is undecidable: []',
-    );
-  });
-
-  // The SKILL.md side. Every case above mutates CLAUDE.md; with none of these, the checker returned
-  // CLEAN for a SKILL.md whose handoff was gone, and nothing produced a `close handoff` message.
+  // The two fail-opens that survived all 60 tests of the first cut, both on the SKILL.md side — its
+  // fixtures mutated only the CLAUDE.md end. One omission across a dimension, not two cases.
   it('reports a DELETED handoff invocation rather than returning clean', () => {
     expect(startupPromptProblems(claude(...START), skillWith('Print something helpful, then stop.')))
       .toContain('no slash-command invocation in SKILL.md\'s "The handoff" subsection');
   });
 
-  it('reports a missing handoff SECTION rather than returning clean', () => {
-    const bad = skill().replace('### The handoff', '### The parting words');
-    expect(startupPromptProblems(claude(...START), bad))
-      .toContain('no section found for SKILL.md\'s "The handoff" subsection');
+  it('flags a handoff pre-filling an auto level', () => {
+    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project> --gates auto-pr')))
+      .toContain('the close handoff pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
   });
 
-  it('refuses to guess between two invocations in the handoff', () => {
+  it('reports a DELETED startup invocation rather than returning clean', () => {
+    expect(startupPromptProblems(claude('Just load the board and ask which ticket to start.'), skill()))
+      .toContain('no slash-command invocation in CLAUDE.md\'s "Session startup" section');
+  });
+
+  it('refuses to guess between two invocations in one section', () => {
     const bad = skillWith('```', '/kanban-workflow <project> --gates manual', '/kanban-workflow <project> --gates auto-pr', '```');
     expect(startupPromptProblems(claude(...START), bad))
       .toContain('2 slash-command invocations in SKILL.md\'s "The handoff" subsection — expected 1');
   });
 
-  it('flags a handoff carrying no --gates at all', () => {
+  it('flags an invocation carrying no --gates at all', () => {
+    // The `passes no --gates level` push is the ONLY thing between a level-less pair and a clean
+    // report — the next line returns early on it. Deleting the loop left 34/34 green.
+    expect(startupPromptProblems(claude('```', '/kanban-workflow <project>', '```'), skill()))
+      .toContain('the startup recommendation passes no `--gates` level');
     expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project>')))
       .toContain('the close handoff passes no `--gates` level');
   });
 
-  it('flags a handoff pre-filling an auto level', () => {
-    // Produces the `close handoff` safest-level message, which no CLAUDE.md-side fixture can reach.
-    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project> --gates auto-pr')))
-      .toContain('the close handoff pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
+  it('flags the two files naming DIFFERENT skills', () => {
+    expect(startupPromptProblems(claude('```', '/kanban-cycle <project> --gates manual', '```'), skill()))
+      .toContain('startup recommends `/kanban-cycle` but the handoff prints `/kanban-workflow`');
   });
 
-  it('does not truncate a section at a heading-shaped line inside a fenced block', () => {
-    // A ```bash example whose body opens with `# ` used to end the slice, hiding the invocation below.
-    const md = claude('```bash', '# how to resume', 'cd /somewhere && claude', '```', '', ...START);
-    expect(startupPromptProblems(md, skill())).toEqual([]);
-  });
-
-  it('does not read a bare path as a slash-command invocation', () => {
-    const md = claude('The API lives at', '', '```', '/api/tickets', '```', '', ...START);
-    expect(startupPromptProblems(md, skill())).toEqual([]);
-  });
-
-  // tkt-71229c9290b8. The handoff now carries the next ticket id and the startup recommendation
-  // still does not — a session opening cold has no ranking to carry. These pin that the asymmetry is
-  // LEGAL; that it is also REQUIRED is asserted separately, by handoffTicketSlotProblems (deletion)
-  // and startupTicketSlotProblems (bolting one on). Measured: these three alone leave a startup line
-  // carrying a stray id fully green, so they are not that check and must not be read as it.
-  it('tolerates a ticket id the handoff carries and the startup does not', () => {
-    const withId = skill('/kanban-workflow kanban --gates manual tkt-0123456789ab');
-    expect(startupPromptProblems(claude(...START), withId)).toEqual([]);
-  });
-
-  it('tolerates the id in either position around the flag', () => {
-    const withId = skill('/kanban-workflow kanban tkt-0123456789ab --gates manual');
-    expect(startupPromptProblems(claude(...START), withId)).toEqual([]);
-  });
-
-  it('still flags an auto level when an id is present — the id does not blind the level check', () => {
-    // The negative control for the two cases above. Without it, their "clean" is equally explained
-    // by a checker that stopped parsing AT the id, which would silently retire the level check the
-    // moment the handoff started carrying one.
-    const withId = skill('/kanban-workflow kanban --gates auto-pr tkt-0123456789ab');
-    expect(startupPromptProblems(claude(...START), withId))
-      .toContain('startup recommends `--gates manual` but the handoff prints `--gates auto-pr`');
+  it('refuses to guess when two sections match the handoff', () => {
+    // sliceSection's ambiguity guard: §15 already carries three subsections, so a second one naming
+    // the handoff is a plausible edit. Resolving it by position binds to the wrong one silently.
+    const bad = skill().replace('### The handoff', '### The handoff\n\nplaceholder\n\n### The handoff, continued');
+    expect(startupPromptProblems(claude(...START), bad))
+      .toContain('2 headings match SKILL.md\'s "The handoff" subsection — cannot tell which section carries the invocation');
   });
 });
 
-// tkt-ec08d8af98f3. §0 gained a ticket-id argument, so a run can be pointed at a known ticket
-// instead of re-deriving the choice §4 exists to make. The argument surface is declared in TWO
-// places — the frontmatter `argument-hint` and §0's bullet list — and nothing but this check binds
-// them, so the failure to catch is one of them being edited alone: a hint promising `--ticket` that
-// §0 no longer parses reads, from the invocation line, exactly like one that works.
-//
-// WHAT IS ASSERTED: §0 declares both accepted spellings — the canonical `--ticket <id>` flag and the
-// bare `tkt-[0-9a-f]{12}` id shape, in PROSE and not merely inside a code fence — and that the
-// file's opening frontmatter block names the flag. Same treatment §0's
-// `--gates` already gets, and for the same reason: a spelling this file can parse is a spelling that
-// cannot silently disappear.
-//
-// WHAT IS NOT ASSERTED: that a run parses an id, skips §4, or stops when §5 fails on a named ticket.
-// Those are the consequential halves and they are prose an agent obeys — grepping §4/§5 for the
-// words would be the ~2%-precision assertion-word probe CLAUDE.md measured and rejected. The
-// declaration is the part that is structural; the behaviour stays honor-system, like the rest of §0.
-export function ticketArgProblems(md) {
-  const problems = [];
-  const { section, headings } = sliceSection(md, 2, /\bparse\b/i);
-  if (!section) {
-    // Fail closed. A checker that returns clean because it found nothing to check is the fail-open
-    // shape this repo rejects everywhere, and it is reachable by renaming one heading.
-    problems.push(
-      headings > 1
-        ? `${headings} headings match §0 — cannot tell which section parses the arguments`
-        : 'no §0 argument-parsing section found, so the ticket argument could not be checked',
-    );
-    return problems;
-  }
-  // sliceSection masks fences for HEADING detection only, so the returned lines still carry fenced
-  // content. A §0 that has demoted both declarations to a historical example inside a ``` block is
-  // documenting a rule it no longer applies — the same contamination adoption-markers.mjs strips.
-  const body = section.filter((_, i) => !fenceMask(section)[i]).join('\n');
-  if (!/`--ticket <id>`/.test(body)) {
-    problems.push('§0 does not declare the canonical `--ticket <id>` spelling');
-  }
-  // Escaped because the id shape is itself written as a regex inside the markdown.
-  if (!/`tkt-\[0-9a-f\]\{12\}`/.test(body)) {
-    problems.push('§0 does not declare the bare `tkt-[0-9a-f]{12}` id shape');
-  }
-  // Anchored to the head of the file and stopped at the CLOSING delimiter. Unanchored, `^---`
-  // matched any horizontal rule and the lazy body ran past the frontmatter to the first
-  // line-initial `argument-hint:` anywhere in the file — so a hint moved out of frontmatter into
-  // prose read as present while the invocation line no longer offered the flag.
-  const fm = md.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
-  const hint = fm ? fm[1].match(/^argument-hint:\s*(.+)$/m) : null;
-  if (!hint) {
-    problems.push('no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked');
-  } else if (!/--ticket/.test(hint[1])) {
-    problems.push('the `argument-hint` does not name `--ticket`, so it promises a different argument surface than §0 parses');
-  }
-  return problems;
-}
-
-describe('kanban-workflow skill: ticket-id argument (tkt-ec08d8af98f3)', () => {
-  it('declares both spellings in §0 and names the flag in the hint', () => {
-    expect(ticketArgProblems(REAL)).toEqual([]);
-  });
-
-  it('slices a real §0 — so "no problems" cannot mean "nothing scanned"', () => {
-    const { section, headings } = sliceSection(REAL, 2, /\bparse\b/i);
-    expect(headings, 'exactly one §0 heading must match, or every assertion above passes vacuously').toBe(1);
-    expect(section.join('\n')).toMatch(/--ticket/);
-  });
-});
-
-describe('kanban-workflow skill: the ticket-argument checker itself', () => {
-  const doc = (...bullets) => [
-    '---',
-    'name: kanban-workflow',
-    'argument-hint: "<project> [<ticket-id>|--ticket <id>] [--continuous]"',
-    '---',
-    '',
-    '## 0. Parse `$ARGUMENTS`',
-    '',
-    ...bullets,
-    '',
-    '## 1. Resolve the repos',
-  ].join('\n');
-  const BULLETS = [
-    '- A token matching `tkt-[0-9a-f]{12}` → the **named ticket**.',
-    '- `--ticket <id>` is the canonical spelling.',
-  ];
-
-  it('passes a well-formed fixture — so the flags below are not fired by everything', () => {
-    expect(ticketArgProblems(doc(...BULLETS))).toEqual([]);
-  });
-
-  it('flags a dropped flag spelling', () => {
-    expect(ticketArgProblems(doc(BULLETS[0]))).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
-  });
-
-  it('flags a dropped bare-id shape', () => {
-    expect(ticketArgProblems(doc(BULLETS[1]))).toContain('§0 does not declare the bare `tkt-[0-9a-f]{12}` id shape');
-  });
-
-  it('flags a hint that drifted from §0 — the half-edit this check exists for', () => {
-    const md = doc(...BULLETS).replace('[<ticket-id>|--ticket <id>] ', '');
-    expect(ticketArgProblems(md)).toContain(
-      'the `argument-hint` does not name `--ticket`, so it promises a different argument surface than §0 parses',
-    );
-  });
-
-  it('flags a missing argument-hint rather than passing it over', () => {
-    const md = doc(...BULLETS).replace(/^argument-hint:.*$/m, 'description: does things');
-    expect(ticketArgProblems(md)).toContain(
-      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
-    );
-  });
-
-  it('reports a RENAMED §0 rather than returning clean', () => {
-    const md = doc(...BULLETS).replace('## 0. Parse `$ARGUMENTS`', '## 0. Read the invocation');
-    expect(ticketArgProblems(md)).toEqual([
-      'no §0 argument-parsing section found, so the ticket argument could not be checked',
-    ]);
-  });
-
-  it('refuses to guess when two sections match', () => {
-    const md = doc(...BULLETS).replace('## 1. Resolve the repos', '## 1. Parse the rest\n\n## 2. Resolve the repos');
-    expect(ticketArgProblems(md)).toEqual([
-      '2 headings match §0 — cannot tell which section parses the arguments',
-    ]);
-  });
-
-  it('does not count a declaration that survives only inside a code FENCE', () => {
-    // The contamination path this repo already fixed once in scripts/probe/adoption-markers.mjs,
-    // which strips fences "precisely so paperwork can never count as adoption". A §0 that has
-    // demoted both declarations to a historical example parses as though they were still rules.
-    const md = doc('Ticket arguments are no longer parsed. Historical example only:', '', '```', ...BULLETS, '```');
-    expect(ticketArgProblems(md)).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
-  });
-
-  it('reads the hint from the FRONTMATTER, not from a line-initial copy in the body', () => {
-    // `^---` matches any horizontal rule, and a lazy body run past the closing delimiter finds the
-    // first `argument-hint:` anywhere in the file — so a hint MOVED OUT of frontmatter into prose
-    // left the advertised argument surface gone while this check stayed green.
-    const md = doc(...BULLETS).replace(/^argument-hint:.*$/m, 'description: does things')
-      + '\n\nThe hint used to read:\n\nargument-hint: "<project> [--ticket <id>]"\n';
-    expect(ticketArgProblems(md)).toContain(
-      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
-    );
-  });
-
-  it('requires frontmatter at the START of the file, not a stray rule', () => {
-    const md = ['# Title', '', '---', '', '## 0. Parse `$ARGUMENTS`', '', ...BULLETS, '',
-      'argument-hint: "<project> [--ticket <id>]"', '', '## 1. Next'].join('\n');
-    expect(ticketArgProblems(md)).toContain(
-      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
-    );
-  });
-
-  it('does not read a `---` block in the BODY as frontmatter', () => {
-    // Distinguishes an anchored `^` from a multiline one: a pseudo-frontmatter block further down
-    // the file is delimited exactly like the real thing, so only the anchor rejects it.
-    const md = ['# Title', '', '---', 'argument-hint: "<project> [--ticket <id>]"', '---', '',
-      '## 0. Parse `$ARGUMENTS`', '', ...BULLETS, '', '## 1. Next'].join('\n');
-    expect(ticketArgProblems(md)).toContain(
-      'no `argument-hint` in the frontmatter, so the advertised argument surface is unchecked',
-    );
-  });
-
-  it('does not read a declaration from OUTSIDE §0', () => {
-    // A `--ticket` mention that has drifted into a later section is not a parsing rule, and reading
-    // one as though it were would let §0 lose the flag while this check stayed green.
-    const md = doc(...BULLETS).replace(/^- `--ticket <id>`.*$/m, '- nothing here')
-      + '\n\nLater on, pass `--ticket <id>` to name one.\n';
-    expect(ticketArgProblems(md)).toContain('§0 does not declare the canonical `--ticket <id>` spelling');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tkt-71229c9290b8. §15's handoff now carries the NEXT ticket's id, so the incoming session skips
-// §4's ranking instead of re-deriving one this session already had in hand. The whole capability is
-// one token inside one templated line — precisely the shape an unrelated edit deletes without
-// anyone noticing, leaving §15's surrounding prose describing a feature the template no longer has.
-//
-// WHAT IS ASSERTED: the handoff's single invocation carries a ticket SLOT, and (in the startup
-// fixtures above) carrying one neither breaks the startup/handoff agreement nor blinds the
-// gate-level check.
-//
-// WHAT IS NOT ASSERTED: that a run substitutes the slot, ranks the board correctly at close time,
-// or omits the token when nothing is ready. Those are prose obligations in §15, and a word-grep for
-// them would be the assertion-word probe CLAUDE.md measured at ~2% precision.
-
-// A well-formed id, or an angle-bracket placeholder that names a ticket, in either spelling §0
-// accepts. The placeholder branches are not laxity: SKILL.md is a template and is public, so a check
-// demanding a literal `tkt-…` could only be satisfied by hardcoding one real ticket id into it.
-// The `--ticket` alternative comes FIRST so it consumes its own argument — otherwise
-// `--ticket tkt-…` would count as two slots and trip the doubled-id check below.
-// It also carries the looser `<[^<>]+>` placeholder, because §0 calls `--ticket <id>` the canonical
-// spelling and `<id>` does not contain the word "ticket" — the flag supplies that context.
-const TICKET_SLOT_SRC = '(?:^|\\s)(?:--ticket\\s+(?:tkt-[0-9a-f]{12}|<[^<>]+>)'
-  + '|tkt-[0-9a-f]{12}|<[^<>]*\\bticket\\b[^<>]*>)(?=\\s|$)';
-const TICKET_SLOT = new RegExp(TICKET_SLOT_SRC);
-const NO_SLOT_PROBLEM = 'the close handoff invocation carries no ticket slot, so it cannot pass the next ticket id';
-
-export function handoffTicketSlotProblems(skillMd) {
-  const handoff = invocationOf(skillMd, 3, /\bhandoff\b/i, 'SKILL.md\'s "The handoff" subsection');
-  // Not `[]` — a handoff that could not be parsed is UNCHECKED, and reporting unchecked as fine is
-  // the fail-open every other checker in this file refuses.
-  if (handoff.problem) return [handoff.problem];
-  // Counted, not merely tested: §0 stops outright on two ticket ids, so a template carrying two
-  // would hand every future session a guaranteed stop — a slot check that only asked "is there one?"
-  // reports that as healthy.
-  const slots = handoff.invocation.rest.match(new RegExp(TICKET_SLOT_SRC, 'g')) ?? [];
-  if (slots.length === 0) return [NO_SLOT_PROBLEM];
-  if (slots.length > 1) {
-    return [`the close handoff invocation carries ${slots.length} ticket slots — §0 stops on two ids`];
-  }
-  return [];
-}
-
-// tkt-71229c9290b8, review finding 4. The asymmetry is stated as fact in CLAUDE.md's Project
-// structure bullet, so it owes an assertion rather than a comment: the DELETION half was pinned by
-// the checker above, while bolting a meaningless id onto the startup line stayed green. A cold
-// session has no prior run to rank from, so an id there could only ever be a guess.
-export function startupTicketSlotProblems(claudeMd) {
-  const startup = invocationOf(claudeMd, 2, /session startup/i, 'CLAUDE.md\'s "Session startup" section');
-  if (startup.problem) return [startup.problem];
-  if (TICKET_SLOT.test(startup.invocation.rest)) {
-    return ['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry'];
-  }
-  return [];
-}
-
-describe('kanban-workflow skill: handoff ticket slot (tkt-71229c9290b8)', () => {
-  it('the real handoff carries a ticket slot', () => {
-    expect(handoffTicketSlotProblems(REAL)).toEqual([]);
-  });
-});
-
-describe('kanban-workflow skill: the ticket-slot checker itself', () => {
-  const skillWith = (...handoff) => [
-    '## 15. Close the ticket — wrap-up check, then the handoff',
-    '',
-    '### The handoff',
-    '',
-    ...handoff,
-    '',
-    '## 16. Loop or stop',
-  ].join('\n');
-  const skill = (invocation) => skillWith('```', invocation, '```');
-  const NO_SLOT = 'the close handoff invocation carries no ticket slot, so it cannot pass the next ticket id';
-
-  it('passes a slot-carrying handoff — so the flags below are not fired by everything', () => {
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual <next ticket id>'))).toEqual([]);
-  });
-
-  it('accepts a substituted, well-formed id', () => {
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789ab'))).toEqual([]);
-  });
-
-  it('flags a handoff whose ticket slot was DELETED', () => {
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual'))).toEqual([NO_SLOT]);
-  });
-
-  it('does not accept just any angle-bracket placeholder as the slot', () => {
-    // `<project>` sits beside the ticket slot in the real template, so a check matching any
-    // angle-bracket token would stay green after the ticket one was removed.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual <id>'))).toEqual([NO_SLOT]);
-  });
-
-  it('does not accept a MALFORMED id as the slot', () => {
-    // §0 stops on a `tkt-`-prefixed token that is not well formed, so a handoff printing one hands
-    // the next session a guaranteed stop. Same shape rule as §0 parses by.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual tkt-abc'))).toEqual([NO_SLOT]);
-  });
-
-  it('does not read a slot out of PROSE beside an invocation that lost it', () => {
-    // The failure this is the control for: §15 keeps explaining how to substitute the id long after
-    // the template stopped having one, which reads correct to a human skimming the section.
-    const md = skillWith('```', '/kanban-workflow <project> --gates manual', '```', '',
-      'Substitute `<next ticket id>` before printing.');
-    expect(handoffTicketSlotProblems(md)).toEqual([NO_SLOT]);
-  });
-
-  it('reports a MISSING handoff section rather than returning clean', () => {
-    const md = ['## 15. Close', '', 'No handoff here.', '', '## 16. Loop or stop'].join('\n');
-    expect(handoffTicketSlotProblems(md)).toEqual(['no section found for SKILL.md\'s "The handoff" subsection']);
-  });
-
-  it('reports a handoff with NO invocation rather than returning clean', () => {
-    expect(handoffTicketSlotProblems(skillWith('Just go back to the board.')))
-      .toEqual(['no slash-command invocation in SKILL.md\'s "The handoff" subsection']);
-  });
-
-  it('accepts the canonical `--ticket <id>` spelling from §0', () => {
-    // §0 calls this the canonical spelling, so a future editor aligning the handoff with it must
-    // not get a red suite claiming the handoff "carries no ticket slot" when it plainly does.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow <project> --gates manual --ticket <id>'))).toEqual([]);
-  });
-
-  it('counts `--ticket tkt-…` as ONE slot, not two', () => {
-    // The flag alternative must consume its own argument; if it did not, the canonical spelling
-    // would trip the doubled-id check below and the fix for one finding would cause another.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual --ticket tkt-0123456789ab'))).toEqual([]);
-  });
-
-  it('flags TWO ticket ids, which §0 stops on outright', () => {
-    // A template carrying two hands every future session a guaranteed stop. A check that only
-    // asked "is there a slot?" reports that as healthy — hence counting rather than testing.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789ab tkt-ba9876543210')))
-      .toEqual(['the close handoff invocation carries 2 ticket slots — §0 stops on two ids']);
-  });
-
-  it('flags an UPPERCASE or non-hex id, which §0 does not accept either', () => {
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789AB'))).toEqual([NO_SLOT]);
-  });
-
-  it('flags an OVER-LONG id rather than matching its well-formed prefix', () => {
-    // The `(?=\s|$)` lookahead is what makes this red; without it the regex would match the first
-    // 12 hex characters of a longer token and call a malformed id healthy.
-    expect(handoffTicketSlotProblems(skill('/kanban-workflow kanban --gates manual tkt-0123456789abcdef'))).toEqual([NO_SLOT]);
-  });
-
-  it('reports TWO handoff headings rather than resolving them by position', () => {
-    // The fail-closed branch of the shared invocationOf, asserted here for THIS checker: nothing
-    // else pins that an ambiguous section reaches the caller as a problem rather than as clean.
-    const md = [
-      '## 15. Close', '', '### The handoff', '', '```',
-      '/kanban-workflow <project> --gates manual <next ticket id>', '```', '',
-      '### The handoff, continued', '', '## 16. Loop or stop',
-    ].join('\n');
-    expect(handoffTicketSlotProblems(md))
-      .toEqual(['2 headings match SKILL.md\'s "The handoff" subsection — cannot tell which section carries the invocation']);
-  });
-
-  it('reports a SECOND invocation rather than picking the one that happens to carry a slot', () => {
-    // The no-candidate case is prose in §15 for exactly this reason: a second worked example turns
-    // the contract red, and a slot check that scanned for "any invocation with an id" would hide it.
-    const md = skillWith('```', '/kanban-workflow <project> --gates manual <next ticket id>', '```', '',
-      'When the board has nothing ready:', '', '```', '/kanban-workflow <project> --gates manual', '```');
-    expect(handoffTicketSlotProblems(md))
-      .toEqual(['2 slash-command invocations in SKILL.md\'s "The handoff" subsection — expected 1']);
-  });
-});
-
-describe('kanban-workflow skill: startup carries NO ticket slot (tkt-71229c9290b8)', () => {
-  it('the real startup recommendation carries no ticket slot', () => {
-    expect(startupTicketSlotProblems(REAL_CLAUDE)).toEqual([]);
-  });
-});
-
-describe('kanban-workflow skill: the startup-slot checker itself', () => {
-  const claude = (...body) => [
-    '# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server',
-  ].join('\n');
+describe('the startup ticket-slot checker itself', () => {
+  const claude = (...body) => ['# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
 
   it('passes a slot-free startup — so the flags below are not fired by everything', () => {
     expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual', '```'))).toEqual([]);
   });
 
-  it('flags an id bolted onto the startup line', () => {
-    // The half that was green before this checker existed, while a comment two files away claimed
-    // it could not be. A cold session has no prior run to rank from, so the id could only be a guess.
+  it('flags a VALID id bolted onto the startup line', () => {
+    // The case that makes this binding worth keeping: a valid id passes §5, so §0 skips §4's ranking
+    // and every session from this prompt works a ticket nobody chose.
     expect(startupTicketSlotProblems(claude('```', '/kanban-workflow kanban --gates manual tkt-0123456789ab', '```')))
       .toEqual(['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry']);
   });
@@ -1597,8 +799,7 @@ describe('kanban-workflow skill: the startup-slot checker itself', () => {
   });
 
   it('reports a MISSING startup section rather than returning clean', () => {
-    const md = ['# Kanban Project', '', '## MCP server', '', 'nothing here'].join('\n');
-    expect(startupTicketSlotProblems(md))
+    expect(startupTicketSlotProblems(['# Kanban Project', '', '## MCP server', '', 'nothing'].join('\n')))
       .toEqual(['no section found for CLAUDE.md\'s "Session startup" section']);
   });
 });
