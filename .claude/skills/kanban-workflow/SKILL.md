@@ -598,9 +598,14 @@ between them is an input to the first, which is why it is not a third column.
 
 **Every row is identical, and that is the content of the table.** There is no ticket type that closes
 without being asked — not a chore, not a docs-only change. Docs tickets are if anything the likeliest
-to owe wrap-up, since they are the ones that make a neighboring claim stale. `kanban`'s
-`skillContract.test.mjs` derives the rows from `TYPES` in `shared/constants.ts` and fails that repo's
-suite if a row is dropped or a cell is given a skipping value, the same way it binds the §11–13 table.
+to owe wrap-up, since they are the ones that make a neighboring claim stale.
+
+**Nothing checks this table.** `kanban`'s `skillContract.test.mjs` used to derive its rows from
+`TYPES` in `shared/constants.ts`; that binding was dropped in `tkt-5a4ff25d4e74` because a drift here
+is read by a human at the wrap-up prompt rather than acting silently — see that repo's
+`docs/skillContract-dropped-assertions.md` for the reasoning and the restore path. The consequence to
+know: **a ticket type added to `TYPES` will not redden any suite for missing a row here.** Add the row
+in the same diff.
 
 ### The in-progress audit
 
@@ -626,9 +631,11 @@ points a session at the board in the first place. Hardcoding `$CLAUDE_PROJECT_DI
 override it and exit 2 in any checkout whose own `tickets/` is absent (it is gitignored).
 
 **It is advisory. No exit code blocks this ticket's close, in any mode.** The three mean different
-things, and only one of them is about tickets. (Written as prose, not a table: `parseCloseTable`
-collects every `|` line in §15, so a second table here silently merges into the close table above —
-`tkt-dd85591df5ee`.)
+things, and only one of them is about tickets. (Written as prose, not a table. The mechanical reason
+is gone — `parseCloseTable` collected every `|` line in §15, so a second table here merged silently
+into the close table above (`tkt-dd85591df5ee`), and that parser was dropped in `tkt-5a4ff25d4e74`.
+Prose stays the right form regardless: three exit codes reading three different ways is a list, and
+a table beside the close table invites reading them as one.)
 
 - **`0`** — every `in-progress` ticket is accounted for. Nothing to do.
 - **`1`** — findings: unaccounted tickets, or blocker link-rot. Read the tails and offer them to the
