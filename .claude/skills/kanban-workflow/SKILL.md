@@ -584,9 +584,10 @@ that stops being a stale ticket and starts being a stale board.
 ## 15. Close the ticket — wrap-up check, then the handoff
 
 The merge is not the close. After the merge lands, in this order: `ExitWorktree` if the ticket ran in
-one (native mode only — see §2a), `update_ticket({ status: 'done' })`, then the two steps below. Neither is
-optional, and neither is a courtesy — a ticket that merges without them leaves work that only this
-session knew about.
+one (native mode only — see §2a), `update_ticket({ status: 'done' })`, then the three subsections below.
+None is optional, and none is a courtesy — a ticket that merges without them leaves work that only this
+session knew about. The table's two columns are the two that a run *owes an answer for*; the audit
+between them is an input to the first, which is why it is not a third column.
 
 | ticket type | wrap-up check | handoff |
 |---|---|---|
@@ -600,6 +601,63 @@ without being asked — not a chore, not a docs-only change. Docs tickets are if
 to owe wrap-up, since they are the ones that make a neighboring claim stale. `kanban`'s
 `skillContract.test.mjs` derives the rows from `TYPES` in `shared/constants.ts` and fails that repo's
 suite if a row is dropped or a cell is given a skipping value, the same way it binds the §11–13 table.
+
+### The in-progress audit
+
+Before the wrap-up check, run the board's stale-`in-progress` probe. This close is the right moment
+for it — §15 already re-reads the board to rank the next ticket — and it is nearly free:
+
+```bash
+node "$CLAUDE_PROJECT_DIR/scripts/probe/stale-in-progress.mjs" "${BOARD_DIR_OVERRIDE:-$CLAUDE_PROJECT_DIR}"
+```
+
+It reads the board only — each `in-progress` ticket's `blockers` (resolving every blocker's *status*,
+never the array's presence) and the ticket's own prose. It never reads git. That is the point: the
+audit this replaces measured branches, commits and pipeline logs, which is the right instrument for a
+code ticket and the wrong one for a ticket whose deliverable is a human picking dropdown values, an
+offline PC, or an account somebody else has to open. It read "no branch" as "no work", and was wrong
+on `tkt-639be86eb24d` twice — once flagged and retracted the same day, then repeated verbatim eight
+days later (`tkt-3d25ae0626c6`). Do not re-derive this audit by hand; run the probe.
+
+Not milestone-bearing, so it takes no `cd` (§2a), and it is correct in both modes because
+`$CLAUDE_PROJECT_DIR` is the board repo rather than the target. The explicit argument keeps the
+answer independent of the cwd — but it must defer to `BOARD_DIR_OVERRIDE`, which is how this machine
+points a session at the board in the first place. Hardcoding `$CLAUDE_PROJECT_DIR` there would
+override it and exit 2 in any checkout whose own `tickets/` is absent (it is gitignored).
+
+**It is advisory. No exit code blocks this ticket's close, in any mode.** The three mean different
+things, and only one of them is about tickets. (Written as prose, not a table: `parseCloseTable`
+collects every `|` line in §15, so a second table here silently merges into the close table above —
+`tkt-dd85591df5ee`.)
+
+- **`0`** — every `in-progress` ticket is accounted for. Nothing to do.
+- **`1`** — findings: unaccounted tickets, or blocker link-rot. Read the tails and offer them to the
+  wrap-up check. **Not** a §14 hard stop — an unrelated epic sitting unaccounted must not gate the
+  ticket in hand.
+- **`2`** — the scan did not complete: no `tickets/`, an empty scan, an unreadable file, or a crash.
+  Say "the audit did not run" out loud, and close the ticket anyway.
+
+Exit `2` is the one to read carefully, because it is the fail-closed direction: the probe refuses to
+report a clean board it could not verify. **"I could not check" is never "the board is clean."** An
+unreadable ticket file lands here rather than in `1` on purpose — the scan was *partial*, so every
+count it printed under-reports, and folding that into the advisory code would make one permanently
+corrupt file a constant no-signal alarm.
+
+**Surface the body tails; do not summarize them into a verdict.** For anything it cannot account for
+the probe prints that ticket's own words instead of a judgement, because its phrase list is
+incomplete by construction and a human reading the actual prose is the check on the instrument. Read
+the `ok` rows with the same suspicion: each names the line that excused it (`DECLARED L36: "…"`), and
+a phrase matching *someone else's* blockage, or a heading whose own section later says it is
+satisfied, is exactly how a real orphan gets silenced — measured on this board, and the reason the
+prose phrase `blocked on` was removed rather than narrowed. Paste
+those tails, name the ids, and let the human decide. A ticket flagged here may be legitimately
+`in-progress` for a reason nobody wrote in a form a regex can see — which is exactly how the two
+false flags happened. **Never change another ticket's status off this output**; that, too, has been
+done and had to be undone.
+
+What the output feeds, both immediately below: an id you and the human agree is genuinely orphaned is
+a **board follow-up** in the wrap-up check, and §4 ranks `in-progress` orphans above fresh `todo`, so
+the audit also informs the handoff's ranked id.
 
 ### The wrap-up check
 
