@@ -178,7 +178,7 @@ same, so do not let the guard result above stand in for the other two:
 | **guard hooks** | **Carried** — but not because the target's copy runs. The guards are wired in `~/.claude/settings.json`, so they fire whatever the cwd, and `guard-bash` judges the `cd` target. The target's own `.claude/hooks/*` do **not** run, and they are not all launchers of the pinned package: two mapped targets vendor a standalone 333-line guard with no `ticket-workflow` reference at all. Those are older and stricter-by-accident (they hardcode `main` instead of consulting `origin/HEAD`), so the session's newer guard covers what they would have — verify that still holds before relying on it for a target you have not checked. |
 | **`CLAUDE.md`** | **Your job, per §2.** Nothing loads the target's automatically. |
 | **`settings.json` permission allowlist** | **Dropped, and in the permissive direction.** |
-| **pipeline telemetry** | **Dropped, per §2a.** |
+| **pipeline telemetry** | **Carried, and credited to the target** — from `ticket-workflow` v0.20.0, subject to the machine's own pin (§2a). Residual: a target whose branch names no `tkt-…` id drops the milestone silently. |
 
 The allowlist row is the one with no mitigation, so state it rather than discovering it: commands you
 run against the target are permitted by **this session's** allowlist, and the board repo's is among
@@ -255,18 +255,26 @@ opposite: they act on the *session's* repo**, so in foreign mode they would bran
 than the target. Do not use them in foreign mode — if the target needs a worktree, that is a reason to
 work it from a session rooted there.
 
-> **Known limit — and it corrupts, it does not merely go missing.** `track-steps` resolves the ticket
-> id from the branch of the *session's* cwd, never from the `cd` target, and writes the milestone to
-> the central board's `events/<id>.jsonl`. So if this session sits on a branch carrying a `tkt-…` id,
-> a foreign-mode run appends `test`/`commit`/`review` rows to **that** ticket's log — a real kanban
-> ticket showing a pipeline it never ran. The `cd` form makes a milestone *matchable*; nothing makes
-> it *attributable*. Same class as the 1,889 duplicate rows in `tkt-af4669ce9a0d`.
+> **Attribution is correct from `ticket-workflow` v0.20.0 — but the *machine's* pin decides, not this
+> repo's.** `track-steps` resolves the directory per milestone, so a foreign-mode `cd <target> && npm
+> test` is credited to the target's branch ticket and **not** to the session's. Before v0.20.0 it read
+> the session's branch only: a session on a `tkt-…` branch silently appended `test`/`commit`/`review`
+> rows to **that** ticket's log — a real ticket showing a pipeline it never ran, the same class as the
+> 1,889 duplicate rows in `tkt-af4669ce9a0d` (`tkt-2734584f8715`, `tkt-8ada0242e94e`).
 >
-> **So: before entering foreign mode, check the session's own branch.** If it carries a `tkt-…` id,
-> switch the session repo to `main` first, or stop and say why. On a branch with no id the milestone
-> resolves to nothing and is simply dropped, which is the acceptable version of this. Fixing it
-> properly is `tkt-8ada0242e94e` plus the runtime pin bump `tkt-876ab4261e69`; until both land, never
-> report the tracker as intact because the commands looked right.
+> **The writer loads from the machine-local `~/.claude/tools` install, which carries its own pin**, so
+> this repo's `package.json` does not answer the question and neither does the tag. Ask the machine
+> for the *installed* version — a bare `npm install` after a pin bump can keep the old sha:
+>
+> ```bash
+> node -p "require(require('os').homedir()+'/.claude/tools/node_modules/ticket-workflow/package.json').version"
+> ```
+>
+> **Below v0.20.0 the old precaution still applies:** check the session's own branch before entering
+> foreign mode, and if it carries a `tkt-…` id, switch the session repo to `main` first or say why. At
+> or above it, that step is unnecessary. Two residuals at every version: a target branch naming no
+> ticket drops the milestone silently, and a `cd` that is *data* rather than a move (`VAR=$( cd /x … )`,
+> a heredoc body line) is credited to that directory's ticket (`tkt-218e8700a9c1`).
 
 ## 3. Audit the board
 
