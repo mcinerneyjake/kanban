@@ -126,7 +126,7 @@ export const STEPS = [
 export const STEP_IDS = STEPS.map((s) => s.id);
 export type StepId = (typeof STEPS)[number]['id']
 
-// reached = status milestone hit (no pass/fail); passed/failed = command milestone resolved via exit code.
+// reached = status milestone hit (no pass/fail); passed/failed = command milestone, per the hook event.
 export const STEP_STATES = ['reached', 'passed', 'failed'] as const;
 export type StepState = (typeof STEP_STATES)[number]
 
@@ -143,6 +143,9 @@ export type TicketEvent = {
   state: StepState
   at: string
   detail?: string
+  // Set only by the telemetry hook, on every row it writes: absence does not date a row (no
+  // server-written row carries it) and presence is not an outcome (`review: reached` is inferred).
+  outcomeFrom?: 'event'
 }
 
 // A reduced pipeline node: latest state per step, or pending if none arrived.

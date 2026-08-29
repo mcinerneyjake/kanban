@@ -20,12 +20,13 @@ function isPipelineStep(value: unknown): value is PipelineStep {
 
 function isTicketEvent(value: unknown): value is TicketEvent {
   if (!isRecord(value)) return false;
-  const { ticketId, step, state, at, detail } = value;
+  const { ticketId, step, state, at, detail, outcomeFrom } = value;
   return typeof ticketId === 'string'
     && typeof step === 'string' && isStepId(step)
     && typeof state === 'string' && isStepState(state)
     && typeof at === 'string'
-    && (detail === undefined || typeof detail === 'string');
+    && (detail === undefined || typeof detail === 'string')
+    && (outcomeFrom === undefined || outcomeFrom === 'event');
 }
 
 // skipped/unrecognized are checked, not ignored: this guard destructured only the first three

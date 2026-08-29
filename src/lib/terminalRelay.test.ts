@@ -34,6 +34,11 @@ describe('isTicketEventsResponse', () => {
     expect(isTicketEventsResponse(response({ events }))).toBe(true);
   });
 
+  it('accepts the telemetry provenance marker on an event', () => {
+    const events = [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed', at: '2026-07-22T10:00:00.000Z', outcomeFrom: 'event' }];
+    expect(isTicketEventsResponse(response({ events }))).toBe(true);
+  });
+
   it('accepts empty pipeline and events arrays', () => {
     expect(isTicketEventsResponse(response({ pipeline: [], events: [] }))).toBe(true);
   });
@@ -55,6 +60,8 @@ describe('isTicketEventsResponse', () => {
     // 'pending' is valid on a PipelineStep but never on a raw event.
     ['a pending event state', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'pending', at: '2026-07-22T10:00:00.000Z' }] })],
     ['an event missing its timestamp', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed' }] })],
+    ['a forged outcomeFrom', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed', at: '2026-07-22T10:00:00.000Z', outcomeFrom: 'forged' }] })],
+    ['a non-string outcomeFrom', response({ events: [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed', at: '2026-07-22T10:00:00.000Z', outcomeFrom: 7 }] })],
     // A pre-v0.10.0 payload. Admitting it would let the counts be `undefined` behind a type that
     // declares them required — the guard would vouch for a field that isn't there.
     ['a missing skipped count', response({ skipped: undefined })],
