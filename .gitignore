@@ -21,7 +21,7 @@ coverage/
 .cache/
 
 # Claude Code per-session worktrees live here (tkt-4b74943a319e) — checkouts, never sources.
-.claude/worktrees/
+.claude/worktrees
 
 # Machine-local skill config: absolute repo paths + private project names.
 # The tracked SKILL.md must stay free of both (kanban is a public repo).

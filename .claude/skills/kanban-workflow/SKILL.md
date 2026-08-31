@@ -157,12 +157,17 @@ directions") — do not take it from this file's word.
 Two limits on that, both measured, both failing in the **permissive** direction:
 
 1. **A target path the guard cannot parse silently reverts to judging the *session*.** `resolveDir`
-   returns null for a `cd` target that was whitespace-split, quoted, or a variable — and the fallback
-   is the session's branch, which in foreign mode is a feature branch, i.e. *allowed*. Measured, session
-   on a feature branch, every target on `main`: a plain `cd <path>` blocks, while `cd /a/my repo`,
-   `cd "/a/my repo"`, `cd '/a/my repo'`, `cd $TARGET` and `pushd <path>` **all pass**. Hence the third
-   stop above, and §2a's literal-path rule. The fail-open is pinned by a test case, so if upstream
-   fixes it that test goes red and these rules can be relaxed — do not relax them before that.
+   returns null for a `cd` target this parser cannot name — and the fallback is the session's branch,
+   which in foreign mode is a feature branch, i.e. *allowed*. **Which spellings still fall through
+   moved at `ticket-workflow` v0.23.0, so measure rather than trusting a list.** Drive the spellings
+   through the installed hook with the session on a feature branch and every target on `main`,
+   keeping two controls: a plain `cd <path>` must block, and a bare `git commit` must pass. Measured
+   that way at v0.23.0 (2026-08-31, `tkt-20abb1a93afe`), `cd "/a/my repo"`, `cd '/a/my repo'` and
+   `cd $TARGET` now **block** — #76–#78 dequoted the parser and latched an unnameable `cd` closed —
+   while an **unquoted** `cd /a/my repo` and `pushd <path>` still **pass**. Those two remaining
+   fail-opens are why the third stop above and §2a's literal-path rule both stand; the `pushd` one is
+   upstream's explicit design, since `cdTarget` matches only `cd`. Relax a rule only for a spelling
+   you have just watched block, never for the group.
 2. **The commit rule is remote-gated; the push rule is not.** `ruleFor` returns null for `commit`
    when the repo has no remote, so in a target with no `origin` a commit on `main` is **allowed** —
    deliberate upstream behaviour ("land it on a branch and open a PR" being meaningless with nowhere

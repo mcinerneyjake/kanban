@@ -277,16 +277,33 @@ describe('.claude/settings.json permission allowlist', () => {
         'a cd into a repo on a feature branch must be allowed even when the session sits on main',
       ).toBe(0);
 
-      // KNOWN FAIL-OPEN, pinned deliberately. `resolveDir` returns null for a target it cannot parse
-      // — whitespace-split, quoted, or variable — and the guard then falls back to the SESSION's
-      // branch, which in foreign mode is the permissive answer. This is why SKILL.md §1 refuses such
-      // a target and §2a mandates a literal unquoted path; if upstream ever fixes it, this goes red
+      // KNOWN FAIL-OPEN, pinned deliberately. `resolveDir` returns null for a target it cannot
+      // parse, and the guard falls back to the SESSION's branch — in foreign mode the permissive
+      // answer. Only the UNQUOTED split still falls through at the pinned build; v0.23.0 (#76-#78)
+      // dequoted the parser and latched an unnameable `cd` closed, so the quoted and variable
+      // spellings now block and are pinned as such below. This is why SKILL.md §1 still refuses such
+      // a target and §2a still mandates a literal path; if upstream fixes this one too, it goes red
       // and that instruction can be relaxed. Deleting the instruction while this still passes would
       // reopen a real hole (tkt-9a3afc5b9f4f, code review finding 1).
       expect(
         fire(onBranch, `cd ${spaced} && git commit -m x`),
         'if this now BLOCKS, guard-bash parses spaced targets — relax SKILL.md §1/§2a to match',
       ).toBe(0);
+
+      // The spellings v0.23.0 DID fix, pinned so a regression is visible. Asserting only the row
+      // above reported "unchanged" for dimensions this suite never varied, while the guarantee moved
+      // underneath it — quoted and variable are separate dimensions of the same fail-open, not
+      // restatements of it (tkt-20abb1a93afe, review finding 2).
+      for (const target of [`"${spaced}"`, `'${spaced}'`]) {
+        expect(
+          fire(onBranch, `cd ${target} && git commit -m x`),
+          `a quoted cd target on main must be judged, not fall back to the session: ${target}`,
+        ).toBe(2);
+      }
+      expect(
+        fire(onBranch, 'cd $TARGET && git commit -m x'),
+        'an unresolvable variable cd target must fail CLOSED, not judge the session',
+      ).toBe(2);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
