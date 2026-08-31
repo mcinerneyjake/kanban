@@ -195,7 +195,8 @@ own git worktree.**
 Use Claude Code's built-in support — do **not** hand-roll a convention. `EnterWorktree` creates
 `.claude/worktrees/<name>` on a branch cut from a fresh `origin/main`; `ExitWorktree` removes it (and
 auto-removes it if nothing changed). The Agent tool takes `isolation: "worktree"` for the same thing.
-`.claude/worktrees/` is gitignored, so a worktree never shows up as untracked in the main checkout.
+`.claude/worktrees` is gitignored — no trailing slash, so the rule matches a SYMLINKED worktree too
+(the `gitignore` audit check rejects the slashed form) — and a worktree never shows up as untracked here.
 
 **Rename the branch before the first commit.** `EnterWorktree` prefixes `worktree-` and rewrites `/`
 as `+`, so asking for `fix/tkt-abc123-slug` lands you on **`worktree-fix+tkt-abc123-slug`** — which
