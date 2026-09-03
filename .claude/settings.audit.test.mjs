@@ -454,6 +454,51 @@ describe('.claude/settings.json permission allowlist — hook backstops', () => 
   });
 });
 
+// SessionStart runs before the session is usable, so this hook's failure mode is degrading EVERY
+// startup in the repo (tkt-4ea4e17f1419). Its logic is covered in .claude/hooks/night-report.test.mjs;
+// what only this file can assert is that the wired path exists and that running it is actually safe.
+describe('.claude/settings.json SessionStart night-report hook', () => {
+  const sessionStartCommands = () =>
+    (settings.hooks?.SessionStart ?? []).flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''));
+
+  it('wires night-report, and the file it names is on disk', () => {
+    const commands = sessionStartCommands();
+    expect(commands.some((c) => c.includes('night-report'))).toBe(true);
+    for (const rel of commands.map((c) => /\$CLAUDE_PROJECT_DIR\/(\.claude\/hooks\/[\w.-]+\.mjs)/.exec(c)?.[1]).filter(Boolean)) {
+      expect(existsSync(join(REPO_ROOT, rel)), `${rel} is wired in settings.json but missing on disk`).toBe(true);
+    }
+  });
+
+  // A hook with no timeout can hang the startup it runs in, which is the documented rollback trigger.
+  it('bounds every SessionStart hook with a timeout', () => {
+    const entries = (settings.hooks?.SessionStart ?? []).flatMap((m) => m.hooks ?? []);
+    expect(entries.length).toBeGreaterThan(0); // else the assertion below is vacuous
+    for (const h of entries) expect(typeof h.timeout, `${h.command} has no timeout`).toBe('number');
+  });
+
+  // Verify the EFFECT, not the wiring: drive the actually-wired file and watch it exit 0 with a
+  // well-formed payload. Unit tests inject their own root, so this is the only check that the real
+  // file's imports resolve and that it does not throw against the real checkout.
+  it('runs clean against the real checkout, emitting nothing or a valid SessionStart payload', () => {
+    const hook = join(REPO_ROOT, '.claude', 'hooks', 'night-report.mjs');
+    const res = spawnSync(process.execPath, [hook], { encoding: 'utf8', env: hermeticEnv(), timeout: 20_000 });
+
+    expect(res.status, `hook exited ${res.status}: ${res.stderr}`).toBe(0);
+    if (res.stdout.trim()) {
+      const payload = JSON.parse(res.stdout);
+      expect(payload.hookSpecificOutput.hookEventName).toBe('SessionStart');
+      expect(typeof payload.hookSpecificOutput.additionalContext).toBe('string');
+      // Without this the check is VACUOUS: main() returns 0 unconditionally and its catch-all emits
+      // exactly the two fields asserted above, so a hook that throws on every startup would pass
+      // (review, MEDIUM). This is the one string only the failure path can produce.
+      expect(
+        payload.hookSpecificOutput.additionalContext,
+        'the hook threw on the real checkout and reported it as a normal payload',
+      ).not.toContain('the night-run check threw');
+    }
+  });
+});
+
 // The machine-wide runtime at ~/.claude/tools carries its OWN ticket-workflow pin, invisible to every
 // repo's audit — so it skews silently. Found 2026-08-18 at v0.16.0 against repos on v0.18.0+: the
 // NUL-byte write guard was live only for kanban-rooted sessions, while every other repo drove the

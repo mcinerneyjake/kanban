@@ -1,5 +1,7 @@
 {
-  "enabledMcpjsonServers": ["kanban"],
+  "enabledMcpjsonServers": [
+    "kanban"
+  ],
   "permissions": {
     "allow": [
       "mcp__kanban__list_tickets",
@@ -47,6 +49,17 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-ticket.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/night-report.mjs\"",
+            "timeout": 10
           }
         ]
       }
