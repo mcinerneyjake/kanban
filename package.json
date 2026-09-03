@@ -21,6 +21,7 @@
     "night:start": "node --env-file-if-exists=.env scripts/night-control.mjs start",
     "night:status": "node --env-file-if-exists=.env scripts/night-control.mjs status",
     "night:stop": "node --env-file-if-exists=.env scripts/night-control.mjs stop",
+    "night:report": "node scripts/night-report.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
