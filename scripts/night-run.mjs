@@ -15,7 +15,7 @@
 // without the run having done anything.
 
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, rmSync, mkdirSync, accessSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, rmSync, mkdirSync, accessSync } from 'node:fs';
 import { join } from 'node:path';
 import { primaryRoot } from '../.claude/hooks/guard-unattended-merge.mjs';
 
@@ -314,7 +314,15 @@ export function sessionArgs(id) {
   ];
 }
 
-const defaultRunSession = (id, { capMs }) => run('claude', sessionArgs(id), { capMs });
+// The live tee is what `night:status` tails to show a run is still moving; the authoritative record
+// stays the `<id>.log` written when the session ends. An append that fails must never take the run
+// down with it — losing the tail costs visibility, losing the ticket costs the night.
+const defaultRunSession = (id, { capMs, logDir }) => run('claude', sessionArgs(id), {
+  capMs,
+  onOutput: logDir
+    ? (chunk) => { try { appendFileSync(join(logDir, `${id}.live.log`), chunk); } catch { /* observability only */ } }
+    : undefined,
+});
 
 // `Number(process.env.CAP_SECONDS ?? 2700) * 1000` yields NaN for a typo, and NaN is falsy — so
 // `CAP_SECONDS=abc` silently removed the cap altogether (review, MEDIUM). An unreadable value is a
@@ -389,9 +397,22 @@ export async function main(
     // The log directory is created BEFORE the pre-flight, not after it. An aborted night is the run
     // whose evidence is worth most — it is the one where something the design depends on did not
     // behave — and a directory made only on the passing path throws that away (tkt-a761e990190d).
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const startedAt = new Date().toISOString();
+    const stamp = startedAt.replace(/[:.]/g, '-');
     const logDir = join(root, '.night-run', stamp);
     mkdirSync(logDir, { recursive: true });
+
+    // Rewritten after EVERY ticket rather than once at the end: the nights worth reading are the ones
+    // that died mid-queue, and a summary written only on the way out is exactly the one they never
+    // reach. Generated straight from `classify`, never transcribed (tkt-4ea4e17f1419 reads this).
+    const summary = { startedAt, queue, results: [], exit: null };
+    const saveSummary = () => {
+      try {
+        writeFileSync(join(logDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+      } catch (err) {
+        process.stdout.write(`    WARNING: summary.json not written (${err?.code ?? err?.message})\n`);
+      }
+    };
 
     const pre = await preflightGuard(root, { spawnProbe });
     const probeLog = join(logDir, 'preflight-probes.log');
@@ -410,6 +431,8 @@ export async function main(
       // The report is inlined as well as saved: an operator reading `did not block` needs to tell a
       // guard that never fired from a model that simply worded its answer differently, and being
       // sent to a file to find that out is how the difference gets guessed at instead.
+      summary.exit = EXIT.preflight;
+      saveSummary();
       process.stderr.write(
         `pre-flight FAILED: ${pre.why}\n${report}saved to ${saved}\nAborting; no tickets were run.\n`,
       );
@@ -420,24 +443,41 @@ export async function main(
     let exit = EXIT.ok;
     let neverStarted = 0;
     for (const id of queue) {
-      if (fileHere(stop)) { process.stdout.write('STOP file present — ending the queue cleanly\n'); break; }
+      if (fileHere(stop)) {
+        process.stdout.write('STOP file present — ending the queue cleanly\n');
+        // Nothing used to remove it. A leftover STOP made every LATER run break here and return
+        // EXIT.ok — a night that ran no tickets and reported a clean one. Removal is best-effort but
+        // its failure is loud, because the silent version is the whole defect.
+        try {
+          rmSync(stop, { force: true });
+        } catch (err) {
+          process.stdout.write(`    WARNING: ${stop} could NOT be removed (${err?.code ?? err?.message}) — every later run will stop immediately until it is deleted by hand\n`);
+        }
+        break;
+      }
       const before = readStatus(boardDir, id);
       process.stdout.write(`\n--- ${id}  (was ${before ?? 'unreadable'})\n`);
 
-      const res = await runSession(id, { capMs: cap.capMs });
+      const res = await runSession(id, { capMs: cap.capMs, logDir });
       writeFileSync(join(logDir, `${id}.log`), res.out);
 
       // A session that could not be spawned at all would otherwise read as "never started" and march
       // through the whole queue in silence — `claude` off PATH burns every ticket (review, MEDIUM).
       if (res.code === -1) {
         process.stdout.write(`    HALT: the session could not be started (${res.out.slice(0, 200)})\n    queue stops here\n`);
+        // Recorded before the break: otherwise the machine-readable summary shows a stopped night
+        // with the failing ticket ABSENT, and the reader cannot tell which one it died on.
+        summary.results.push({ id, before, after: null, level: 'halt', text: 'the session could not be started', log: join(logDir, `${id}.log`) });
         exit = EXIT.stopped;
+        saveSummary();
         break;
       }
 
       const after = readStatus(boardDir, id);
       const verdict = classify({ before, after, capped: res.capped });
       process.stdout.write(`    ${verdict.level.toUpperCase()}: ${describe(verdict, res.out)}\n`);
+      summary.results.push({ id, before, after, level: verdict.level, text: verdict.text, log: join(logDir, `${id}.log`) });
+      saveSummary();
 
       neverStarted = verdict.text.startsWith('never started') ? neverStarted + 1 : 0;
       if (neverStarted >= 2) {
@@ -451,10 +491,21 @@ export async function main(
         break;
       }
     }
+    summary.exit = exit;
+    saveSummary();
     process.stdout.write(`\nlogs: ${logDir}\n`);
     return exit;
   } finally {
     cleanup();
+    // A STOP written while the LAST ticket was in flight is never seen by the loop check, so without
+    // this it survived the run and silently no-opped the NEXT night — edit (a) alone moved the defect
+    // from "every later night" to "the next one" (review, MEDIUM). The run is over either way, so a
+    // STOP addressed to it has been served.
+    try {
+      rmSync(sentinelPaths(root).stop, { force: true });
+    } catch (err) {
+      process.stdout.write(`WARNING: the STOP file could NOT be removed (${err?.code ?? err?.message}) — the next run will stop immediately until it is deleted by hand\n`);
+    }
     for (const [signal, fn] of handlers) process.off(signal, fn);
     process.off('uncaughtException', onCrash);
     process.off('unhandledRejection', onCrash);
