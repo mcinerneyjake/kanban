@@ -5,7 +5,7 @@
 // never leaves the sentinel behind. Every stopping case is paired with a continuing control, because
 // a runner that stops on everything is as useless as one that stops on nothing.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   classify, gateFailed, describe as describeResult, readStatus, guardBlocked,
   arm, disarm, claimSentinel, ownerOf, pidAlive, fileHere, sentinelPaths,
-  preflightGuard, main, run, sessionArgs, capMsFrom, USAGE, EXIT, MERGE_PROBE_PAYLOAD,
+  preflightGuard, main, run, sessionArgs, capMsFrom, USAGE, EXIT, MERGE_PROBE_PAYLOAD, renderProbes,
 } from './night-run.mjs';
 
 let board;
@@ -586,5 +586,158 @@ describe('main — dimensions 5 and 6: the queue and the STOP file', () => {
 
   it('exports a usage string that names the npm entrypoint', () => {
     expect(USAGE).toContain('npm run night');
+  });
+});
+
+// tkt-a761e990190d — the probes' output is the only evidence of what a live model and the real hook
+// actually did, and `guardBlocked`'s reading of it gates the whole night. It used to be discarded on
+// the passing path and absent from every failing path's message, so neither a green night nor an
+// aborted one could say what was replied. One case per RETURN PATH, because a suite that samples two
+// of four cannot report the absence of evidence on the other two (review, LOW/MEDIUM).
+describe('the pre-flight records what each probe actually said', () => {
+  const BLOCKED = () => ({ code: 0, out: 'BLOCKED', capped: false });
+  const hookOk = () => ({ code: 0, out: '', capped: false });
+  const seq = (...rs) => { let i = 0; return () => Promise.resolve(rs[Math.min(i++, rs.length - 1)]); };
+
+  const probeLogs = () => {
+    const dir = join(board, '.night-run');
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+      .map((d) => join(dir, d, 'preflight-probes.log'))
+      .filter((f) => existsSync(f));
+  };
+
+  const captureStderr = async (fn) => {
+    const orig = process.stderr.write.bind(process.stderr);
+    let buf = '';
+    process.stderr.write = (chunk) => { buf += chunk; return true; };
+    try { await fn(); } finally { process.stderr.write = orig; }
+    return buf;
+  };
+
+  // --- renderProbes: the labelling itself.
+  it('labels each probe, and writes an explicit marker rather than nothing', () => {
+    const out = renderProbes({ armedOut: '', disarmed: { code: 2, out: '' } });
+    expect(out).toMatch(/armed probe/);
+    expect(out).toMatch(/disarmed probe/);
+    expect(out).toMatch(/exit 2/);
+    expect(out.match(/\(no output\)/g)).toHaveLength(2); // never a silent empty section
+  });
+
+  it('omits the disarmed section entirely when that half never ran', () => {
+    expect(renderProbes({ armedOut: 'BLOCKED' })).not.toMatch(/disarmed probe/);
+  });
+
+  // --- preflightGuard: all four return paths carry evidence.
+  it('return path 1 — passing: carries both probes', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq(BLOCKED(), hookOk()) });
+    expect(res.ok).toBe(true);
+    expect(res.armedOut).toBe('BLOCKED');
+    expect(res.disarmed).toEqual({ code: 0, out: '' });
+  });
+
+  // The ticket's own worked example: prose CONTAINING the word is refused by the tightened matcher,
+  // and the refusal must carry the words that caused it.
+  it('return path 2 — refused: carries the reply that failed the matcher', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq({ code: 0, out: 'The command was BLOCKED.', capped: false }) });
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/did not block/i);
+    expect(res.armedOut).toBe('The command was BLOCKED.');
+  });
+
+  it('return path 3 — disarmed half timed out: carries the DISARMED probe, not just the armed one', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq(BLOCKED(), { code: null, out: 'hung', capped: true }) });
+    expect(res.ok).toBe(false);
+    expect(res.disarmed).toEqual({ code: null, out: 'hung' });
+  });
+
+  // Finding 1: on this path the ARMED reply is a clean BLOCKED from the half that worked, so
+  // reporting only it points the reader at the wrong probe. `off.out` is what separates "stuck on"
+  // from "the launcher failed to load" — the two readings the message itself admits it cannot tell.
+  it('return path 4 — guard stuck on / launcher broken: carries the output that separates the two', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq(BLOCKED(), { code: 2, out: 'ERR_MODULE_NOT_FOUND', capped: false }) });
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/stuck on, or the launcher/);
+    expect(res.disarmed).toEqual({ code: 2, out: 'ERR_MODULE_NOT_FOUND' });
+  });
+
+  it('an armed probe that timed out still carries whatever it emitted', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq({ code: null, out: 'half a rep', capped: true }) });
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/timed out/);
+    expect(res.armedOut).toBe('half a rep');
+  });
+
+  // Finding 2: `run` resolves a spawn failure as code -1 with the OS error in `out`. Read as a model
+  // reply it fails guardBlocked and the night reports a broken GUARD — accusing something that was
+  // never exercised. `claude` off PATH is the likely cause.
+  it('a probe that could not be spawned is named as such, not blamed on the guard', async () => {
+    arm(board);
+    const res = await preflightGuard(board, { spawnProbe: seq({ code: -1, out: 'Error: spawn claude ENOENT', capped: false }) });
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/could not be started/);
+    expect(res.why).toMatch(/ENOENT/);
+    expect(res.why).not.toMatch(/did not block/);
+  });
+
+  // --- main: the artifact and the message.
+  it('saves the report on a PASSING pre-flight, where nothing previously kept it', async () => {
+    seed(A, 'todo');
+    const code = await main([A], board, opts({ spawnProbe: seq(BLOCKED(), hookOk()), runSession: sessionStub() }));
+    expect(code).toBe(EXIT.ok);
+    expect(probeLogs()).toHaveLength(1);
+    expect(readFileSync(probeLogs()[0], 'utf8')).toMatch(/armed probe[\s\S]*BLOCKED/);
+  });
+
+  it('inlines the report in the abort message, and keeps it on disk', async () => {
+    seed(A, 'todo');
+    const runSession = sessionStub();
+    const spawnProbe = seq({ code: 0, out: 'I ran it and it RAN.', capped: false });
+    let code;
+    const err = await captureStderr(async () => { code = await main([A], board, opts({ spawnProbe, runSession })); });
+    expect(code).toBe(EXIT.preflight);
+    expect(err).toContain('I ran it and it RAN.');
+    expect(runSession.calls).toEqual([]);
+    expect(readFileSync(probeLogs()[0], 'utf8')).toContain('I ran it and it RAN.');
+  });
+
+  it('shows the DISARMED probe in the abort message when that is the half that failed', async () => {
+    seed(A, 'todo');
+    const spawnProbe = seq(BLOCKED(), { code: 2, out: 'ERR_MODULE_NOT_FOUND', capped: false });
+    let code;
+    const err = await captureStderr(async () => { code = await main([A], board, opts({ spawnProbe, runSession: sessionStub() })); });
+    expect(code).toBe(EXIT.preflight);
+    expect(err).toMatch(/disarmed probe/);
+    expect(err).toContain('ERR_MODULE_NOT_FOUND');
+  });
+
+  // Finding 3: the save sits ahead of the abort message, so an unguarded throw here would replace a
+  // loud verdict with an unhandled rejection — the finally has already dropped the crash handler.
+  it('a failed save never swallows the abort it is evidence for', async () => {
+    seed(A, 'todo');
+    const runSession = sessionStub();
+    const writeProbeLog = () => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); };
+    let code;
+    const err = await captureStderr(async () => {
+      code = await main([A], board, opts({ spawnProbe: seq({ code: 0, out: 'RAN', capped: false }), runSession, writeProbeLog }));
+    });
+    expect(code).toBe(EXIT.preflight);
+    expect(err).toMatch(/pre-flight FAILED/);
+    expect(err).toMatch(/NOT SAVED \(ENOSPC\)/);
+    expect(existsSync(sentinelPaths(board).active)).toBe(false); // still cleaned up
+  });
+
+  it('a failed save does not abort a night whose gate is fine', async () => {
+    seed(A, 'todo');
+    const runSession = sessionStub();
+    const writeProbeLog = () => { throw new Error('nope'); };
+    const code = await main([A], board, opts({ spawnProbe: seq(BLOCKED(), hookOk()), runSession, writeProbeLog }));
+    expect(code).toBe(EXIT.ok);
+    expect(runSession.calls).toEqual([A]);
   });
 });
