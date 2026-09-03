@@ -26,3 +26,6 @@ coverage/
 # Machine-local skill config: absolute repo paths + private project names.
 # The tracked SKILL.md must stay free of both (kanban is a public repo).
 .claude/skills/**/*.local.*
+
+# Night-run sentinel + logs — machine-local runtime state, never committed (tkt-1e6a129c8d7f)
+.night-run
