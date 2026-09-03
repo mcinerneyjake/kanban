@@ -242,13 +242,25 @@ export async function preflightGuard(root, { spawnProbe = run, probeCapMs = PROB
     '-p', '--permission-mode', 'auto',
     'Run exactly this one Bash command and reply with only BLOCKED if a hook refused it, or RAN if it executed: gh pr merge 999999999',
   ], { capMs: probeCapMs });
+  // The reply is returned on EVERY path below, not just the refusing one. It is the only record of
+  // what a live model actually said, and `guardBlocked`'s reading of it is the single control the
+  // unattended design rests on — so a passing gate has to be as auditable as a failing one
+  // (tkt-a761e990190d). A capped probe keeps whatever it managed to emit.
+  const armedOut = armed.out ?? '';
+  // `run` resolves a spawn failure as code -1 with the OS error in `out` — not a model reply at all.
+  // Unchecked it is stored as one and reported as "the merge guard did not block", which accuses a
+  // guard that was never exercised; `claude` off PATH is the likely cause and reads as a broken gate
+  // (review, MEDIUM). The session loop below already reads -1 this way.
+  if (armed.code === -1) {
+    return { ok: false, why: `the armed guard probe could not be started (${armedOut.trim()})`, armedOut };
+  }
   // The sentinel is claimed before this await, so a probe that hangs would park the night with every
   // merge blocked and no ticket run (review, MEDIUM).
   if (armed.capped) {
-    return { ok: false, why: 'the armed guard probe timed out, so the gate could not be confirmed' };
+    return { ok: false, why: 'the armed guard probe timed out, so the gate could not be confirmed', armedOut };
   }
-  if (!guardBlocked(armed.out)) {
-    return { ok: false, why: 'the merge guard did not block while a run was marked active' };
+  if (!guardBlocked(armedOut)) {
+    return { ok: false, why: 'the merge guard did not block while a run was marked active', armedOut };
   }
 
   disarm(root);
@@ -258,8 +270,14 @@ export async function preflightGuard(root, { spawnProbe = run, probeCapMs = PROB
     capMs: probeCapMs,
   });
   arm(root);
+  // The disarmed half's own output is carried too. Its failure message admits it cannot tell "stuck
+  // on" from "the launcher failed to load", and `off.out` is the only thing that separates them — a
+  // MODULE_NOT_FOUND stack against the guard's own marker. Reporting the ARMED reply on this path
+  // shows a clean BLOCKED from the probe that succeeded, pointing the reader at the wrong half
+  // (review, MEDIUM).
+  const disarmed = { code: off.code, out: off.out ?? '' };
   if (off.capped) {
-    return { ok: false, why: 'the disarmed guard probe timed out, so the gate could not be confirmed' };
+    return { ok: false, why: 'the disarmed guard probe timed out, so the gate could not be confirmed', armedOut, disarmed };
   }
   // A launcher that cannot load exits 2 as well, so this message names both readings rather than
   // asserting the one it cannot tell apart (review, MEDIUM).
@@ -267,9 +285,26 @@ export async function preflightGuard(root, { spawnProbe = run, probeCapMs = PROB
     return {
       ok: false,
       why: `the merge guard did not permit with no run active (exit ${off.code}) — it is stuck on, or the launcher itself failed to load`,
+      armedOut,
+      disarmed,
     };
   }
-  return { ok: true };
+  return { ok: true, armedOut, disarmed };
+}
+
+/**
+ * The pre-flight's evidence, labelled by WHICH probe spoke. Unlabelled, a disarmed-half failure
+ * prints the armed probe's clean `BLOCKED` and reads as though the gate was fine. `(no output)` is
+ * written explicitly because a zero-byte record is indistinguishable from a probe that never ran —
+ * the exact ambiguity this record exists to remove (review, LOW).
+ */
+export function renderProbes({ armedOut, disarmed } = {}) {
+  const body = (t) => (t?.trim() ? t.trim() : '(no output)');
+  let s = `=== armed probe — expected: refused ===\n${body(armedOut)}\n`;
+  if (disarmed) {
+    s += `\n=== disarmed probe — expected: exit 0 ===\nexit ${disarmed.code}\n${body(disarmed.out)}\n`;
+  }
+  return s;
 }
 
 export function sessionArgs(id) {
@@ -301,6 +336,7 @@ export async function main(
     runSession = defaultRunSession,
     resolveSentinelRoot = primaryRoot,
     env = process.env,
+    writeProbeLog = writeFileSync,
   } = {},
 ) {
   const queue = argv.filter((a) => /^tkt-[0-9a-f]{12}$/.test(a));
@@ -350,16 +386,36 @@ export async function main(
   process.on('unhandledRejection', onCrash);
 
   try {
-    const pre = await preflightGuard(root, { spawnProbe });
-    if (!pre.ok) {
-      process.stderr.write(`pre-flight FAILED: ${pre.why}\nAborting; no tickets were run.\n`);
-      return EXIT.preflight;
-    }
-    process.stdout.write('pre-flight: merge guard arms and disarms correctly\n');
-
+    // The log directory is created BEFORE the pre-flight, not after it. An aborted night is the run
+    // whose evidence is worth most — it is the one where something the design depends on did not
+    // behave — and a directory made only on the passing path throws that away (tkt-a761e990190d).
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const logDir = join(root, '.night-run', stamp);
     mkdirSync(logDir, { recursive: true });
+
+    const pre = await preflightGuard(root, { spawnProbe });
+    const probeLog = join(logDir, 'preflight-probes.log');
+    const report = renderProbes(pre);
+    // Failing to SAVE the evidence must never swallow the abort the evidence is about. Unguarded,
+    // this write sits ahead of the message, so an ENOSPC or a swept logDir turned a loud pre-flight
+    // abort into an unhandled rejection carrying no verdict — the `finally` below has already
+    // deregistered the crash handler by then (review, MEDIUM).
+    let saved = probeLog;
+    try {
+      writeProbeLog(probeLog, report);
+    } catch (err) {
+      saved = `NOT SAVED (${err?.code ?? err?.message ?? 'write failed'})`;
+    }
+    if (!pre.ok) {
+      // The report is inlined as well as saved: an operator reading `did not block` needs to tell a
+      // guard that never fired from a model that simply worded its answer differently, and being
+      // sent to a file to find that out is how the difference gets guessed at instead.
+      process.stderr.write(
+        `pre-flight FAILED: ${pre.why}\n${report}saved to ${saved}\nAborting; no tickets were run.\n`,
+      );
+      return EXIT.preflight;
+    }
+    process.stdout.write(`pre-flight: merge guard arms and disarms correctly (probes: ${saved})\n`);
 
     let exit = EXIT.ok;
     let neverStarted = 0;
