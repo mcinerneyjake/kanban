@@ -328,9 +328,10 @@ describe('.claude/settings.json permission allowlist', () => {
     expect(fire('mcp__kanban__get_ticket').status, 'an unrelated tool must be allowed').toBe(0);
   });
 
-  // CLAUDE.md asserts TWICE that guard-bash does not inspect `gh` at all, and derives a real
-  // conclusion from it (the merge gate has no runtime backstop). It was a hand-run grep, so it went
-  // stale the moment upstream chose to add one. Generated, not transcribed (tkt-4de2f4a839b7).
+  // CLAUDE.md ("What guards `gh` is not nothing") asserts that the pinned package's own guard never
+  // inspects `gh`, and derives a real conclusion from it (on the main thread with no night run
+  // active, nothing enforces the merge gate). It was a hand-run grep, so it went stale the moment
+  // upstream chose to add one. Generated, not transcribed (tkt-4de2f4a839b7, tkt-6916ee90b044).
   it('pins CLAUDE.md\'s claim that guard-bash does not inspect `gh`', () => {
     const packaged = join(dirname(createRequire(import.meta.url).resolve('ticket-workflow')), '..', 'hooks', 'guard-bash.mjs');
     const src = readFileSync(packaged, 'utf8');
@@ -342,8 +343,9 @@ describe('.claude/settings.json permission allowlist', () => {
 
     expect(
       src.match(GH_TOKEN),
-      'the pinned guard-bash now references `gh` — CLAUDE.md says twice that it does not, and concludes ' +
-        'from that the merge gate has no runtime backstop. Re-measure and fix both sentences.',
+      'the pinned guard-bash now references `gh` — CLAUDE.md says it never does, and concludes from ' +
+        'that nothing enforces the merge gate on the main thread with no night run active. ' +
+        'Re-measure, then fix both the claim and the conclusion it feeds.',
     ).toBeNull();
   });
 
