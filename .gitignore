@@ -29,3 +29,7 @@ coverage/
 
 # Night-run sentinel + logs — machine-local runtime state, never committed (tkt-1e6a129c8d7f)
 .night-run
+
+# Test fixture roots. Kept inside the repo rather than os.tmpdir() so no suite writes outside the
+# workspace; each suite mkdtemps its own subdirectory here and removes it.
+.tmp-test
