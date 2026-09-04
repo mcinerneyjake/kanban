@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import {
   classify, gateFailed, describe as describeResult, readStatus, guardBlocked,
   arm, disarm, claimSentinel, ownerOf, pidAlive, fileHere, sentinelPaths,
-  preflightGuard, main, run, sessionArgs, capMsFrom, USAGE, EXIT, MERGE_PROBE_PAYLOAD, renderProbes,
+  preflightGuard, main, run, sessionArgs, sessionEnv, defaultRunSession, capMsFrom, USAGE, EXIT,
+  MERGE_PROBE_PAYLOAD, renderProbes,
 } from './night-run.mjs';
 
 let board;
@@ -376,6 +377,24 @@ describe('run — dimension 2, exercised directly rather than stubbed', () => {
     expect(res.capped).toBe(false);
     expect(res.code).toBe(0);
   });
+
+  // tkt-c4743331eb03 — the helper's return value proves nothing on its own; what the deadlock needed
+  // was for the CHILD to see it. Spawned for real rather than stubbed, because the drop would be in
+  // the wiring between the two.
+  it('hands an env through to the spawned child', async () => {
+    const res = await run(process.execPath, ['-e', 'process.stdout.write(process.env.NIGHT_RUN_TICKET ?? "UNSET")'], {
+      env: sessionEnv(A),
+    });
+    expect(res.out).toBe(A);
+  });
+
+  // The control on the case above: passing no env must still leave the child a usable environment.
+  // A `spawn` handed a bare `{}` would launch `claude` with no PATH — a fix that trades a deadlock
+  // for a night that cannot start at all.
+  it('leaves the inherited environment alone when given no env', async () => {
+    const res = await run(process.execPath, ['-e', 'process.stdout.write(process.env.PATH ? "HAS_PATH" : "NO_PATH")']);
+    expect(res.out).toBe('HAS_PATH');
+  });
 });
 
 describe('preflightGuard — dimension 4', () => {
@@ -455,6 +474,65 @@ describe('sessionArgs — what each ticket is actually driven with', () => {
   // anything looser would cross the merge gate the whole design rests on.
   it('runs the skill at --gates auto-pr for the named ticket', () => {
     expect(sessionArgs(A).at(-1)).toBe(`/kanban-workflow --gates auto-pr ${A}`);
+  });
+});
+
+// tkt-c4743331eb03 — a sub-session that finds `.night-run/ACTIVE`, resolves the pid, and sees this
+// ticket's id in its argv reads its own PARENT as a competing session and hard-stops. Nothing in the
+// repo distinguishes the two: the sentinel, the argv and the growing live log look identical from
+// inside the child. The discriminator has to be handed down by the runner, which is what this is.
+describe('sessionEnv — how a night child knows the runner it found is its own', () => {
+  it('names the ticket this session was spawned for', () => {
+    expect(sessionEnv(A).NIGHT_RUN_TICKET).toBe(A);
+  });
+
+  it('names the runner pid, so the ACTIVE sentinel can be matched against it', () => {
+    expect(sessionEnv(A).NIGHT_RUN_PID).toBe(String(process.pid));
+  });
+
+  // The dimension that decides whether this is a self-check or a blanket excuse. A night child
+  // working B that stumbles on A's artifacts is looking at a REAL competitor, and the variable has
+  // to distinguish that case rather than reading "a night run is active" as "it is me".
+  it('names only its OWN ticket, so a sibling ticket still reads as a competitor', () => {
+    expect(sessionEnv(B).NIGHT_RUN_TICKET).toBe(B);
+    expect(sessionEnv(B).NIGHT_RUN_TICKET).not.toBe(A);
+  });
+
+  it('carries the inherited environment through, rather than replacing it', () => {
+    expect(sessionEnv(A, { env: { PATH: '/usr/bin', HOME: '/home/x' } })).toMatchObject({
+      PATH: '/usr/bin',
+      HOME: '/home/x',
+    });
+  });
+
+  // An explicit pid is what lets the test above assert a value rather than re-deriving it, and what
+  // lets a caller identify the runner when it is not this process.
+  it('takes an explicit pid over the current process', () => {
+    expect(sessionEnv(A, { pid: 4242 }).NIGHT_RUN_PID).toBe('4242');
+  });
+
+  // The helper and the passthrough were both green with the runner wiring them to nothing: the
+  // `env` line could be deleted outright and all 92 tests still passed. This is the case that fails.
+  it('is what the runner actually drives each per-ticket session with', async () => {
+    let seen;
+    const exec = (_cmd, _args, opts) => { seen = opts; return Promise.resolve({ code: 0, out: '', capped: false }); };
+    await defaultRunSession(A, { capMs: 1000, exec });
+    expect(seen.env.NIGHT_RUN_TICKET).toBe(A);
+    expect(seen.env.NIGHT_RUN_PID).toBe(String(process.pid));
+  });
+
+  // Driven through `main` with NO runSession override, so the DEFAULT binding is under test: the case
+  // above stays green if `main` stops reaching defaultRunSession at all, and then no session gets an id.
+  it('reaches each queued ticket through main default session runner', async () => {
+    seed(A, 'todo');
+    seed(B, 'todo');
+    const seen = [];
+    const exec = (_cmd, _args, o) => {
+      seen.push(o.env.NIGHT_RUN_TICKET);
+      return Promise.resolve({ code: 0, out: '', capped: false });
+    };
+    await main([A, B], board, opts({ spawnProbe: passingProbe(), exec }));
+    expect(seen).toEqual([A, B]);
   });
 });
 

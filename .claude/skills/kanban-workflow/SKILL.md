@@ -53,6 +53,39 @@ so, if it was named from memory.
   still open. Never silently proceed — the state may be news to the user — and never silently
   refuse: naming a ticket is an override, and a `done` ticket with follow-up work or an
   `in-progress` one this session is resuming are both legitimate reasons to be here.
+- **A night run holding this ticket may be your own parent — check before you believe otherwise, and
+  check BOTH variables.** Nothing in the repo tells the two apart: `.night-run/ACTIVE` holds a live
+  pid, that pid's argv carries this ticket's id, and `.night-run/<run>/<id>.live.log` grows while you
+  watch it. All three are equally true of a competing session and of the runner that spawned you. The
+  runner passes `NIGHT_RUN_TICKET` and `NIGHT_RUN_PID` down to each per-ticket session; read them by
+  shelling out, since neither is visible to you except through a command:
+
+  ```bash
+  printf '%s|%s|%s\n' "${NIGHT_RUN_TICKET:-UNSET}" "${NIGHT_RUN_PID:-UNSET}" "$(cat .night-run/ACTIVE 2>/dev/null || echo NONE)"
+  ```
+
+  **You are the night run's own child only when `NIGHT_RUN_TICKET` names this ticket AND
+  `NIGHT_RUN_PID` equals the pid in `.night-run/ACTIVE`.** Then that pid is your parent and that log
+  is your own stdout: say so and get on with the work — do not stop, and do not ask the user to kill
+  it.
+
+  **Anything else is a competing session and stops you**, including the two near-misses that look
+  like a match. A **different** id is a different ticket's session. And a **pid mismatch on a matching
+  id** is the orphan case: a runner killed by a dropped ssh disarms and exits without taking its
+  `claude` down (`night-control.mjs`), so an orphan keeps its dead parent's id and pid while a fresh
+  runner re-queues the same ticket — id-matching alone would tell two live sessions to edit one ticket
+  in one working tree, which is what the one-worktree rule exists to prevent. Unset means no night run
+  spawned you.
+
+  **The variables identify a session *tree*, not a direct child** — every descendant inherits them, so
+  a session you started by hand from inside a night session's terminal reads them too, and a set
+  variable is not proof of parentage. It is evidence, weighed with the pid; treat a mismatch as a
+  competitor and stop.
+
+  Measured 2026-09-04 (`tkt-c4743331eb03`): a session that read all three artifacts as a competitor
+  hard-stopped on `tkt-508b1bd3a693`, left it `todo`, and the queue reported `never started` while
+  exiting 0. That a `claude -p` child can read the variables at all was measured the same day, with a
+  negative control returning `UNSET`.
 - **Not on the board → stop.** Resolve it with **`get_ticket <id>`**, not by looking for it in §3's
   `list_tickets({ project })`: that call is project-filtered, capped at 100, and excludes `archived`
   by default, so "absent from that list" conflates *does not exist*, *belongs to another project*,
