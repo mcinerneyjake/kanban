@@ -172,9 +172,11 @@ export function disarm(root, { pid = process.pid, force = false } = {}) {
   return true;
 }
 
-export function run(cmd, args, { capMs, graceMs = 10_000, onOutput, input } = {}) {
+export function run(cmd, args, { capMs, graceMs = 10_000, onOutput, input, env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    // Undefined `env` inherits, which every other caller here relies on: a bare `{}` would launch
+    // `claude` with no PATH.
+    const child = spawn(cmd, args, { stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'], env });
     let out = '';
     let capped = false;
     let killer = null;
@@ -314,11 +316,32 @@ export function sessionArgs(id) {
   ];
 }
 
+/**
+ * What tells a per-ticket session that the night run it can see is its own (tkt-c4743331eb03).
+ *
+ * From inside the child, a competing session and its own parent are indistinguishable by anything in
+ * the repo: `.night-run/ACTIVE` holds a live pid, that pid's argv carries this ticket's id, and
+ * `<id>.live.log` — the child's own stdout tee — is growing as it looks. A session that found all
+ * three read itself as a competitor and hard-stopped, leaving the ticket `todo` while the queue
+ * exited 0. The discriminator cannot be derived from that state, so the runner hands it down.
+ *
+ * The ticket id, not just a flag: a child working B that stumbles on A's artifacts is looking at a
+ * real competitor, and `NIGHT_RUN_TICKET` has to say which.
+ */
+export function sessionEnv(id, { pid = process.pid, env = process.env } = {}) {
+  return { ...env, NIGHT_RUN_TICKET: id, NIGHT_RUN_PID: String(pid) };
+}
+
 // The live tee is what `night:status` tails to show a run is still moving; the authoritative record
 // stays the `<id>.log` written when the session ends. An append that fails must never take the run
 // down with it — losing the tail costs visibility, losing the ticket costs the night.
-const defaultRunSession = (id, { capMs, logDir }) => run('claude', sessionArgs(id), {
+// `exec` is injected — in the options bag, like every other seam here, so a stray positional argument
+// cannot land on it and silently blank `capMs` — because the wiring below is otherwise unreachable
+// from a test without spawning `claude`: dropping the `env` line left the whole suite green, which is
+// how a per-session id goes missing unnoticed.
+export const defaultRunSession = (id, { capMs, logDir, exec = run }) => exec('claude', sessionArgs(id), {
   capMs,
+  env: sessionEnv(id),
   onOutput: logDir
     ? (chunk) => { try { appendFileSync(join(logDir, `${id}.live.log`), chunk); } catch { /* observability only */ } }
     : undefined,
@@ -344,6 +367,7 @@ export async function main(
     runSession = defaultRunSession,
     resolveSentinelRoot = primaryRoot,
     env = process.env,
+    exec = run,
     writeProbeLog = writeFileSync,
   } = {},
 ) {
@@ -458,7 +482,7 @@ export async function main(
       const before = readStatus(boardDir, id);
       process.stdout.write(`\n--- ${id}  (was ${before ?? 'unreadable'})\n`);
 
-      const res = await runSession(id, { capMs: cap.capMs, logDir });
+      const res = await runSession(id, { capMs: cap.capMs, logDir, exec });
       writeFileSync(join(logDir, `${id}.log`), res.out);
 
       // A session that could not be spawned at all would otherwise read as "never started" and march
