@@ -10,7 +10,9 @@
 // SENTINEL, NOT AN ENV VAR. The obvious design is `NIGHT_RUN=1` read from process.env, and it fails
 // in the wrong direction: if the variable does not propagate through `claude` into this hook process,
 // the guard silently never fires and looks identical to a working one. A sentinel file fails the
-// other way — a runner that dies without cleanup leaves merges BLOCKED until the file is removed.
+// other way — a runner that dies without cleanup leaves the gate set BLOCKED until the file is
+// removed. Price that at the BACKGROUND rule, not the merge one: a stale sentinel costs every
+// session on this machine its backgrounded Bash calls, not one rare verb (tkt-3b182ba384f3).
 //
 // THE SENTINEL LIVES IN THE PRIMARY WORKTREE, AND FINDING IT IS THE WHOLE GAME (review, HIGH).
 // The first version resolved it from this module's own path (`../..`). This file is TRACKED, so a
@@ -58,6 +60,18 @@ export const SENTINEL = root ? join(root, '.night-run', 'ACTIVE') : null;
 const GATED_GH = new Map([['pr merge', 'merge a pull request']]);
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+
+// One remedy line per gated action. `message()` defaults to the merge text, so every existing
+// caller keeps its current output; `decide()` returns the background one alongside its verdict.
+const MERGE_REMEDY =
+  'Merging is the one gate that stays human in every mode, and an unattended run cannot ask.';
+
+// All 6 measured night-run halts had used a backgrounded call; 10 of 13 clean runs never did
+// (tkt-3b182ba384f3). It is a RACE, not an impossibility, which is why it looks fine most nights.
+const BACKGROUND_REMEDY =
+  'Re-run it in the foreground with an explicit timeout instead. A backgrounded call ends the turn\n' +
+  'with the work still running, and the wake-up that would deliver its result is a race an\n' +
+  'unattended run loses.';
 
 // gh sends POST implicitly when any of these is present, so a missing `-X` does NOT mean GET
 // (review, MEDIUM): `gh api --input - /repos/o/r/pulls/1/merge` is a merge that read as a GET.
@@ -127,7 +141,7 @@ function apiReason(segment, flags) {
 /**
  * @param {unknown} payload the PreToolUse JSON
  * @param {string|null} [sentinel] override for tests
- * @returns {{blocked: boolean, reason?: string}}
+ * @returns {{blocked: boolean, reason?: string, remedy?: string}}
  */
 export function decide(payload, sentinel = SENTINEL) {
   if (!nightRunActive(sentinel)) return { blocked: false };
@@ -153,15 +167,31 @@ export function decide(payload, sentinel = SENTINEL) {
         : null;
     if (reason) return { blocked: true, reason: `tried to ${reason}` };
   }
+
+  // LAST, and the order is load-bearing (review, MEDIUM). night-run.mjs's armed pre-flight asks a
+  // live model to run `gh pr merge 999999999` and accepts the shared `Blocked:` marker as proof the
+  // MERGE gate fired. Checked first, a model that backgrounded that probe would satisfy the night's
+  // single control via this rule while the merge rule was never reached — a gate reporting confirmed
+  // without firing, which this file's header calls the shape it exists to reject.
+  //
+  // Truthiness, NOT `=== true`: a string 'true' would slip past an equality check, and a foreground
+  // call omits the key entirely rather than sending false (measured both ways, tkt-3b182ba384f3).
+  if (payload?.tool_input?.run_in_background) {
+    return {
+      blocked: true,
+      reason: 'tried to run a Bash command in the background',
+      remedy: BACKGROUND_REMEDY,
+    };
+  }
   return { blocked: false };
 }
 
-export function message(reason, sentinel = SENTINEL) {
+export function message(reason, sentinel = SENTINEL, remedy = MERGE_REMEDY) {
   return (
     `[guard-unattended-merge] Blocked: ${reason} while a night run is active.\n` +
-    'Merging is the one gate that stays human in every mode, and an unattended run cannot ask.\n' +
+    `${remedy}\n` +
     `The run is marked active by this file: ${sentinel ?? '(primary checkout could not be located)'}\n` +
-    'If no night run is going, the runner exited without cleaning up — remove that file to merge again.\n'
+    'If no night run is going, the runner exited without cleaning up — remove that file to lift this block.\n'
   );
 }
 
