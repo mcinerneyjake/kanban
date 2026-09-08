@@ -283,7 +283,9 @@ executable record of the permission model — read it rather than a summary.
 package's own guard never inspects `gh`, but the wired launcher sequences
 `.claude/hooks/guard-unattended-merge.mjs`, which blocks `gh pr merge` **and** the
 `/repos/.../pulls/.../merge` REST shape with exit 2 while a night-run sentinel is active — **and,
-since `tkt-3b182ba384f3`, every backgrounded Bash call (`run_in_background`) too**, which is a far
+since `tkt-3b182ba384f3`, every backgrounded Bash call too: both the `run_in_background` flag and,
+since `tkt-cba2d225c6e0`, shell backgrounding in the command string itself (`&`, `nohup`, `setsid`,
+`disown`)** — which is a far
 commoner shape than a merge, so do not read an exit-2 block here as necessarily being about `gh`; and
 `guard-subagent-gates` blocks a *subagent* merge. So an exit-2 block from that hook is the guard
 doing its job — read the message, which names the rule that fired, and do not route around it. What remains unguarded is the ordinary case:
