@@ -238,8 +238,9 @@ export function assess(collected) {
   }
   if (collected.active) {
     lines.push(
-      '[night-run] A night run is ACTIVE (`.night-run/ACTIVE` is armed), so `gh pr merge` is blocked in this checkout. ' +
-        '`npm run night:status` says what it is doing.',
+      '[night-run] A night run is ACTIVE (`.night-run/ACTIVE` is armed), so `gh pr merge` AND every ' +
+        'backgrounded Bash call (`run_in_background`) are blocked in this checkout — re-run those in ' +
+        'the foreground with an explicit timeout. `npm run night:status` says what it is doing.',
     );
   }
   if (collected.unfinished.length) {

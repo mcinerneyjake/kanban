@@ -53,8 +53,8 @@ try {
     } catch {
       payload = null; // decide() treats an unreadable command as blocked while a run is active
     }
-    const { blocked, reason } = decide(payload, sentinel);
-    if (blocked) blockAndExit(message(reason, sentinel));
+    const { blocked, reason, remedy } = decide(payload, sentinel);
+    if (blocked) blockAndExit(message(reason, sentinel, remedy));
 
     // Re-supply the same bytes so the package guard's git rules still apply during a night run.
     // A child process is the only way to give it fd 0 again; the cost is irrelevant on this path.

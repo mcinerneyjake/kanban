@@ -282,9 +282,11 @@ executable record of the permission model — read it rather than a summary.
 **What guards `gh` is not nothing, and is not everything — do not round it to either.** The pinned
 package's own guard never inspects `gh`, but the wired launcher sequences
 `.claude/hooks/guard-unattended-merge.mjs`, which blocks `gh pr merge` **and** the
-`/repos/.../pulls/.../merge` REST shape with exit 2 while a night-run sentinel is active; and
-`guard-subagent-gates` blocks a *subagent* merge. So an exit-2 block on a merge is the guard doing
-its job — read the message, do not route around it. What remains unguarded is the ordinary case:
+`/repos/.../pulls/.../merge` REST shape with exit 2 while a night-run sentinel is active — **and,
+since `tkt-3b182ba384f3`, every backgrounded Bash call (`run_in_background`) too**, which is a far
+commoner shape than a merge, so do not read an exit-2 block here as necessarily being about `gh`; and
+`guard-subagent-gates` blocks a *subagent* merge. So an exit-2 block from that hook is the guard
+doing its job — read the message, which names the rule that fired, and do not route around it. What remains unguarded is the ordinary case:
 **on the main thread with no night run active, nothing enforces the merge gate**, so treat "Ready to
 merge?" as the actual control it is. `settings.local.json` is gitignored, so its broader rules can
 only be checked locally, and `guard-subagent-gates` lives only in `~/.claude/settings.json`.

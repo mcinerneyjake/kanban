@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, realpathSync 
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, nightRunActive, primaryRoot, SENTINEL } from './guard-unattended-merge.mjs';
+import { decide, message, nightRunActive, primaryRoot, SENTINEL } from './guard-unattended-merge.mjs';
 
 const HOOKS = dirname(fileURLToPath(import.meta.url));
 const LAUNCHER = join(HOOKS, 'guard-bash.mjs');
@@ -200,6 +200,99 @@ describe('the wired launcher — with a night run genuinely active', () => {
 
   it('still permits an ordinary read', () => {
     expect(run('git status --short', repo).status).toBe(0);
+  });
+});
+
+describe('decide() — dimension 9: a backgrounded Bash call (tkt-3b182ba384f3)', () => {
+  const bg = (command, run_in_background) => ({
+    tool_name: 'Bash',
+    tool_input: { command, run_in_background },
+  });
+
+  it('blocks a backgrounded call while a run is active', () => {
+    expect(decide(bg('npm test', true), present).blocked).toBe(true);
+  });
+
+  // The control. Without it this is indistinguishable from a guard that blocks every background
+  // call, which would wedge every interactive session on the machine.
+  it('permits the same call when no run is active', () => {
+    expect(decide(bg('npm test', true), absent).blocked).toBe(false);
+  });
+
+  // A foreground call omits the key entirely — the normal path, and the one that must not regress.
+  it('permits a foreground call while active', () => {
+    expect(decide(payload('npm test'), present).blocked).toBe(false);
+  });
+
+  // Truthiness, not `=== true`. The string 'false' is truthy and therefore BLOCKS: fail-closed is
+  // the correct direction for a guard, and pinning it here stops a later `=== true` "cleanup".
+  it.each([true, 1, 'true', 'false'])('blocks a truthy %p', (v) => {
+    expect(decide(bg('npm test', v), present).blocked).toBe(true);
+  });
+
+  it.each([false, 0, null, undefined, ''])('permits a falsy %p', (v) => {
+    expect(decide(bg('npm test', v), present).blocked).toBe(false);
+  });
+
+  // An undeterminable sentinel reads as active, so the new rule inherits that fail-closed reading.
+  it('blocks when the sentinel cannot be determined', () => {
+    expect(decide(bg('npm test', true), null).blocked).toBe(true);
+  });
+
+  // The command rule still owns a malformed payload that makes no background claim.
+  it('leaves the unreadable-command reason intact', () => {
+    expect(decide({ tool_name: 'Bash', tool_input: {} }, present).reason).toMatch(
+      /no readable command/,
+    );
+  });
+
+  it('still permits a foreground read', () => {
+    expect(decide(payload('gh pr view 12'), present).blocked).toBe(false);
+  });
+
+  // ORDERING REGRESSION (review, MEDIUM). night-run.mjs's armed pre-flight proves the merge gate by
+  // asking a live model to run `gh pr merge 999999999` and matching the shared `Blocked:` marker. If
+  // the background rule were evaluated first, a model that backgrounded that probe would satisfy the
+  // night's single control without the merge rule ever running. Asserting the REASON, not just
+  // `blocked`, is the whole point: both orderings block, and only one exercises the gate.
+  it.each(['gh pr merge 12', 'gh api -X PUT /repos/o/r/pulls/1/merge'])(
+    'reports the MERGE reason for a backgrounded %s, so the pre-flight control still fires',
+    (cmd) => {
+      expect(decide(bg(cmd, true), present).reason).toMatch(/merge a pull request/);
+    },
+  );
+
+  it('carries a remedy naming the foreground fix', () => {
+    const { reason, remedy } = decide(bg('npm test', true), present);
+    expect(message(reason, present, remedy)).toMatch(/foreground with an explicit timeout/);
+  });
+
+  // The merge remedy is the default, so every existing caller keeps its wording.
+  it('leaves the merge remedy as the default', () => {
+    expect(message('tried to merge a pull request', present)).toMatch(/stays human in every mode/);
+  });
+});
+
+describe('the wired launcher — dimension 9G: a backgrounded call end to end', () => {
+  const run = (sentinel) =>
+    spawnSync(process.execPath, [LAUNCHER, sentinel], {
+      input: JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test', run_in_background: true },
+        cwd: tmp,
+      }),
+      encoding: 'utf8',
+    });
+
+  it('exits 2 and names the foreground remedy while active', () => {
+    const res = run(present);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('[guard-unattended-merge] Blocked:');
+    expect(res.stderr).toContain('foreground with an explicit timeout');
+  });
+
+  it('permits the same call when no run is active', () => {
+    expect(run(absent).status).toBe(0);
   });
 });
 
