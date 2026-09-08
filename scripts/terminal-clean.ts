@@ -22,6 +22,12 @@ async function main(): Promise<void> {
     SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
     [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${root}`], 'terminal:clean',
   );
+  // "Could not ask docker" exits non-zero; it must never read as a clean checkout (tkt-6233ae50f62a).
+  if (rows === null) {
+    console.error('[terminal:clean] docker ps answer unknown — nothing removed.');
+    process.exitCode = 1;
+    return;
+  }
   if (rows.length === 0) {
     console.log('[terminal:clean] no leftover session containers for this checkout.');
     return;

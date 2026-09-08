@@ -85,7 +85,7 @@ describe('planReap', () => {
 });
 
 // A fake DockerCli exposing only ps + remove (what the reaper touches).
-function fakeDocker(rows: PsRow[]) {
+function fakeDocker(rows: PsRow[] | null) {
   const removed: string[] = [];
   return {
     removed,
@@ -113,7 +113,7 @@ describe('reapOnce', () => {
       docker, isTracked: (s) => s === 's-live', rootLabel: '/r', config: CFG, now: () => NOW,
     });
     expect(removed).toEqual(['c-old']);          // live is tracked; new is within grace
-    expect(decisions.map((d) => d.name)).toEqual(['c-old']);
+    expect(decisions?.map((d) => d.name)).toEqual(['c-old']);
   });
 
   it('does nothing when ps resolves empty', async () => {
@@ -195,5 +195,25 @@ describe('startReaper', () => {
     const stop = startReaper({ docker, isTracked: untracked, rootLabel: '/r', config: CFG, intervalMs: 1_000_000 });
     expect(typeof stop).toBe('function');
     expect(() => stop()).not.toThrow();
+  });
+});
+
+// tkt-6233ae50f62a: a failed `docker ps` answers null (unknown), not []. planReap over [] happens to
+// decide nothing, so the old misread was non-destructive — but it was a coincidence of the empty
+// list, not a guard, and the sweep logged "no orphans" about a daemon it never reached.
+describe('reapOnce with an unknown ps answer', () => {
+  it('returns no decisions and calls neither remove nor onReaped when ps resolves null', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { docker, removed } = fakeDocker(null);
+    const cleaned: string[] = [];
+    const decisions = await reapOnce({
+      docker, isTracked: untracked, rootLabel: '/r', config: CFG, now: () => NOW,
+      onReaped: (session) => cleaned.push(session),
+    });
+    expect(decisions).toBeNull();
+    expect(removed).toEqual([]);
+    expect(cleaned).toEqual([]);
+    expect(err.mock.calls.flat().join(' ')).toMatch(/unknown/i); // the skip is logged, not silent
+    err.mockRestore();
   });
 });

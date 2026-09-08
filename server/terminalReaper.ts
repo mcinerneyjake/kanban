@@ -104,7 +104,7 @@ export interface ReaperDeps {
 // Run one reconciliation pass. Exported so tests can drive a single sweep without arming an interval
 // (the `terminal:clean` CLI deliberately does NOT use this — it sweeps unconditionally, server-down,
 // with no registry to consult). Returns the decisions acted on (for logging/assertions).
-export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | 'rootLabel' | 'config' | 'now' | 'onReaped'>): Promise<ReapDecision[]> {
+export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | 'rootLabel' | 'config' | 'now' | 'onReaped'>): Promise<ReapDecision[] | null> {
   const now = (deps.now ?? Date.now)();
   const rows = await deps.docker.ps(
     SESSION_LABEL_KEY,
@@ -112,6 +112,9 @@ export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | '
     [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${deps.rootLabel}`],
     'reaper',
   );
+  // An unanswered query decides nothing — and returns null, not [], so a skipped sweep can never read
+  // as "no orphans" to a consumer. The next tick asks again (tkt-6233ae50f62a).
+  if (rows === null) { console.error('[terminal] reaper: docker ps answer unknown — skipping this sweep'); return null; }
   const decisions = planReap({ rows, isTracked: deps.isTracked, now, config: deps.config });
   for (const d of decisions) {
     console.error(`[terminal] reaping orphan container ${d.name} (session ${d.session}, ${d.reason}, age ${Math.round(d.ageMs / 1000)}s)`);
@@ -123,7 +126,7 @@ export async function reapOnce(deps: Pick<ReaperDeps, 'docker' | 'isTracked' | '
 }
 
 // Arm the periodic reaper. Returns a stop() that cancels the schedule. Each tick is fully awaited
-// internally and its rejection is swallowed (ps already resolves-empty + logs on failure) so one bad
+// internally and its rejection is swallowed (ps already resolves null + logs on failure) so one bad
 // sweep can't crash the loop or leave an unhandled rejection.
 export function startReaper(deps: ReaperDeps): () => void {
   const scheduler = deps.scheduler ?? nodeScheduler;
