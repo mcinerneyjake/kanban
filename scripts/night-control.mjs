@@ -475,7 +475,10 @@ function stopRun(args, deps) {
 
 export async function main(argv = process.argv.slice(2), {
   resolveRoot = primaryRoot,
-  boundary = process.env.NIGHT_RUN_BOUNDARY,
+  // Injectable so the confinement default below is itself testable: a test supplies `env: {}` and
+  // omits `boundary`, which exercises this expression instead of bypassing it (tkt-f77eab475f15).
+  env = process.env,
+  boundary = env.NIGHT_RUN_BOUNDARY,
   spawnFn = spawn,
   openLog = (p) => openSync(p, 'a'),
   now = Date.now,
