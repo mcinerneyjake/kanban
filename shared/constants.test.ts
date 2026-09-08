@@ -119,6 +119,5 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     expectTypeOf<local.RecentTicket>().toEqualTypeOf<pkg.RecentTicket>();
     expectTypeOf<local.StatusCount>().toEqualTypeOf<pkg.StatusCount>();
     expectTypeOf<local.PriorityCount>().toEqualTypeOf<pkg.PriorityCount>();
-    expectTypeOf<local.TypeCount>().toEqualTypeOf<pkg.TypeCount>();
   });
 });

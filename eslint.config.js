@@ -4,11 +4,12 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default tseslint.config(
-  // Generated/build output — gitignored, but flat config does not read
-  // .gitignore, so every generated dir `eslint .` could traverse must be listed
-  // here explicitly (coverage from vitest; test-results + playwright-report from
-  // the e2e run, whose HTML report bundles lintable JS).
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'test-results/**', 'playwright-report/**', '.claude/worktrees/**'] },
+  // Gitignored dirs `eslint .` could still traverse — flat config does not read .gitignore, so
+  // each must be listed explicitly (coverage from vitest; test-results + playwright-report from
+  // the e2e run, whose HTML report bundles lintable JS). `.night-run/` is the odd one out: not
+  // build output but machine-local night-run runtime state, including hand-written one-off
+  // launchers written for bare node, whose globals this config does not supply (tkt-e69819938f33).
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '.night-run/**', 'test-results/**', 'playwright-report/**', '.claude/worktrees/**'] },
   js.configs.recommended,
   tseslint.configs.recommended,
   reactHooks.configs.flat.recommended,

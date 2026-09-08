@@ -5,7 +5,8 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
-import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, HttpError } from './tickets.js';
+import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, summarize, HttpError } from './tickets.js';
+import { BOARD_STATUSES, PRIORITIES, type Ticket } from '../shared/constants.js';
 import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CONTROLS, HITS } from '../scripts/probe/vacuous-tests.mjs';
 import { readEvents } from './events.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
@@ -307,5 +308,77 @@ describe('pinned ticket-workflow build: raw NUL bytes are refused', () => {
   it('accepts the two-character \\0 escape', async () => {
     const t = await createTicket({ title: 'A', body: 'header is `SQLite format 3\\0`' });
     expect((await getTicket(t.id)).body).toContain('\\0');
+  });
+});
+
+// tkt-e69819938f33. The v0.24.0 bump rewrote summarize() from per-bucket filter passes to a single
+// Map tally, so its correctness now rests on the OUTPUT being enum-driven — BOARD_STATUSES and
+// PRIORITIES mapped with `?? 0` — rather than on which buckets the tally happened to observe.
+// Nothing else in kanban asserts that: server/index.test.ts only checks Array.isArray(byStatus).
+// A build that returned observed buckets only would drop the zero rows, and Dashboard.tsx maps
+// byPriority unfiltered and derives priorityMax from it, so the bars would silently rescale with
+// typecheck, lint and the full suite green.
+describe('pinned ticket-workflow build: summarize() output is enum-driven', () => {
+  // Rows are compared against the constants themselves, never a transcribed count — a canonical
+  // status added upstream must fail here rather than quietly widen the expected shape.
+  const mk = (over: Partial<Ticket>): Ticket => ({
+    id: 'tkt-000000000000',
+    title: 'T',
+    type: 'task',
+    priority: 'medium',
+    status: 'todo',
+    order: 0,
+    created: '2026-01-01T00:00:00.000Z',
+    updated: '2026-01-01T00:00:00.000Z',
+    body: '',
+    project: null,
+    blockers: [],
+    parent: null,
+    dueDate: null,
+    assignee: null,
+    ...over,
+  });
+
+  it('emits a zero row for every canonical status and priority on an empty board', () => {
+    const s = summarize([]);
+    expect(s.byStatus).toEqual(BOARD_STATUSES.map((b) => ({ status: b.id, count: 0 })));
+    expect(s.byPriority).toEqual(PRIORITIES.map((p) => ({ priority: p, count: 0 })));
+    expect(s.total).toBe(0);
+  });
+
+  it('keeps the zero rows, in enum order, when only some buckets are populated', () => {
+    const s = summarize([
+      mk({ id: 'tkt-00000000000a', status: 'todo', priority: 'high' }),
+      mk({ id: 'tkt-00000000000b', status: 'todo', priority: 'high' }),
+      mk({ id: 'tkt-00000000000c', status: 'done', priority: 'low' }),
+    ]);
+    expect(s.byStatus).toEqual(
+      BOARD_STATUSES.map((b) => ({ status: b.id, count: b.id === 'todo' ? 2 : b.id === 'done' ? 1 : 0 })),
+    );
+    expect(s.byPriority).toEqual(
+      PRIORITIES.map((p) => ({ priority: p, count: p === 'high' ? 2 : p === 'low' ? 1 : 0 })),
+    );
+    expect(s.total).toBe(3);
+  });
+
+  it('excludes archived from every count', () => {
+    const s = summarize([
+      mk({ id: 'tkt-00000000000d', status: 'todo' }),
+      mk({ id: 'tkt-00000000000e', status: 'archived' }),
+    ]);
+    expect(s.total).toBe(1);
+    expect(s.byStatus.find((r) => r.status === 'todo')?.count).toBe(1);
+    expect(s.byStatus.map((r) => r.status)).not.toContain('archived');
+  });
+
+  it('returns recentlyUpdated newest-first, capped at 8', () => {
+    const twelve = Array.from({ length: 12 }, (_, i) =>
+      mk({ id: `tkt-0000000001${String(i).padStart(2, '0')}`, updated: `2026-02-${String(i + 1).padStart(2, '0')}T00:00:00.000Z` }),
+    );
+    const s = summarize(twelve);
+    expect(s.recentlyUpdated).toHaveLength(8);
+    const stamps = s.recentlyUpdated.map((r) => r.updated);
+    expect(stamps).toEqual([...stamps].sort().reverse());
+    expect(stamps[0]).toBe('2026-02-12T00:00:00.000Z');
   });
 });
