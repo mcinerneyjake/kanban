@@ -448,7 +448,18 @@ export async function main(
   }
 
   const { stop } = sentinelPaths(root);
-  const cleanup = () => disarm(root);
+  // Swept on EVERY exit path, signals and crashes included: `night:stop --now` writes STOP and then
+  // signals, so a sweep living only in the finally left it behind (tkt-b90152b23e62).
+  const sweepStop = () => {
+    try {
+      rmSync(stop, { force: true });
+    } catch (err) {
+      process.stdout.write(`WARNING: the STOP file could NOT be removed (${err?.code ?? err?.message}) — the next run will stop immediately until it is deleted by hand\n`);
+    }
+  };
+  // disarm first — it narrows the check-then-write race with `night:stop` — and the sweep in a finally,
+  // since it never throws and a disarm that does must not skip it.
+  const cleanup = () => { try { disarm(root); } finally { sweepStop(); } };
   // SIGHUP is the likeliest overnight death of all — an ssh session dropping — and its default action
   // terminates without running the finally, leaking a sentinel that blocks every later merge
   // (review, MEDIUM/HIGH). Listeners are removed again below: a leak per call trips node's
@@ -514,15 +525,9 @@ export async function main(
     let neverStarted = 0;
     for (const id of queue) {
       if (fileHere(stop)) {
+        // Nothing used to remove it, so a leftover STOP made every LATER run break here and report a
+        // clean night; cleanup() in the finally sweeps it now, on this path as on every other.
         process.stdout.write('STOP file present — ending the queue cleanly\n');
-        // Nothing used to remove it. A leftover STOP made every LATER run break here and return
-        // EXIT.ok — a night that ran no tickets and reported a clean one. Removal is best-effort but
-        // its failure is loud, because the silent version is the whole defect.
-        try {
-          rmSync(stop, { force: true });
-        } catch (err) {
-          process.stdout.write(`    WARNING: ${stop} could NOT be removed (${err?.code ?? err?.message}) — every later run will stop immediately until it is deleted by hand\n`);
-        }
         break;
       }
       const before = readStatus(boardDir, id);
@@ -566,16 +571,9 @@ export async function main(
     process.stdout.write(`\nlogs: ${logDir}\n`);
     return exit;
   } finally {
+    // A STOP written while the LAST ticket was in flight is never seen by the loop check, so the
+    // sweep in cleanup() is what serves it: the run is over either way (review, MEDIUM).
     cleanup();
-    // A STOP written while the LAST ticket was in flight is never seen by the loop check, so without
-    // this it survived the run and silently no-opped the NEXT night — edit (a) alone moved the defect
-    // from "every later night" to "the next one" (review, MEDIUM). The run is over either way, so a
-    // STOP addressed to it has been served.
-    try {
-      rmSync(sentinelPaths(root).stop, { force: true });
-    } catch (err) {
-      process.stdout.write(`WARNING: the STOP file could NOT be removed (${err?.code ?? err?.message}) — the next run will stop immediately until it is deleted by hand\n`);
-    }
     for (const [signal, fn] of handlers) process.off(signal, fn);
     process.off('uncaughtException', onCrash);
     process.off('unhandledRejection', onCrash);
