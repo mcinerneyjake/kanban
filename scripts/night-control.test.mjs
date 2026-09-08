@@ -636,7 +636,10 @@ describe('confinement — start is bounded; status and stop must stay reachable'
 
   it('start refuses outright when no boundary is configured', async () => {
     const h = harness();
-    h.deps.boundary = undefined;
+    // Omitting `boundary` is the point: main()'s default then runs against this empty env, so the
+    // production expression is under test rather than bypassed (tkt-f77eab475f15).
+    h.deps.env = {};
+    delete h.deps.boundary;
     expect(await main(['start', A], h.deps)).not.toBe(EXIT.ok);
     expect(h.spawned).toEqual([]);
     expect(h.err.text).toMatch(/NIGHT_RUN_BOUNDARY is not set/);
@@ -647,7 +650,8 @@ describe('confinement — start is bounded; status and stop must stay reachable'
   // the run or end it. Both act only on this repo's own resolved root, so neither can wander.
   it('status still answers with no boundary configured at all', async () => {
     const h = harness();
-    h.deps.boundary = undefined;
+    h.deps.env = {};
+    delete h.deps.boundary;
     expect(await main(['status'], h.deps)).toBe(EXIT.ok);
     expect(h.out.text).toMatch(/sentinel: NOT armed/);
   });
@@ -655,7 +659,8 @@ describe('confinement — start is bounded; status and stop must stay reachable'
   it('stop can still end a live run with no boundary configured', async () => {
     claim(PID);
     const h = harness();
-    h.deps.boundary = undefined;
+    h.deps.env = {};
+    delete h.deps.boundary;
     expect(await main(['stop'], h.deps)).toBe(EXIT.ok);
     expect(existsSync(sentinelPaths(root).stop)).toBe(true);
   });
