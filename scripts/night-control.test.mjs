@@ -10,7 +10,7 @@
 // touches the real `.night-run/` or `tickets/`, and the virtual clock keeps a 420s deadline a
 // millisecond of wall time.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, readdirSync, openSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, readdirSync, openSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main, parseArgs, readVerdict, ownerState, withinBoundary, CLAIM_WAIT_MS, DEFAULT_WAIT_MS, CONTROL_USAGE } from './night-control.mjs';
@@ -415,18 +415,254 @@ describe('status — dimension: what an operator is told', () => {
     expect(r.code).not.toBe(EXIT.ok);
   });
 
-  it('shows STOP, the newest runner log, the ticket in flight and its live tail', async () => {
+  // tkt-166e6cfe2e2c — THE REGRESSION. A refused second `night:start` writes its own runner log
+  // before it is turned away, so the newest log belongs to the launch that ran nothing. Note the
+  // refusal text names the OWNER's pid ("already holds the sentinel"), which is why the declaration
+  // match has to be anchored to its own line rather than to a loose /pid (\d+)/ anywhere in the file.
+  it('shows the live owner’s log, not a newer refused launch’s', async () => {
     claim(PID);
-    writeFileSync(sentinelPaths(root).stop, '');
-    writeFileSync(join(root, '.night-run', 'runner-2026-01-01.log'), `${OK_LINE}\n--- ${A}  (was todo)\n`);
     const dir = join(root, '.night-run', '2026-01-01T00-00-00-000Z');
     mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${A}.live.log`), 'assistant: reading the ticket\n');
+    const mine = join(root, '.night-run', 'runner-2026-01-01.log');
+    writeFileSync(mine, `night-run pid ${PID} — logs ${dir}\n${OK_LINE}\n--- ${A}  (was todo)\n`);
+    const refused = join(root, '.night-run', 'runner-2026-01-02.log');
+    writeFileSync(refused, `pre-flight FAILED: another night run (pid ${PID}) already holds the sentinel\nAborting; no tickets were run.\n`);
+    utimesSync(mine, new Date(1000), new Date(1000));
+    utimesSync(refused, new Date(2000), new Date(2000));
+
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: runner-2026-01-01\.log/);
+    expect(r.out.text).not.toMatch(/runner-2026-01-02\.log/);
+    expect(r.out.text).not.toMatch(/Aborting; no tickets were run/);
+    expect(r.out.text).toMatch(new RegExp(`in flight: ${A}`));
+  });
+
+  it('shows STOP, the owner’s runner log, the ticket in flight and its live tail', async () => {
+    claim(PID);
+    writeFileSync(sentinelPaths(root).stop, '');
+    const dir = join(root, '.night-run', '2026-01-01T00-00-00-000Z');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(root, '.night-run', 'runner-2026-01-01.log'), `night-run pid ${PID} — logs ${dir}\n${OK_LINE}\n--- ${A}  (was todo)\n`);
     writeFileSync(join(dir, `${A}.live.log`), 'assistant: reading the ticket\n');
     const r = await run();
     expect(r.out.text).toMatch(/STOP: present/);
     expect(r.out.text).toMatch(/runner log: runner-2026-01-01\.log/);
     expect(r.out.text).toMatch(new RegExp(`in flight: ${A}`));
     expect(r.out.text).toMatch(/assistant: reading the ticket/);
+  });
+});
+
+// tkt-166e6cfe2e2c — attributing a runner log to the pid that holds the sentinel.
+//
+// The guarantee: under a LIVE owner, `night:status` shows that owner's log or says it cannot find
+// one. It never shows another launch's log under this run's banner, and "cannot tell" never falls
+// back to the newest — that fallback is what reported a healthy night as `Aborting; no tickets were
+// run`. One case per dimension: which log is newest, whether a declaration exists at all, whose pid
+// it names, where the pid appears in the text, and which owner state is asking.
+describe('runner-log attribution — dimension: whose log is it', () => {
+  const run = (over = {}) => {
+    const h = harness();
+    Object.assign(h.deps, over);
+    return main(['status'], h.deps).then((code) => ({ code, ...h }));
+  };
+  const writeLog = (name, text, mtime) => {
+    const path = join(root, '.night-run', name);
+    writeFileSync(path, text);
+    utimesSync(path, new Date(mtime), new Date(mtime));
+    return path;
+  };
+  const declares = (pid, dir) => `night-run pid ${pid} — logs ${dir}\n`;
+
+  // The positive control. Without it, "the wrong log is not shown" is satisfied by showing nothing.
+  it('shows the owner’s log when it is also the newest', async () => {
+    claim(PID);
+    writeLog('runner-a.log', `${declares(PID, join(root, '.night-run', 'd'))}${OK_LINE}`, 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: runner-a\.log/);
+    expect(r.out.text).not.toMatch(/NOT identified/);
+  });
+
+  it('says it cannot identify the log rather than showing a legacy one that declares nothing', async () => {
+    claim(PID);
+    writeLog('runner-legacy.log', `${OK_LINE}\n--- ${A}  (was todo)\n`, 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(new RegExp(`NOT identified — no runner-\\*\\.log in .* declares pid ${PID}`));
+    // Deliberately NOT "belongs to some other launch": a runner declares itself only after claiming
+    // and making its log dir, so inside that window this is the live run's own log (review).
+    expect(r.out.text).toMatch(/runner-legacy\.log\) is not shown, since nothing ties it to this pid/);
+    expect(r.out.text).not.toMatch(/belongs to some other launch/);
+    // The permissive answer this must never return: the tail, or a ticket read out of a log that
+    // this run may not have written.
+    expect(r.out.text).not.toMatch(/in flight:/);
+    expect(r.out.text).not.toMatch(/ {2}\| /);
+  });
+
+  it('says so when a log declares a DIFFERENT pid', async () => {
+    claim(PID);
+    writeLog('runner-other.log', declares(PID + 1, join(root, '.night-run', 'd')), 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(/NOT identified/);
+  });
+
+  it('says so when there is no runner log at all', async () => {
+    claim(PID);
+    const r = await run();
+    expect(r.out.text).toMatch(/NOT identified/);
+    expect(r.out.text).toMatch(/and none is present/);
+  });
+
+  // The other prose shape carrying a bare pid. `took over` is printed by the runner itself, so it
+  // lands in a REAL runner log — a loose /pid (\d+)/ would attribute this newest log to PID.
+  it('does not read a prose mention of the pid as a declaration', async () => {
+    claim(PID);
+    const mine = join(root, '.night-run', 'mine');
+    mkdirSync(mine, { recursive: true });
+    writeLog('runner-old.log', `${declares(PID, mine)}${OK_LINE}`, 1000);
+    writeLog('runner-new.log', `took over a stale sentinel left by pid ${PID}\n${OK_LINE}`, 2000);
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: runner-old\.log/);
+    expect(r.out.text).not.toMatch(/runner-new\.log/);
+  });
+
+  // Anchoring, made load-bearing. `status` prints tails prefixed `  | `, so a pasted or re-logged
+  // status output carries a VERBATIM declaration line that belongs to some other run. Same hazard
+  // `readVerdict` already guards mid-line ("does not read a quoted mention mid-line as a verdict").
+  it('does not read a quoted declaration mid-line as this log’s own', async () => {
+    claim(PID);
+    const mine = join(root, '.night-run', 'mine');
+    mkdirSync(mine, { recursive: true });
+    writeLog('runner-old.log', `${declares(PID, mine)}${OK_LINE}`, 1000);
+    writeLog('runner-new.log', `  | ${declares(PID, join(root, '.night-run', 'elsewhere'))}${OK_LINE}`, 2000);
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: runner-old\.log/);
+    expect(r.out.text).not.toMatch(/runner-new\.log/);
+  });
+
+  // The sibling half of the same mtime defect: the log and the stamp directory were independent
+  // newest-of picks, so the live tail could come from a run the log never mentioned.
+  it('reads the live tail from the DECLARED directory, not the newest stamp directory', async () => {
+    claim(PID);
+    const mine = join(root, '.night-run', '2026-01-01T00-00-00-000Z');
+    const newer = join(root, '.night-run', '2026-09-09T00-00-00-000Z');
+    mkdirSync(mine, { recursive: true });
+    mkdirSync(newer, { recursive: true });
+    writeFileSync(join(mine, `${A}.live.log`), 'the run that is actually live\n');
+    writeFileSync(join(newer, `${A}.live.log`), 'a later unrelated run\n');
+    writeLog('runner-a.log', `${declares(PID, mine)}${OK_LINE}\n--- ${A}  (was todo)\n`, 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(/the run that is actually live/);
+    expect(r.out.text).not.toMatch(/a later unrelated run/);
+  });
+
+  it('says the live tail is not there yet when the declared directory holds nothing', async () => {
+    claim(PID);
+    writeLog('runner-a.log', `${declares(PID, join(root, '.night-run', 'gone'))}${OK_LINE}\n--- ${A}  (was todo)\n`, 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(new RegExp(`live tail: none yet for ${A}`));
+  });
+
+  // The other side of the branch: with no live owner there is no pid to anchor on, so the newest
+  // log is the honest answer — and it must say that is what it is.
+  it('falls back to the newest log ONLY when the sentinel names no pid at all', async () => {
+    writeLog('runner-old.log', OK_LINE, 1000);
+    writeLog('runner-new.log', `${OK_LINE}\n--- ${A}  (was todo)\n`, 2000);
+    const r = await run();
+    expect(r.out.text).toMatch(/sentinel: NOT armed/);
+    expect(r.out.text).toMatch(/runner log: runner-new\.log \(newest — the sentinel names no pid to attribute it to\)/);
+    expect(r.out.text).not.toMatch(/in flight:/);
+  });
+
+  // Review, MEDIUM: `dead`, `foreign` and `unknown-command` all carry a pid, so reaching for the
+  // newest in those states reproduces this ticket's own defect. Reachable: A is live, B is refused
+  // and writes its log, then A crashes — owner `dead`, newest log B's `Aborting`.
+  it.each([
+    ['dead', { alive: () => false }, /is GONE/],
+    ['not confirmable as a night run', { commandOf: () => '/Applications/SomeEditor -w' }, /stale, reused pid/],
+    ['unreadable by ps', { commandOf: () => null }, /command could not be read/],
+  ])('attributes the owner’s own log when the owner is %s', async (_what, over, banner) => {
+    claim(PID);
+    const mine = join(root, '.night-run', 'mine');
+    mkdirSync(mine, { recursive: true });
+    writeLog('runner-mine.log', `${declares(PID, mine)}${OK_LINE}\n--- ${A}  (was todo)\n`, 1000);
+    writeLog('runner-refused.log', `pre-flight FAILED: another night run (pid ${PID}) already holds the sentinel\nAborting; no tickets were run.\n`, 2000);
+    const r = await run(over);
+    expect(r.out.text).toMatch(banner);
+    expect(r.out.text).toMatch(/runner log: runner-mine\.log/);
+    expect(r.out.text).not.toMatch(/Aborting; no tickets were run/);
+    // Attribution is not liveness: only a confirmed live run may claim a ticket is in flight.
+    expect(r.out.text).not.toMatch(/in flight:/);
+  });
+
+  // Review, LOW: `readdirSync` throwing collapsed to `[]`, so status asserted "and none is present"
+  // about a directory it never read. A file where the directory belongs makes readdir throw ENOTDIR.
+  it('says the directory could not be read rather than reporting no logs', async () => {
+    rmSync(join(root, '.night-run'), { recursive: true, force: true });
+    writeFileSync(join(root, '.night-run'), 'not a directory\n');
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: UNKNOWN/);
+    expect(r.out.text).toMatch(/could not be read/);
+    expect(r.out.text).toMatch(/not a report that none exists/);
+    expect(r.out.text).not.toMatch(/none in \.night-run/);
+    expect(r.out.text).not.toMatch(/and none is present/);
+  });
+
+  // Review, LOW: `openLog` is append-mode, so one file can carry two runs. Taking the FIRST
+  // declaration let a finished run's line hide the current owner's, further down the same file.
+  it('reads the LAST declaration in a log two runs appended to', async () => {
+    claim(PID);
+    const mine = join(root, '.night-run', 'mine');
+    mkdirSync(mine, { recursive: true });
+    writeLog('runner-shared.log', `${declares(PID + 1, join(root, '.night-run', 'old'))}${OK_LINE}${declares(PID, mine)}${OK_LINE}`, 1000);
+    const r = await run();
+    expect(r.out.text).toMatch(/runner log: runner-shared\.log/);
+    expect(r.out.text).not.toMatch(/NOT identified/);
+  });
+});
+
+// The seam, both halves driven for real: night-run.mjs WRITES the declaration and night-control.mjs
+// PARSES it. Asserting the format in either file alone would stay green while the other drifted —
+// an em dash swapped for a hyphen on one side is a silent return to attribution by mtime.
+describe('the declaration round trip — the runner declares, status attributes', () => {
+  const seed = (id, status) =>
+    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+  const passingProbe = () => {
+    let call = 0;
+    return () => Promise.resolve(call++ === 0
+      ? { code: 0, out: 'BLOCKED', capped: false }
+      : { code: 0, out: '', capped: false });
+  };
+
+  it('status finds the run directory the runner itself announced', async () => {
+    seed(A, 'todo');
+    const runSession = (id) => { seed(id, 'qa'); return Promise.resolve({ code: 0, out: '', capped: false }); };
+
+    // Capture exactly what the runner puts on stdout — in production the launcher redirects that
+    // straight into runner-<stamp>.log, which is the file status then reads.
+    const written = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (t) => { written.push(String(t)); return true; };
+    try {
+      await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: passingProbe(), runSession });
+    } finally {
+      process.stdout.write = realWrite;
+    }
+    const runnerStdout = written.join('');
+    writeFileSync(join(root, '.night-run', 'runner-real.log'), runnerStdout);
+
+    // The runner disarmed on its way out; re-arm with THIS process's pid so status sees a live owner
+    // whose declaration is the one the runner actually emitted.
+    claim(process.pid);
+    const h = harness();
+    h.deps.commandOf = () => `node ${join(root, 'scripts', 'night-run.mjs')} ${A}`;
+    await main(['status'], h.deps);
+
+    expect(h.out.text).toMatch(/runner log: runner-real\.log/);
+    expect(h.out.text).not.toMatch(/NOT identified/);
+    // The directory in the declaration is the one the runner made and wrote its summary into.
+    const declaredDir = /^night-run pid \d+ — logs (.+)$/m.exec(runnerStdout)?.[1];
+    expect(declaredDir).toBeTruthy();
+    expect(existsSync(join(declaredDir, 'summary.json'))).toBe(true);
   });
 });
 

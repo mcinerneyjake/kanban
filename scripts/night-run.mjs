@@ -558,6 +558,12 @@ export async function main(
     const stamp = startedAt.replace(/[:.]/g, '-');
     const logDir = join(root, '.night-run', stamp);
     mkdirSync(logDir, { recursive: true });
+    // The link `night:status` attributes a log by. The launcher owns `runner-<stamp>.log` and the
+    // runner owns `logDir`, and until this line nothing tied either to the pid in ACTIVE — so status
+    // picked a log by mtime and showed a REFUSED launch's "Aborting; no tickets were run" under a
+    // healthy run's banner (tkt-166e6cfe2e2c). Written after the claim, so only a pid that really
+    // owns the sentinel ever declares itself.
+    process.stdout.write(`night-run pid ${process.pid} — logs ${logDir}\n`);
 
     // Rewritten after EVERY ticket rather than once at the end: the nights worth reading are the ones
     // that died mid-queue, and a summary written only on the way out is exactly the one they never
