@@ -39,6 +39,46 @@ describe('decide() — dimension 1: sentinel present vs absent', () => {
   });
 });
 
+// tkt-c248cfbc5d8c — ACTIVE became a directory of per-run claims so runs can overlap. The guard's
+// predicate is the one thing every run's gate now rests on, so each shape it can meet is a case.
+describe('nightRunActive() — dimension 10: the claims directory', () => {
+  let claims;
+  beforeAll(() => {
+    claims = join(tmp, 'CLAIMS');
+    mkdirSync(claims);
+  });
+
+  it('an EMPTY claims directory is not active — every run has disarmed', () => {
+    expect(nightRunActive(claims)).toBe(false);
+    expect(decide(payload('gh pr merge 12'), claims).blocked).toBe(false);
+  });
+
+  it('one claim is active, and blocks the merge', () => {
+    writeFileSync(join(claims, '4242'), '4242\n');
+    try {
+      expect(nightRunActive(claims)).toBe(true);
+      expect(decide(payload('gh pr merge 12'), claims).blocked).toBe(true);
+    } finally {
+      rmSync(join(claims, '4242'));
+    }
+  });
+
+  // Whatever is in there counts: the guard never judges liveness or names, because a claim it could
+  // not read as a pid is still not a directory it can call empty.
+  it('an entry that is not a pid still arms the gate', () => {
+    writeFileSync(join(claims, '.DS_Store'), '');
+    try {
+      expect(nightRunActive(claims)).toBe(true);
+    } finally {
+      rmSync(join(claims, '.DS_Store'));
+    }
+  });
+
+  it('the single-owner FILE an older runner writes is still active', () => {
+    expect(nightRunActive(present)).toBe(true);
+  });
+});
+
 describe('decide() — dimension 2: merge verb vs read verb', () => {
   it.each(['gh pr view 12', 'gh pr diff 12', 'gh pr list', 'gh pr checks 12'])(
     'permits the read %s even while active',

@@ -238,6 +238,12 @@ other's in-flight edits. Use `EnterWorktree`/`ExitWorktree`, not a hand-rolled c
 - **`node_modules` needs no handling** — **except** a ticket bumping a dependency, which must
   `npm install` *in* the worktree or the suite proves nothing.
 - **Two dev servers: set `KANBAN_PORT_OFFSET`** — it shifts the API and Vite ports **together**.
+- **A night run makes its own worktree** — `.claude/worktrees/night-<stamp>`, detached at
+  `origin/main`, `node_modules` **linked** to the primary's (so a dependency bump there installs into
+  the primary's tree) and `.env` copied in; every session it drives works there. A run removes it
+  only when clean — one left behind holds a halted ticket's uncommitted work, so read it before
+  removing it (`tkt-c248cfbc5d8c`). Inside any worktree `git switch main` is refused while the
+  primary holds `main`: branch from `origin/main` after a fetch.
 - **`gh pr merge --delete-branch` errors from a worktree and the merge still landed. Do not retry.**
   Confirm `gh pr view <n> --json state` is `MERGED`, then `git push origin --delete <branch>` and
   `git pull --ff-only` in the *primary* checkout. The local branch survives; no agent can remove it.

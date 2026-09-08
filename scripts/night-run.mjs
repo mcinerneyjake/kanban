@@ -14,9 +14,12 @@
 // WHY A TRANSITION AND NOT AN ABSOLUTE READING: a ticket already in `qa` would score as success
 // without the run having done anything.
 
-import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, appendFileSync, rmSync, mkdirSync, accessSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import {
+  readFileSync, writeFileSync, appendFileSync, rmSync, rmdirSync, mkdirSync, accessSync, readdirSync,
+  existsSync, symlinkSync, copyFileSync, unlinkSync,
+} from 'node:fs';
+import { join, dirname, relative } from 'node:path';
 import { primaryRoot } from '../.claude/hooks/guard-unattended-merge.mjs';
 
 export const USAGE = 'usage: npm run night -- <ticket-id>...';
@@ -315,15 +318,50 @@ export function fileHere(path) {
   }
 }
 
-export function ownerOf(root) {
+export const claimPath = (root, pid) => join(sentinelPaths(root).active, String(pid));
+
+// A claim file is named by its pid, exactly: `parseInt` would read `123abc` as 123 and sweep or
+// signal a pid nobody claimed.
+const parsePid = (raw) => {
+  const text = String(raw ?? '').trim();
+  const pid = Number.parseInt(text, 10);
+  return Number.isInteger(pid) && pid > 0 && String(pid) === text ? pid : null;
+};
+
+/**
+ * Every claim on the sentinel. ACTIVE is a DIRECTORY of per-run claim files named by pid
+ * (tkt-c248cfbc5d8c), so more than one run can hold the gate while each keeps its own owner
+ * identity, liveness and takeover. A single-owner FILE there is `legacy` — a runner from before the
+ * change — and is read so it is honoured while its owner lives. `unreadable` is anything present
+ * that cannot be listed; every caller treats it as held.
+ */
+export function readClaims(root) {
+  const { active } = sentinelPaths(root);
+  let entries;
   try {
-    const pid = Number.parseInt(readFileSync(sentinelPaths(root).active, 'utf8').trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    entries = readdirSync(active);
   } catch (err) {
-    if (err?.code === 'ENOENT') return null;
-    return null;
+    if (err?.code === 'ENOENT') return { kind: 'absent', pids: [], junk: [] };
+    if (err?.code === 'ENOTDIR') {
+      let legacyPid = null;
+      try {
+        legacyPid = parsePid(readFileSync(active, 'utf8'));
+      } catch { /* present but unreadable: no owner to report */ }
+      return { kind: 'legacy', pids: legacyPid === null ? [] : [legacyPid], junk: [], legacyPid };
+    }
+    return { kind: 'unreadable', pids: [], junk: [] };
   }
+  const pids = [];
+  const junk = [];
+  for (const name of entries) {
+    const pid = parsePid(name);
+    if (pid === null) junk.push(name);
+    else pids.push(pid);
+  }
+  return { kind: 'dir', pids, junk };
 }
+
+export const claimHeld = (root, pid) => readClaims(root).pids.includes(pid);
 
 // EPERM means the pid exists and belongs to somebody else — still alive, so still holding the gate.
 export function pidAlive(pid, kill = process.kill.bind(process)) {
@@ -335,59 +373,126 @@ export function pidAlive(pid, kill = process.kill.bind(process)) {
   }
 }
 
+export const defaultCommandOf = (pid) => {
+  const res = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  if (res.status !== 0 || !res.stdout?.trim()) return null;
+  return res.stdout.trim();
+};
+
 /**
- * Exclusive claim. Two runners sharing one sentinel is not a corner case: the first draft disarmed
- * and re-armed unconditionally, so a second `npm run night` deleted the first one's gate mid-queue
- * and its live sessions could merge (review, HIGH). `wx` makes the claim atomic; a sentinel whose
- * owner is gone is a leak from a crashed run and is taken over, which is also the only thing that
- * stops one crash wedging every later merge.
+ * Is a claim's pid a live NIGHT RUN? `pidAlive` alone answers the wrong question: pids are reused, so
+ * a crashed run's number can belong to somebody's editor — and a claim read that way is swept by
+ * nobody, keeps the pre-flight's disarmed half skipped every night, and holds STOP unswept forever
+ * (review, CONFIRMED). A command `ps` cannot read is "cannot rule out a run" and stays alive.
  */
-export function claimSentinel(root, { pid = process.pid, alive = pidAlive } = {}) {
-  const { active } = sentinelPaths(root);
-  mkdirSync(join(root, '.night-run'), { recursive: true });
+export function runAlive(pid, { alive = pidAlive, commandOf = defaultCommandOf } = {}) {
+  if (!alive(pid)) return false;
+  const cmd = commandOf(pid);
+  return cmd === null || cmd.includes('night-run.mjs');
+}
+
+// Whether any OTHER run still holds the gate. Liveness matters: a dead claim is a leak for the next
+// claimer to sweep, not a run to defer to.
+export function othersLive(root, { pid = process.pid, alive = runAlive } = {}) {
+  return readClaims(root).pids.some((p) => p !== pid && alive(p));
+}
+
+// Points this run's claim at its evidence, for `night:status`. The filename stays the identity; the
+// content is advisory, and a reader that cannot parse it loses only the pointers.
+export function noteClaim(root, info, { pid = process.pid } = {}) {
   try {
-    writeFileSync(active, `${pid}\n`, { flag: 'wx' });
-    return { ok: true };
-  } catch (err) {
-    if (err?.code !== 'EEXIST') return { ok: false, why: `could not claim the sentinel (${err?.code ?? err?.message})` };
-  }
-  const owner = ownerOf(root);
-  // Present but unreadable, or holding a pid we cannot parse: cannot rule out a live run → refuse.
-  if (owner === null) {
-    return { ok: false, why: `a sentinel already exists at ${active} and its owner could not be read — remove it by hand if no night run is going` };
-  }
-  if (alive(owner)) {
-    return { ok: false, why: `another night run (pid ${owner}) already holds the sentinel at ${active}` };
-  }
-  rmSync(active, { force: true });
+    writeFileSync(claimPath(root, pid), `${JSON.stringify({ pid, ...info })}\n`);
+  } catch { /* observability only */ }
+}
+
+export function readClaimNote(root, pid) {
   try {
-    writeFileSync(active, `${pid}\n`, { flag: 'wx' });
-    return { ok: true, tookOver: owner };
-  } catch (err) {
-    return { ok: false, why: `could not take over the stale sentinel (${err?.code ?? err?.message})` };
+    const parsed = JSON.parse(readFileSync(claimPath(root, pid), 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 }
 
+/**
+ * A claim is exclusive to its pid, never to the gate: `wx` makes the create atomic, and a claim whose
+ * owner is gone is a leak from a crashed run, swept on the way in — the only thing that stops one
+ * crash wedging every later run. A legacy single-owner file is exclusive by design and is honoured
+ * while its owner lives. The first draft of the sentinel disarmed and re-armed unconditionally, so a
+ * second runner deleted the first one's gate mid-queue and its sessions could merge (review, HIGH);
+ * per-pid claims are what let two runs share the gate without either being able to drop the other's.
+ */
+export function claimSentinel(root, { pid = process.pid, alive = runAlive } = {}) {
+  const { active } = sentinelPaths(root);
+  mkdirSync(join(root, '.night-run'), { recursive: true });
+  const found = readClaims(root);
+  const result = { ok: true };
+  if (found.kind === 'unreadable') {
+    return { ok: false, why: `a sentinel already exists at ${active} and could not be read — remove it by hand if no night run is going` };
+  }
+  if (found.kind === 'legacy') {
+    if (found.legacyPid === null) {
+      return { ok: false, why: `a sentinel already exists at ${active} and its owner could not be read — remove it by hand if no night run is going` };
+    }
+    if (alive(found.legacyPid)) {
+      return { ok: false, why: `another night run (pid ${found.legacyPid}) holds the sentinel at ${active} in its single-owner form — wait for it to finish` };
+    }
+    rmSync(active, { force: true });
+    result.tookOver = found.legacyPid;
+  }
+  const swept = found.kind === 'dir' ? found.pids.filter((p) => p !== pid && !alive(p)) : [];
+  for (const p of swept) rmSync(claimPath(root, p), { force: true });
+  if (swept.length > 0) result.swept = swept;
+  if (found.junk.length > 0) result.junk = found.junk;
+  // Two attempts, for two things that are not holders: another run's disarm dropping the emptied
+  // directory between the mkdir and the write, and a stale claim under this pid — reused after a
+  // crash — which is a leak rather than an owner.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(active, { recursive: true });
+    } catch (err) {
+      return { ok: false, why: `could not create the claims directory at ${active} (${err?.code ?? err?.message})` };
+    }
+    try {
+      writeFileSync(claimPath(root, pid), `${pid}\n`, { flag: 'wx' });
+      return result;
+    } catch (err) {
+      if (err?.code === 'EEXIST') rmSync(claimPath(root, pid), { force: true });
+      else if (err?.code !== 'ENOENT') return { ok: false, why: `could not claim the sentinel (${err?.code ?? err?.message})` };
+    }
+  }
+  return { ok: false, why: `could not claim the sentinel at ${active} — the claims directory kept changing under the write` };
+}
+
+// Writes this run's claim unconditionally. Never touches another run's.
 export function arm(root, { pid = process.pid } = {}) {
+  mkdirSync(sentinelPaths(root).active, { recursive: true });
+  writeFileSync(claimPath(root, pid), `${pid}\n`);
+  return claimPath(root, pid);
+}
+
+/**
+ * Removes only THIS run's claim, so a runner that loses a race — or shares the gate with another live
+ * run — can never disarm somebody else's. The directory is dropped once empty and left alone
+ * otherwise (ENOTEMPTY is another run's claim). Returns whether a claim of ours was removed.
+ */
+export function disarm(root, { pid = process.pid } = {}) {
   const { active } = sentinelPaths(root);
-  mkdirSync(join(root, '.night-run'), { recursive: true });
-  writeFileSync(active, `${pid}\n`);
-  return active;
+  const found = readClaims(root);
+  if (found.kind !== 'dir') return false;
+  const had = found.pids.includes(pid);
+  rmSync(claimPath(root, pid), { force: true });
+  try {
+    rmdirSync(active);
+  } catch { /* another run's claim, or already gone */ }
+  return had;
 }
 
-// Only ever removes a sentinel this process owns, so a runner that loses a race cannot disarm the
-// gate belonging to the run that won it.
-export function disarm(root, { pid = process.pid, force = false } = {}) {
-  if (!force && ownerOf(root) !== null && ownerOf(root) !== pid) return false;
-  rmSync(sentinelPaths(root).active, { force: true });
-  return true;
-}
-
-export function run(cmd, args, { capMs, graceMs = 10_000, onOutput, input, env } = {}) {
+export function run(cmd, args, { capMs, graceMs = 10_000, onOutput, input, env, cwd } = {}) {
   return new Promise((resolve) => {
     // Undefined `env` inherits, which every other caller here relies on: a bare `{}` would launch
-    // `claude` with no PATH.
-    const child = spawn(cmd, args, { stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'], env });
+    // `claude` with no PATH. Undefined `cwd` inherits too.
+    const child = spawn(cmd, args, { stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'], env, cwd });
     let out = '';
     let capped = false;
     let killer = null;
@@ -445,6 +550,13 @@ export const PROBE_CAP_MS = 180_000;
 // THE CONTROL THAT GATES THE NIGHT. Both halves are required: "blocks while armed" alone cannot
 // distinguish a working guard from one that blocks unconditionally.
 export async function preflightGuard(root, { spawnProbe = run, probeCapMs = PROBE_CAP_MS } = {}) {
+  // An entry that is not a claim is swept by nobody, so once every run has ended it alone keeps the
+  // gate armed for every session on the machine. Refused first, by name, while a human is watching.
+  const found = readClaims(root);
+  if (found.junk.length > 0) {
+    const names = found.junk.map((n) => JSON.stringify(n)).join(', ');
+    return { ok: false, why: `${names} in ${sentinelPaths(root).active} is not a claim; nothing sweeps it, so it would keep the gate armed after every run ends — remove it by hand` };
+  }
   // `gh pr merge 999999999` is gated by shape yet harmless if the guard is broken — it resolves to no
   // such PR and errors. A probe naming a real PR would merge it on exactly the run where the guard
   // has failed, making the control the incident.
@@ -476,13 +588,14 @@ export async function preflightGuard(root, { spawnProbe = run, probeCapMs = PROB
     return { ok: false, why: 'the merge guard did not block while a run was marked active', armedOut };
   }
 
-  disarm(root);
+  // The disarmed half hands the launcher an ABSENT sentinel path as its override, so it never reads
+  // the real gate and this run's claim stays where it is throughout — which is what lets it run beside
+  // other live runs (review, CONFIRMED: the first draft disarmed and re-armed around it for nothing).
   const hook = join(root, '.claude', 'hooks', 'guard-bash.mjs');
   const off = await spawnProbe(process.execPath, [hook, join(root, '.night-run', 'NOT-THERE')], {
     input: MERGE_PROBE_PAYLOAD,
     capMs: probeCapMs,
   });
-  arm(root);
   // The disarmed half's own output is carried too. Its failure message admits it cannot tell "stuck
   // on" from "the launcher failed to load", and `off.out` is the only thing that separates them — a
   // MODULE_NOT_FOUND stack against the guard's own marker. Reporting the ARMED reply on this path
@@ -531,7 +644,7 @@ export function sessionArgs(id) {
  * What tells a per-ticket session that the night run it can see is its own (tkt-c4743331eb03).
  *
  * From inside the child, a competing session and its own parent are indistinguishable by anything in
- * the repo: `.night-run/ACTIVE` holds a live pid, that pid's argv carries this ticket's id, and
+ * the repo: `.night-run/ACTIVE/` holds a claim for a live pid, that pid's argv carries this ticket's id, and
  * `<id>.live.log` — the child's own stdout tee — is growing as it looks. A session that found all
  * three read itself as a competitor and hard-stopped, leaving the ticket `todo` while the queue
  * exited 0. The discriminator cannot be derived from that state, so the runner hands it down.
@@ -539,8 +652,15 @@ export function sessionArgs(id) {
  * The ticket id, not just a flag: a child working B that stumbles on A's artifacts is looking at a
  * real competitor, and `NIGHT_RUN_TICKET` has to say which.
  */
-export function sessionEnv(id, { pid = process.pid, env = process.env } = {}) {
-  return { ...env, NIGHT_RUN_TICKET: id, NIGHT_RUN_PID: String(pid) };
+export function sessionEnv(id, { pid = process.pid, env = process.env, boardDir } = {}) {
+  // The session works in a worktree, where `tickets/` does not exist: without the override the board
+  // tools would resolve an empty board from cwd and every status would read null (tkt-c248cfbc5d8c).
+  return {
+    ...env,
+    NIGHT_RUN_TICKET: id,
+    NIGHT_RUN_PID: String(pid),
+    ...(boardDir ? { BOARD_DIR_OVERRIDE: boardDir } : {}),
+  };
 }
 
 // The live tee is what `night:status` tails to show a run is still moving; the authoritative record
@@ -550,13 +670,119 @@ export function sessionEnv(id, { pid = process.pid, env = process.env } = {}) {
 // cannot land on it and silently blank `capMs` — because the wiring below is otherwise unreachable
 // from a test without spawning `claude`: dropping the `env` line left the whole suite green, which is
 // how a per-session id goes missing unnoticed.
-export const defaultRunSession = (id, { capMs, logDir, exec = run }) => exec('claude', sessionArgs(id), {
+export const defaultRunSession = (id, { capMs, logDir, exec = run, cwd, boardDir }) => exec('claude', sessionArgs(id), {
   capMs,
-  env: sessionEnv(id),
+  cwd,
+  env: sessionEnv(id, { boardDir }),
   onOutput: logDir
     ? (chunk) => { try { appendFileSync(join(logDir, `${id}.live.log`), chunk); } catch { /* observability only */ } }
     : undefined,
 });
+
+export const GIT_CAP_MS = 60_000;
+
+// Capped and never interactive: this runs with the claim already held, so a fetch stalled on the
+// network or a credential prompt would arm the gate for every session on the machine with nothing
+// running and the event loop blocked (review, CONFIRMED).
+const defaultGit = (cwd, args) => {
+  const res = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: GIT_CAP_MS,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  const failure = res.error ? `${res.error.code ?? res.error.message}` : '';
+  return { code: res.status ?? -1, out: `${res.stdout ?? ''}${res.stderr ?? ''}${failure}` };
+};
+
+export const runWorktreePath = (root, stamp) => join(root, '.claude', 'worktrees', `night-${stamp}`);
+
+// What a session needs that a checkout does not carry — every one gitignored, so none can ride into
+// a commit. Copied, never linked: a session editing its copy must not be editing the primary's. The
+// skill's repo map is read under CLAUDE_PROJECT_DIR, which is the worktree, and §1 hard-stops
+// without it — every session of the first night would have stopped before its ticket (review).
+const PROVISIONED = [
+  '.env',
+  join('.claude', 'settings.local.json'),
+  join('.claude', 'skills', 'kanban-workflow', 'repos.local.json'),
+];
+
+/**
+ * One worktree per run, so two runs — or a run and an interactive session — never share a working
+ * tree (tkt-c248cfbc5d8c). Detached at a freshly fetched origin/main: `main` itself is normally
+ * checked out in the primary and cannot be checked out twice. `node_modules` is LINKED to the
+ * primary's rather than installed: an install per run costs minutes, and the primary's tree is what
+ * a session used before this change anyway.
+ */
+export function createRunWorktree(root, stamp, { git = defaultGit } = {}) {
+  const path = runWorktreePath(root, stamp);
+  const fetch = git(root, ['fetch', '-q', 'origin', 'main']);
+  if (fetch.code !== 0) {
+    return { ok: false, why: `could not fetch origin/main for the run's worktree (${fetch.out.trim() || `exit ${fetch.code}`})` };
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const add = git(root, ['worktree', 'add', '-q', '--detach', path, 'origin/main']);
+  if (add.code !== 0) {
+    return { ok: false, why: `could not create the run's worktree at ${path} (${add.out.trim() || `exit ${add.code}`})` };
+  }
+  const provisioned = [];
+  try {
+    if (existsSync(join(root, 'node_modules'))) {
+      symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'), 'dir');
+      provisioned.push(join(path, 'node_modules'));
+    }
+    for (const rel of PROVISIONED) {
+      if (!existsSync(join(root, rel))) continue;
+      copyFileSync(join(root, rel), join(path, rel));
+      provisioned.push(join(path, rel));
+    }
+  } catch (err) {
+    for (const p of provisioned) {
+      try {
+        unlinkSync(p);
+      } catch { /* best effort; --force below removes the tree */ }
+    }
+    git(root, ['worktree', 'remove', '--force', path]);
+    return { ok: false, why: `could not provision the run's worktree at ${path} (${err?.code ?? err?.message})` };
+  }
+  return { ok: true, path, provisioned };
+}
+
+/**
+ * Removes the run's worktree only when it is clean. A dirty one is a halted ticket's uncommitted work
+ * and is KEPT, named, for the human. The provisioned files are unlinked first and by hand: the
+ * settings copy is untracked and would read as dirt, and the node_modules LINK must never be followed
+ * into the primary's directory — pinned by a test against real git rather than trusted.
+ */
+export function removeRunWorktree(root, { path, provisioned = [] }, { git = defaultGit } = {}) {
+  const status = git(path, ['status', '--porcelain']);
+  if (status.code !== 0) {
+    return { removed: false, why: `its state could not be read (${status.out.trim() || `exit ${status.code}`})` };
+  }
+  const ours = new Set(provisioned.map((p) => relative(path, p)));
+  const dirt = status.out.split('\n').filter((l) => l.trim() !== '' && !ours.has(l.slice(3).trim()));
+  if (dirt.length > 0) return { removed: false, why: `it is not clean: ${dirt.join('; ')}` };
+  // A session that took EnterWorktree from inside creates a NESTED worktree under this one, and
+  // `.claude/worktrees` is gitignored, so its uncommitted work is invisible to the porcelain above and
+  // `git worktree remove` would delete it (review, PLAUSIBLE — mechanism measured against real git).
+  const list = git(root, ['worktree', 'list', '--porcelain']);
+  if (list.code !== 0) {
+    return { removed: false, why: `the worktree list could not be read (${list.out.trim() || `exit ${list.code}`})` };
+  }
+  const nested = list.out.split('\n')
+    .filter((l) => l.startsWith('worktree '))
+    .map((l) => l.slice('worktree '.length))
+    .filter((p) => p !== path && p.startsWith(`${path}/`));
+  if (nested.length > 0) return { removed: false, why: `it contains a nested worktree: ${nested.join(', ')}` };
+  for (const p of provisioned) {
+    try {
+      unlinkSync(p);
+    } catch { /* already gone */ }
+  }
+  const res = git(root, ['worktree', 'remove', path]);
+  if (res.code !== 0) return { removed: false, why: res.out.trim() || `exit ${res.code}` };
+  return { removed: true };
+}
 
 // `Number(process.env.CAP_SECONDS ?? 2700) * 1000` yields NaN for a typo, and NaN is falsy — so
 // `CAP_SECONDS=abc` silently removed the cap altogether (review, MEDIUM). An unreadable value is a
@@ -572,7 +798,10 @@ export function capMsFrom(raw) {
 
 export async function main(
   argv = process.argv.slice(2),
-  boardDir = process.cwd(),
+  // An operator's own override is the board; it must not be clobbered by cwd on its way to the
+  // sessions (review). Where neither is right — a bare `npm run night` from an interactive worktree —
+  // is tkt-03f3b545fdcf.
+  boardDir = process.env.BOARD_DIR_OVERRIDE || process.cwd(),
   {
     spawnProbe = run,
     runSession = defaultRunSession,
@@ -580,6 +809,9 @@ export async function main(
     env = process.env,
     exec = run,
     writeProbeLog = writeFileSync,
+    createWorktree = createRunWorktree,
+    removeWorktree = removeRunWorktree,
+    alive = runAlive,
   } = {},
 ) {
   const queue = argv.filter((a) => /^tkt-[0-9a-f]{12}$/.test(a));
@@ -603,13 +835,16 @@ export async function main(
     return EXIT.preflight;
   }
 
-  const claim = claimSentinel(root);
+  const claim = claimSentinel(root, { alive });
   if (!claim.ok) {
     process.stderr.write(`pre-flight FAILED: ${claim.why}\nAborting; no tickets were run.\n`);
     return EXIT.preflight;
   }
   if (claim.tookOver) {
-    process.stdout.write(`took over a stale sentinel left by pid ${claim.tookOver}\n`);
+    process.stdout.write(`took over a stale single-owner sentinel left by pid ${claim.tookOver}\n`);
+  }
+  if (claim.swept) {
+    process.stdout.write(`swept stale claim(s) left by dead pid(s) ${claim.swept.join(', ')}\n`);
   }
 
   const { stop } = sentinelPaths(root);
@@ -622,20 +857,50 @@ export async function main(
       process.stdout.write(`WARNING: the STOP file could NOT be removed (${err?.code ?? err?.message}) — the next run will stop immediately until it is deleted by hand\n`);
     }
   };
-  // disarm first — it narrows the check-then-write race with `night:stop` — and the sweep in a finally,
-  // since it never throws and a disarm that does must not skip it.
-  const cleanup = () => { try { disarm(root); } finally { sweepStop(); } };
+  let worktree = null;
+  let summary = null;
+  let saveSummary = () => {};
+  // On the signal and crash paths the `claude` child is not killed by this process and may outlive
+  // it (night-control.mjs: only a group leader takes it down), so a clean-looking worktree can still
+  // be a live session's cwd. Interrupted, it is KEPT and said so (review, CONFIRMED).
+  const releaseWorktree = ({ interrupted = false } = {}) => {
+    if (!worktree) return;
+    const made = worktree;
+    worktree = null;
+    const res = interrupted
+      ? { removed: false, why: 'the run was interrupted, and the session it was driving may still be working in it' }
+      : removeWorktree(root, made);
+    process.stdout.write(res.removed
+      ? `worktree removed: ${made.path}\n`
+      : `worktree KEPT at ${made.path} — ${res.why}\n`);
+    if (summary) {
+      summary.worktree = { path: made.path, removed: res.removed, ...(res.removed ? {} : { why: res.why }) };
+      saveSummary();
+    }
+  };
+  // disarm first — it narrows the check-then-write race with `night:stop` — and the rest in a finally,
+  // since none of it throws and a disarm that does must not skip it. STOP is swept only by the LAST
+  // live runner out: swept by the first, a stop addressed to every run would end one and be lost on
+  // the others (tkt-c248cfbc5d8c).
+  const cleanup = ({ interrupted = false } = {}) => {
+    try {
+      disarm(root);
+    } finally {
+      if (!othersLive(root, { alive })) sweepStop();
+      releaseWorktree({ interrupted });
+    }
+  };
   // SIGHUP is the likeliest overnight death of all — an ssh session dropping — and its default action
   // terminates without running the finally, leaking a sentinel that blocks every later merge
   // (review, MEDIUM/HIGH). Listeners are removed again below: a leak per call trips node's
   // max-listeners warning once anything drives main more than ten times.
   const bySignal = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
   const handlers = Object.entries(bySignal).map(([signal, code]) => {
-    const fn = () => { cleanup(); process.exit(code); };
+    const fn = () => { cleanup({ interrupted: true }); process.exit(code); };
     process.on(signal, fn);
     return [signal, fn];
   });
-  const onCrash = (err) => { cleanup(); process.stderr.write(`night run crashed: ${err?.stack ?? err}\n`); process.exit(EXIT.stopped); };
+  const onCrash = (err) => { cleanup({ interrupted: true }); process.stderr.write(`night run crashed: ${err?.stack ?? err}\n`); process.exit(EXIT.stopped); };
   process.on('uncaughtException', onCrash);
   process.on('unhandledRejection', onCrash);
 
@@ -657,8 +922,8 @@ export async function main(
     // Rewritten after EVERY ticket rather than once at the end: the nights worth reading are the ones
     // that died mid-queue, and a summary written only on the way out is exactly the one they never
     // reach. Generated straight from `classify`, never transcribed (tkt-4ea4e17f1419 reads this).
-    const summary = { startedAt, queue, results: [], exit: null };
-    const saveSummary = () => {
+    summary = { startedAt, queue, results: [], exit: null };
+    saveSummary = () => {
       try {
         writeFileSync(join(logDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
       } catch (err) {
@@ -690,21 +955,48 @@ export async function main(
       );
       return EXIT.preflight;
     }
+    // A STOP already here was never addressed to this run — another live run's, still in force, or a
+    // stop issued while this one was starting — and a night that runs nothing must not be announced
+    // as started, so this is read BEFORE the verdict line `night:start` accepts (review). cleanup()
+    // sweeps it on the way out once no live run is left to consume it.
+    if (fileHere(stop)) {
+      const held = othersLive(root, { alive })
+        ? 'another live run has not consumed it yet, so it stays'
+        : 'no other run is live, so it was meant for this one or left over, and is swept on exit';
+      process.stdout.write(`STOP file present before any ticket — a stop is in force (${held}); nothing was run\n`);
+      summary.exit = EXIT.stopped;
+      saveSummary();
+      return EXIT.stopped;
+    }
+    // Made only once the guard is proven, and BEFORE the verdict line: a worktree that cannot be made
+    // must read to `night:start` as the pre-flight failure it is, not as a run that passed and died.
+    const made = createWorktree(root, stamp);
+    if (!made.ok) {
+      summary.exit = EXIT.preflight;
+      saveSummary();
+      process.stderr.write(`pre-flight FAILED: ${made.why}\nAborting; no tickets were run.\n`);
+      return EXIT.preflight;
+    }
+    worktree = made;
+    summary.worktree = { path: made.path, removed: null };
+    saveSummary();
+    noteClaim(root, { logDir, worktree: made.path });
     process.stdout.write(`pre-flight: merge guard arms and disarms correctly (probes: ${saved})\n`);
+    process.stdout.write(`worktree: ${made.path} — every session this run drives works there, detached at origin/main\n`);
 
     let exit = EXIT.ok;
     let neverStarted = 0;
     for (const id of queue) {
       if (fileHere(stop)) {
-        // Nothing used to remove it, so a leftover STOP made every LATER run break here and report a
-        // clean night; cleanup() in the finally sweeps it now, on this path as on every other.
+        // Between tickets this is a stop addressed to a running queue, and ending is the clean
+        // outcome; cleanup() sweeps it on the way out once no live run is left to consume it.
         process.stdout.write('STOP file present — ending the queue cleanly\n');
         break;
       }
       const before = readStatus(boardDir, id);
       process.stdout.write(`\n--- ${id}  (was ${before ?? 'unreadable'})\n`);
 
-      const res = await runSession(id, { capMs: cap.capMs, logDir, exec });
+      const res = await runSession(id, { capMs: cap.capMs, logDir, exec, cwd: made.path, boardDir });
       writeFileSync(join(logDir, `${id}.log`), res.out);
 
       // A session that could not be spawned at all would otherwise read as "never started" and march
