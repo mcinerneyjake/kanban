@@ -54,20 +54,28 @@ so, if it was named from memory.
   refuse: naming a ticket is an override, and a `done` ticket with follow-up work or an
   `in-progress` one this session is resuming are both legitimate reasons to be here.
 - **A night run holding this ticket may be your own parent — check before you believe otherwise, and
-  check BOTH variables.** Nothing in the repo tells the two apart: `.night-run/ACTIVE` holds a live
-  pid, that pid's argv carries this ticket's id, and `.night-run/<run>/<id>.live.log` grows while you
-  watch it. All three are equally true of a competing session and of the runner that spawned you. The
-  runner passes `NIGHT_RUN_TICKET` and `NIGHT_RUN_PID` down to each per-ticket session; read them by
-  shelling out, since neither is visible to you except through a command:
+  check BOTH variables.** Nothing in the repo tells the two apart: `.night-run/ACTIVE/` holds one
+  claim file per live runner, named by its pid, that pid's argv carries this ticket's id, and
+  `.night-run/<run>/<id>.live.log` grows while you watch it. All three are equally true of a
+  competing session and of the runner that spawned you. The runner passes `NIGHT_RUN_TICKET` and
+  `NIGHT_RUN_PID` down to each per-ticket session; read them by shelling out, since neither is
+  visible to you except through a command. **Resolve the primary checkout first**: a night session
+  works in a worktree of its own (`tkt-c248cfbc5d8c`), where `.night-run/` does not exist, so a
+  relative read there answers `NONE` about a run that is very much going.
 
   ```bash
-  printf '%s|%s|%s\n' "${NIGHT_RUN_TICKET:-UNSET}" "${NIGHT_RUN_PID:-UNSET}" "$(cat .night-run/ACTIVE 2>/dev/null || echo NONE)"
+  primary="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+  printf '%s|%s|%s\n' "${NIGHT_RUN_TICKET:-UNSET}" "${NIGHT_RUN_PID:-UNSET}" "$(ls "$primary/.night-run/ACTIVE" 2>/dev/null || echo NONE)"
   ```
 
+  The third field lists the claim files, one pid per line; `NONE` means no claims directory at all,
+  and an empty field means an emptied one — no run either way.
+
   **You are the night run's own child only when `NIGHT_RUN_TICKET` names this ticket AND
-  `NIGHT_RUN_PID` equals the pid in `.night-run/ACTIVE`.** Then that pid is your parent and that log
-  is your own stdout: say so and get on with the work — do not stop, and do not ask the user to kill
-  it.
+  `NIGHT_RUN_PID` is one of the claim files listed.** Then that pid is your parent and that log is
+  your own stdout: say so and get on with the work — do not stop, and do not ask the user to kill
+  it. More than one claim is normal: night runs are concurrent, each in its own worktree, and the
+  other claims are other runs, not competitors for this ticket.
 
   **Anything else is a competing session and stops you**, including the two near-misses that look
   like a match. A **different** id is a different ticket's session. And a **pid mismatch on a matching
@@ -410,6 +418,13 @@ counter on any ticket that validates.
 
 Then cut the branch from a fresh `main` per the repo's convention (typically
 `<prefix>/<id>-<slug>`, `bug→fix · feature→feat · task→task · chore→chore`).
+
+**Inside a worktree, `main` is normally checked out in the primary and `git switch main` is refused
+as already checked out.** Branch from the remote instead: `git fetch origin main`, then
+`git switch -c <prefix>/<id>-<slug> --no-track origin/main` (without `--no-track` the new branch
+would track `origin/main` itself). Every night-run session is in a worktree
+(`tkt-c248cfbc5d8c`), and so is any session that took `EnterWorktree`; the `git switch -c` spelling
+below is unchanged, so the milestone still records.
 
 **Use the literal command spellings** `git switch -c`, `npm run typecheck`, `npm run lint`,
 `npm test`, `gh pr create` — the `track-steps` hook keys pipeline milestones off those exact strings

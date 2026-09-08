@@ -25,11 +25,12 @@
 // failure. Call with `timeout: 540000`, or pass `--no-wait`.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { openSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, realpathSync } from 'node:fs';
+import { openSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, realpathSync, rmSync, rmdirSync } from 'node:fs';
 import { join, dirname, resolve, sep, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  EXIT, PROBE_CAP_MS, sentinelPaths, ownerOf, pidAlive, fileHere, readStatus,
+  EXIT, PROBE_CAP_MS, GIT_CAP_MS, sentinelPaths, claimPath, readClaims, claimHeld, readClaimNote, pidAlive,
+  defaultCommandOf, fileHere, readStatus,
 } from './night-run.mjs';
 import { primaryRoot } from '../.claude/hooks/guard-unattended-merge.mjs';
 
@@ -45,8 +46,9 @@ export const CONTROL_USAGE =
 // run. Answering that in five seconds is the whole point of splitting the wait in two.
 export const CLAIM_WAIT_MS = 5_000;
 // Derived, never transcribed: preflightGuard runs two probes back to back, each capped at
-// PROBE_CAP_MS, plus a margin for process start-up.
-export const DEFAULT_WAIT_MS = PROBE_CAP_MS * 2 + 60_000;
+// PROBE_CAP_MS, then the run's worktree is fetched and made under GIT_CAP_MS, plus a margin for
+// process start-up.
+export const DEFAULT_WAIT_MS = PROBE_CAP_MS * 2 + GIT_CAP_MS + 60_000;
 const POLL_MS = 250;
 
 // The runner writes exactly one of these to stdout before it touches a ticket.
@@ -159,36 +161,50 @@ const defaultPgidOf = (pid) => {
   return Number.isInteger(pgid) && pgid > 0 ? pgid : null;
 };
 
-const defaultCommandOf = (pid) => {
-  const res = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
-  if (res.status !== 0 || !res.stdout?.trim()) return null;
-  return res.stdout.trim();
-};
-
 /**
- * Who holds the sentinel, and is it really a night run? `pidAlive` alone answers the wrong question:
- * pids are reused, so a dead runner's number can belong to somebody's editor and read as a healthy
- * night. Every "cannot tell" branch gets its own kind rather than folding into `live` — a status
- * that cannot confirm a night run must not report one. (The same hole inside `claimSentinel` is
+ * Who holds the sentinel, and are they really night runs? One verdict PER CLAIM, since more than one
+ * run may hold the gate (tkt-c248cfbc5d8c). `pidAlive` alone answers the wrong question: pids are
+ * reused, so a dead runner's number can belong to somebody's editor and read as a healthy night.
+ * Every "cannot tell" branch gets its own kind rather than folding into `live` — a status that
+ * cannot confirm a night run must not report one. (The same hole inside `claimSentinel` is
  * tkt-bbb2735702ba; this file does not touch it.)
  */
-export function ownerState(root, { alive = pidAlive, commandOf = defaultCommandOf } = {}) {
-  const { active } = sentinelPaths(root);
-  if (!fileHere(active)) return { kind: 'absent' };
-  const pid = ownerOf(root);
-  if (pid === null) return { kind: 'unreadable' };
-  if (!alive(pid)) return { kind: 'dead', pid };
-  const cmd = commandOf(pid);
-  if (cmd === null) return { kind: 'unknown-command', pid };
-  if (!cmd.includes('night-run.mjs')) return { kind: 'foreign', pid, cmd };
-  // Ids are read from whole ARGUMENTS after the runner path, never scraped from the command string:
-  // a checkout under `.claude/worktrees/tkt-<id>-slug` puts a ticket id in the path itself, and a
-  // free `matchAll` reports it as queued work that was never queued (measured on this ticket).
-  const argv = cmd.split(/\s+/);
-  const at = argv.findIndex((t) => t.includes('night-run.mjs'));
-  const queue = at === -1 ? [] : argv.slice(at + 1).filter((t) => /^tkt-[0-9a-f]{12}$/.test(t));
-  return { kind: 'live', pid, cmd, queue };
+export function claimStates(root, { alive = pidAlive, commandOf = defaultCommandOf } = {}) {
+  const found = readClaims(root);
+  const judge = (pid) => {
+    if (!alive(pid)) return { kind: 'dead', pid };
+    const cmd = commandOf(pid);
+    if (cmd === null) return { kind: 'unknown-command', pid };
+    if (!cmd.includes('night-run.mjs')) return { kind: 'foreign', pid, cmd };
+    // Ids are read from whole ARGUMENTS after the runner path, never scraped from the command string:
+    // a checkout under `.claude/worktrees/tkt-<id>-slug` puts a ticket id in the path itself, and a
+    // free `matchAll` reports it as queued work that was never queued (measured on this ticket).
+    const argv = cmd.split(/\s+/);
+    const at = argv.findIndex((t) => t.includes('night-run.mjs'));
+    const queue = at === -1 ? [] : argv.slice(at + 1).filter((t) => /^tkt-[0-9a-f]{12}$/.test(t));
+    // Only the two pointers are taken off the note. It is free-form JSON any session can write, and
+    // spread whole it could overwrite the verdict — a `kind: 'dead'` there would have `--now` sweep a
+    // live run's claim (review, CONFIRMED).
+    const note = readClaimNote(root, pid);
+    const pointers = Object.fromEntries(['logDir', 'worktree'].filter((k) => typeof note[k] === 'string').map((k) => [k, note[k]]));
+    return { kind: 'live', pid, cmd, queue, ...pointers };
+  };
+  if (found.kind === 'absent' || found.kind === 'unreadable') return { kind: found.kind, claims: [], junk: [] };
+  if (found.kind === 'legacy') {
+    return { kind: 'legacy', claims: [found.legacyPid === null ? { kind: 'unreadable' } : judge(found.legacyPid)], junk: [] };
+  }
+  const claims = found.pids.map(judge);
+  return { kind: claims.length === 0 && found.junk.length === 0 ? 'empty' : 'dir', claims, junk: found.junk };
 }
+
+const liveOf = (state) => state.claims.filter((c) => c.kind === 'live');
+
+const describeStale = (state) => (state.kind === 'unreadable'
+  ? 'unreadable'
+  : [
+    ...state.claims.map((c) => `${c.kind}${c.pid ? ` pid ${c.pid}` : ''}`),
+    ...state.junk.map((j) => `junk ${JSON.stringify(j)}`),
+  ].join(', '));
 
 const realSleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
@@ -278,7 +294,7 @@ async function start(args, deps) {
   out.write(`runner pid ${pid ?? '(none)'} — log ${logPath}\n`);
 
   const claimed = await pollUntil(
-    () => (spawnError ? 'error' : exited ? 'exited' : ownerOf(root) === pid ? 'claimed' : null),
+    () => (spawnError ? 'error' : exited ? 'exited' : claimHeld(root, pid) ? 'claimed' : null),
     { deadlineMs: CLAIM_WAIT_MS, sleep, now },
   );
   if (claimed === 'error') {
@@ -286,11 +302,12 @@ async function start(args, deps) {
     return EXIT.stopped;
   }
   if (claimed === 'exited' || claimed === null) {
-    const owner = ownerOf(root);
+    // The runner's own log carries the reason a claim was refused — a live single-owner sentinel from
+    // an older runner is the one case left, now that live claims coexist.
     const why = claimed === 'exited'
       ? `the runner exited immediately (code ${exited.code}, signal ${exited.signal ?? 'none'})`
       : `the runner did not claim the sentinel within ${CLAIM_WAIT_MS / 1000}s`;
-    err.write(`${why}${owner && owner !== pid ? ` — pid ${owner} already holds it` : ''}\n${readIfThere(logPath)}`);
+    err.write(`${why}\n${readIfThere(logPath)}`);
     return EXIT.stopped;
   }
 
@@ -311,20 +328,20 @@ async function start(args, deps) {
   // A passing pre-flight is necessary but NOT sufficient: the success line claims merges are gated
   // right now, so the sentinel must still be held by this child at the moment we say so.
   if (verdict === 'ok') {
-    const owner = ownerOf(root);
-    if (!exited && owner === pid) {
+    if (!exited && claimHeld(root, pid)) {
       out.write(
         `pre-flight confirmed — the merge guard blocks while armed and permits while disarmed.\n` +
         `night run started: pid ${pid}\n` +
         `queue: ${args.ids.join(' ')}\n` +
         `log: ${logPath}\n` +
-        `\`gh pr merge\` is now BLOCKED in ${root} until this run ends (npm run night:stop).\n`,
+        `\`gh pr merge\` is now BLOCKED in ${root} until every night run ends (npm run night:stop).\n`,
       );
       return EXIT.ok;
     }
+    const holders = readClaims(root).pids;
     err.write(
       `the runner passed its pre-flight and then STOPPED — NO night is running and merges are NOT gated.\n` +
-      `${owner === null ? 'The sentinel has been released.' : `The sentinel is now held by pid ${owner}.`}\n` +
+      `${holders.length === 0 ? 'No claim on the sentinel remains.' : `The sentinel is now held by pid ${holders.join(', ')}, not by this runner.`}\n` +
       `A leftover STOP file is the usual cause; check the log and start again.\nlog: ${logPath}\n${tail(readIfThere(logPath), 20).join('\n')}\n`,
     );
     return EXIT.preflight;
@@ -334,7 +351,8 @@ async function start(args, deps) {
   // is not broken, and killing a runner that is merely still probing would destroy the evidence.
   const log = readIfThere(logPath);
   if (verdict === 'failed' || verdict === 'exited') {
-    const state = ownerState(root, { alive, commandOf });
+    const state = claimStates(root, { alive, commandOf });
+    const live = liveOf(state);
     // The log is re-read because `exited` short-circuits the poll: the runner may have printed a
     // verdict in the same interval it died, and "exited having passed" reads very differently from
     // "exited saying nothing".
@@ -343,11 +361,13 @@ async function start(args, deps) {
       ? 'pre-flight FAILED'
       : `the runner exited ${late === 'ok' ? 'just after passing its pre-flight' : 'before reporting a pre-flight verdict'} (code ${exited?.code}, signal ${exited?.signal ?? 'none'})`;
     // Never point `--now` at a CONFIRMED live run: that would SIGTERM somebody else's healthy night
-    // to tidy up after ours (review, LOW).
-    const advice = state.kind === 'absent' ? ''
-      : state.kind === 'live'
-        ? `sentinel is held by a live night run (pid ${state.pid}) — leave it alone; it is not yours.\n`
-        : `sentinel still present (${state.kind}); clear it with: npm run night:stop -- --now\n`;
+    // to tidy up after ours (review, LOW). A live run wins over any stale claim beside it, because
+    // `--now` would reach both.
+    const advice = live.length > 0
+      ? `the sentinel is held by live night run(s) pid ${live.map((c) => c.pid).join(', ')} — leave them alone; they are not yours.\n`
+      : state.kind === 'absent' || state.kind === 'empty'
+        ? ''
+        : `sentinel still present (${describeStale(state)}); clear it with: npm run night:stop -- --now\n`;
     err.write(`${headline} — no night was started.\n${log}${advice}`);
     return EXIT.preflight;
   }
@@ -366,37 +386,57 @@ function status(deps) {
 
   const { active, stop } = sentinelPaths(root);
   const dir = join(root, '.night-run');
-  const state = ownerState(root, { alive, commandOf });
+  const state = claimStates(root, { alive, commandOf });
+  const live = liveOf(state);
   const lines = [`root: ${root}`];
 
-  if (state.kind === 'absent') {
-    lines.push('sentinel: NOT armed — no night run is active, and `gh pr merge` is not gated here.');
+  if (state.kind === 'absent' || state.kind === 'empty') {
+    const form = state.kind === 'empty' ? ' (the claims directory is present but empty)' : '';
+    lines.push(`sentinel: NOT armed${form} — no night run is active, and \`gh pr merge\` is not gated here.`);
   } else {
     let armedAt;
     try { armedAt = statSync(active).mtimeMs; } catch { armedAt = null; }
     const elapsed = armedAt === null ? 'unknown' : since(now() - armedAt);
-    lines.push(`sentinel: ARMED (${active}), ${elapsed} ago — \`gh pr merge\` is BLOCKED in this checkout.`);
-    switch (state.kind) {
-      case 'live':
-        lines.push(`owner: pid ${state.pid}, alive, running night-run.mjs`);
-        lines.push(`queue: ${state.queue.length ? state.queue.join(' ') : '(none named on its command line)'}`);
-        break;
-      case 'foreign':
-        lines.push(`owner: pid ${state.pid} is alive but is NOT a night run — stale, reused pid. Command: ${state.cmd}`);
-        lines.push('The gate is held by a sentinel nobody owns; clear it with `npm run night:stop -- --now`.');
-        break;
-      case 'unknown-command':
-        lines.push(`owner: pid ${state.pid} is alive but its command could not be read, so it cannot be confirmed as a night run.`);
-        break;
-      case 'dead':
-        lines.push(`owner: pid ${state.pid} is GONE — a crashed run left the gate armed. Clear it with \`npm run night:stop -- --now\`.`);
-        break;
-      default:
-        lines.push('owner: the sentinel exists but its pid could not be parsed — remove it by hand if no night run is going.');
+    // The directory's mtime moves with every claim, so this is claim churn rather than arming time.
+    lines.push(`sentinel: ARMED (${active}), claims last changed ${elapsed} ago — \`gh pr merge\` is BLOCKED in this checkout.`);
+    if (state.kind === 'unreadable') {
+      lines.push('owner: the sentinel exists but could not be read — remove it by hand if no night run is going.');
+    }
+    if (state.kind === 'legacy') {
+      lines.push('form: a single-owner file from a runner that predates per-run claims; a new run waits for it.');
+    }
+    // `--now` reaches EVERY claim, so a stale one beside a live run is not cleared with it.
+    const clearing = live.length > 0
+      ? 'It is swept by the next run to start; `npm run night:stop -- --now` would also STOP the live run(s) above.'
+      : 'Clear it with `npm run night:stop -- --now`.';
+    for (const c of state.claims) {
+      switch (c.kind) {
+        case 'live':
+          lines.push(`owner: pid ${c.pid}, alive, running night-run.mjs`);
+          lines.push(`queue: ${c.queue.length ? c.queue.join(' ') : '(none named on its command line)'}`);
+          if (c.worktree) lines.push(`worktree: ${c.worktree}`);
+          if (c.logDir) lines.push(...inFlightLines(root, c.logDir));
+          break;
+        case 'foreign':
+          lines.push(`owner: pid ${c.pid} is alive but is NOT a night run — stale, reused pid. Command: ${c.cmd}`);
+          lines.push(`The gate is held by a claim nobody owns, and \`--now\` refuses an unconfirmed pid; remove ${state.kind === 'legacy' ? active : claimPath(root, c.pid)} by hand.`);
+          break;
+        case 'unknown-command':
+          lines.push(`owner: pid ${c.pid} is alive but its command could not be read, so it cannot be confirmed as a night run.`);
+          break;
+        case 'dead':
+          lines.push(`owner: pid ${c.pid} is GONE — a crashed run left its claim behind. ${clearing}`);
+          break;
+        default:
+          lines.push('owner: the sentinel exists but its pid could not be parsed — remove it by hand if no night run is going.');
+      }
+    }
+    for (const j of state.junk) {
+      lines.push(`claim ${JSON.stringify(j)}: not a pid — it keeps the gate armed; remove ${join(active, j)} by hand.`);
     }
   }
 
-  lines.push(`STOP: ${fileHere(stop) ? `present (${stop}) — the queue ends after the ticket in flight` : 'absent'}`);
+  lines.push(`STOP: ${fileHere(stop) ? `present (${stop}) — every queue ends after its ticket in flight` : 'absent'}`);
 
   const log = newestMatching(dir, (n) => /^runner-.*\.log$/.test(n));
   if (!log) {
@@ -409,14 +449,15 @@ function status(deps) {
     const inFlight = [...text.matchAll(/^--- (tkt-[0-9a-f]{12})/gm)].at(-1)?.[1] ?? null;
     // Gated on a LIVE owner: the newest runner log outlives the run that wrote it, so after a
     // finished night this block cheerfully reported a ticket as "in flight" with nothing running
-    // (review, LOW). The log and the stamp directory are also independent newest-of picks.
-    if (inFlight && state.kind === 'live') {
+    // (review, LOW). The log and the stamp directory are also independent newest-of picks, so this
+    // is the fallback for a live claim that has not yet named its own run directory above.
+    if (inFlight && live.length > 0 && !live.some((c) => c.logDir)) {
       const board = readStatus(root, inFlight);
       lines.push(`in flight: ${inFlight} (board status now ${board ?? 'unreadable'})`);
       const runDir = newestMatching(dir, (n) => /^\d{4}-/.test(n));
-      const live = runDir ? readIfThere(join(dir, runDir.name, `${inFlight}.live.log`)) : '';
-      lines.push(live ? `live tail (${inFlight}.live.log):` : `live tail: none yet for ${inFlight}`);
-      lines.push(...tail(live, 12).map((l) => `  | ${l}`));
+      const tee = runDir ? readIfThere(join(dir, runDir.name, `${inFlight}.live.log`)) : '';
+      lines.push(tee ? `live tail (${inFlight}.live.log):` : `live tail: none yet for ${inFlight}`);
+      lines.push(...tail(tee, 12).map((l) => `  | ${l}`));
     }
   }
 
@@ -424,53 +465,113 @@ function status(deps) {
   return EXIT.ok;
 }
 
+// A claim that names its run directory is read there: the ticket whose live tee has no finished
+// `<id>.log` beside it yet is the one in flight.
+function inFlightLines(root, logDir) {
+  const lines = [`run dir: ${logDir}`];
+  let names;
+  try {
+    names = readdirSync(logDir);
+  } catch {
+    return [...lines, 'in flight: unknown — the run directory could not be read'];
+  }
+  const finished = new Set(names.filter((n) => /^tkt-[0-9a-f]{12}\.log$/.test(n)).map((n) => n.slice(0, 16)));
+  const inFlight = names
+    .filter((n) => /^tkt-[0-9a-f]{12}\.live\.log$/.test(n))
+    .map((n) => n.slice(0, 16))
+    .filter((id) => !finished.has(id))
+    .at(-1) ?? null;
+  if (!inFlight) return [...lines, 'in flight: none — between tickets, or still in pre-flight'];
+  const board = readStatus(root, inFlight);
+  lines.push(`in flight: ${inFlight} (board status now ${board ?? 'unreadable'})`);
+  const tee = readIfThere(join(logDir, `${inFlight}.live.log`));
+  lines.push(tee ? `live tail (${inFlight}.live.log):` : `live tail: none yet for ${inFlight}`);
+  lines.push(...tail(tee, 12).map((l) => `  | ${l}`));
+  return lines;
+}
+
 function stopRun(args, deps) {
-  const { out, err, alive, commandOf, kill, pgidOf } = deps;
+  const { out, alive, commandOf, kill, pgidOf } = deps;
   const root = boundedRoot(deps, { bounded: false });
   if (!root) return EXIT.preflight;
-  const { stop } = sentinelPaths(root);
-  const state = ownerState(root, { alive, commandOf });
+  const { active, stop } = sentinelPaths(root);
+  const state = claimStates(root, { alive, commandOf });
+  const live = liveOf(state);
 
-  // Writing STOP with nothing armed leaves a LANDMINE: the next run breaks out of its queue before
-  // any ticket, having run nothing, and reports a clean night. The old order wrote the file and then
-  // announced there was nothing to stop (review, MEDIUM).
-  if (state.kind === 'absent') {
-    out.write(`No night run is active (no sentinel at ${sentinelPaths(root).active}), so there is nothing to stop and no STOP file was written.\n`);
-    return EXIT.ok;
+  // Writing STOP with nothing LIVE leaves a LANDMINE: the next run breaks out of its queue before any
+  // ticket, having run nothing, and reports a clean night. The old order wrote the file and then
+  // announced there was nothing to stop (review, MEDIUM); a dead claim would consume it just as
+  // little as no claim.
+  if (live.length === 0) {
+    out.write(state.kind === 'absent' || state.kind === 'empty'
+      ? `No night run is active (no claim at ${active}), so there is nothing to stop and no STOP file was written.\n`
+      : `No LIVE night run holds the sentinel (${describeStale(state)}), so no STOP file was written.\n`);
+    return args.hard && state.kind !== 'absent' && state.kind !== 'empty' ? clearStale(state, deps, root) : EXIT.ok;
   }
 
   mkdirSync(join(root, '.night-run'), { recursive: true });
   writeFileSync(stop, `${new Date().toISOString()}\n`);
-  out.write(`wrote ${stop} — the queue ends cleanly after the ticket in flight.\n`);
+  const runs = live.length === 1 ? 'the queue ends' : `all ${live.length} queues end`;
+  out.write(`wrote ${stop} — ${runs} cleanly after the ticket in flight (live run${live.length === 1 ? '' : 's'}: pid ${live.map((c) => c.pid).join(', ')}).\n`);
 
   if (!args.hard) return EXIT.ok;
-  // --now signals the owner. A pid that cannot be CONFIRMED as a night run is never signalled: pids
-  // are reused, and SIGTERM to the wrong one kills a stranger's process to tidy up our own file.
-  if (state.kind === 'live') {
+  // --now signals EVERY live owner: STOP is one file read by every run, so the hard form is too.
+  for (const c of live) {
     // THE PROCESS GROUP, not the pid. The runner's signal handler disarms the sentinel and exits,
     // but never touches the `claude` session it spawned — that child is not detached, so it is
     // merely orphaned and keeps running. Signalling the pid alone therefore REMOVED the merge gate
     // and left a live `--gates auto-pr` session free to merge: the exact thing the sentinel exists
     // to prevent (review, HIGH). The runner leads its own group because the launcher spawns it
     // detached; a runner started another way may not, and then the child genuinely can survive.
-    const pgid = pgidOf(state.pid);
-    if (pgid === state.pid) {
-      kill(-state.pid, 'SIGTERM');
-      out.write(`sent SIGTERM to process group ${state.pid} — the runner and the session it is driving both stop, and it disarms the sentinel on the way out.\n`);
-      return EXIT.ok;
+    const pgid = pgidOf(c.pid);
+    if (pgid === c.pid) {
+      kill(-c.pid, 'SIGTERM');
+      out.write(`sent SIGTERM to process group ${c.pid} — the runner and the session it is driving both stop, and it disarms its claim on the way out.\n`);
+      continue;
     }
-    kill(state.pid, 'SIGTERM');
+    kill(c.pid, 'SIGTERM');
     out.write(
-      `sent SIGTERM to pid ${state.pid} only — it is not a process-group leader (pgid ${pgid ?? 'unreadable'}), so a session it spawned may SURVIVE this signal and is no longer merge-gated once the sentinel clears. Check for a stray \`claude\` process.\n`,
+      `sent SIGTERM to pid ${c.pid} only — it is not a process-group leader (pgid ${pgid ?? 'unreadable'}), so a session it spawned may SURVIVE this signal and is no longer merge-gated once the sentinel clears. Check for a stray \`claude\` process.\n`,
     );
-    return EXIT.ok;
   }
-  if (state.kind === 'dead' || state.kind === 'unreadable') {
-    out.write(`nothing to signal (${state.kind === 'dead' ? 'the owner pid is gone' : 'the sentinel pid could not be parsed'}); remove ${sentinelPaths(root).active} by hand to clear the gate.\n`);
-    return EXIT.ok;
+  return clearStale(state, deps, root);
+}
+
+// The stale claims beside (or instead of) the live ones. A pid that cannot be CONFIRMED as a night
+// run is never signalled: pids are reused, and SIGTERM to the wrong one kills a stranger's process to
+// tidy up our own file. A claim whose owner is confirmed DEAD is the leak the next claimer would
+// sweep; sweeping it here is that takeover on demand. A claim that cannot be read is not confirmed
+// anything and is left for a hand, as `claimSentinel` leaves it (review, CONFIRMED).
+function clearStale(state, { out, err }, root) {
+  const { active } = sentinelPaths(root);
+  let code = EXIT.ok;
+  for (const c of state.claims) {
+    if (c.kind === 'live') continue;
+    if (c.kind === 'dead') {
+      const target = state.kind === 'legacy' ? active : claimPath(root, c.pid);
+      try {
+        rmSync(target, { force: true });
+        out.write(`swept the claim left by dead pid ${c.pid} (${target}).\n`);
+      } catch (e) {
+        out.write(`could not remove the claim left by dead pid ${c.pid} at ${target} (${e?.code ?? e?.message}) — remove it by hand.\n`);
+      }
+      continue;
+    }
+    if (c.kind === 'unreadable') {
+      out.write(`the sentinel at ${active} holds no parseable pid, so nothing can be confirmed about it — remove it by hand if no night run is going.\n`);
+      continue;
+    }
+    err.write(`refusing to signal pid ${c.pid}: it could not be confirmed as a night run (${c.kind}). Kill it by hand if you are sure.\n`);
+    code = EXIT.stopped;
   }
-  err.write(`refusing to signal pid ${state.pid}: it could not be confirmed as a night run (${state.kind}). Kill it by hand if you are sure.\n`);
-  return EXIT.stopped;
+  for (const j of state.junk) {
+    out.write(`claim ${JSON.stringify(j)} is not a pid and was left alone — remove ${join(active, j)} by hand.\n`);
+  }
+  if (state.kind === 'unreadable') out.write(`the sentinel at ${active} could not be read — remove it by hand if no night run is going.\n`);
+  try {
+    rmdirSync(active);
+  } catch { /* still holds a claim, or was a file */ }
+  return code;
 }
 
 export async function main(argv = process.argv.slice(2), {

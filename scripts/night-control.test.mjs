@@ -13,8 +13,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, readdirSync, openSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { main, parseArgs, readVerdict, ownerState, withinBoundary, CLAIM_WAIT_MS, DEFAULT_WAIT_MS, CONTROL_USAGE } from './night-control.mjs';
-import { main as nightMain, run as nightRun, EXIT, PROBE_CAP_MS, sentinelPaths } from './night-run.mjs';
+import { main, parseArgs, readVerdict, claimStates, withinBoundary, CLAIM_WAIT_MS, DEFAULT_WAIT_MS, CONTROL_USAGE } from './night-control.mjs';
+import { main as nightMain, run as nightRun, EXIT, PROBE_CAP_MS, GIT_CAP_MS, sentinelPaths, claimPath, noteClaim } from './night-run.mjs';
 
 const A = 'tkt-00000000000a';
 const B = 'tkt-00000000000b';
@@ -63,7 +63,24 @@ const driver = (script = {}) => {
   };
 };
 
-const claim = (pid) => writeFileSync(sentinelPaths(root).active, `${pid}\n`);
+// A claim the way the runner writes one: a file named by the pid inside the ACTIVE directory
+// (tkt-c248cfbc5d8c). `legacy` is the single-owner FILE an older runner wrote in its place.
+const claim = (pid) => {
+  mkdirSync(sentinelPaths(root).active, { recursive: true });
+  writeFileSync(claimPath(root, pid), `${pid}\n`);
+};
+const legacy = (content) => writeFileSync(sentinelPaths(root).active, content);
+
+// The runner's worktree needs a git repository with an origin; the runner's own suite drives the
+// real thing. Here it only has to be a directory that exists.
+const wtStubs = {
+  createWorktree: (r, stamp) => {
+    const p = join(r, 'wt', stamp);
+    mkdirSync(p, { recursive: true });
+    return { ok: true, path: p, provisioned: [] };
+  },
+  removeWorktree: () => ({ removed: true }),
+};
 
 const harness = ({ script = {}, childPid = PID } = {}) => {
   const out = sink();
@@ -117,7 +134,7 @@ describe('readVerdict — the line that decides a night started', () => {
 
 describe('parseArgs', () => {
   it('defaults the deadline to both probe caps plus a margin', () => {
-    expect(DEFAULT_WAIT_MS).toBe(PROBE_CAP_MS * 2 + 60_000);
+    expect(DEFAULT_WAIT_MS).toBe(PROBE_CAP_MS * 2 + GIT_CAP_MS + 60_000);
     expect(parseArgs(['start', A]).waitMs).toBe(DEFAULT_WAIT_MS);
   });
 
@@ -187,14 +204,23 @@ describe('start — dimension: the spawn itself', () => {
 });
 
 describe('start — dimension: the claim, answered in five seconds', () => {
-  it('surfaces a lost claim inside the claim window rather than waiting out the pre-flight deadline', async () => {
-    claim(999999); // another run already holds it
+  // The one holder a new runner still cannot claim beside: an older runner's single-owner file.
+  it('surfaces a claim that never landed inside the claim window rather than waiting out the pre-flight deadline', async () => {
+    legacy('999999\n');
     const h = harness();
     expect(await main(['start', A], h.deps)).toBe(EXIT.stopped);
     expect(h.err.text).toMatch(/did not claim the sentinel within 5s/);
-    expect(h.err.text).toMatch(/pid 999999 already holds it/);
     // The whole point of the split wait: it gave up after the claim window, not the 420s one.
     expect(h.ticks() * 250).toBeLessThanOrEqual(CLAIM_WAIT_MS + 250);
+  });
+
+  // Another LIVE run's claim is no longer a reason not to start (tkt-c248cfbc5d8c).
+  it('claims beside another run’s live claim and reports a started night', async () => {
+    claim(999999);
+    const h = harness({ script: { 2: () => claim(PID), 4: () => emit(h.log, OK_LINE) } });
+    expect(await main(['start', A], h.deps)).toBe(EXIT.ok);
+    expect(h.out.text).toMatch(/night run started/);
+    expect(h.out.text).toMatch(/until every night run ends/);
   });
 
   it('reports a runner that died before claiming', async () => {
@@ -263,7 +289,7 @@ describe('start — dimension: the pre-flight verdict', () => {
       script: {
         2: () => {
           emit(h.log, OK_LINE);
-          rmSync(sentinelPaths(root).active, { force: true }); // the runner disarms on its way out
+          rmSync(sentinelPaths(root).active, { recursive: true, force: true }); // the runner disarms on its way out
           h.child.fire('exit', 0, null);
         },
       },
@@ -275,14 +301,14 @@ describe('start — dimension: the pre-flight verdict', () => {
     expect(h.err.text).toMatch(/no night was started/);
   });
 
-  // The same shape with the sentinel taken over by somebody else rather than released.
+  // The same shape with this runner's claim gone and somebody else's in its place.
   it('refuses when the sentinel is no longer held by the child it launched', async () => {
     claim(PID);
     const h = harness({
-      script: { 2: () => { emit(h.log, OK_LINE); claim(777); } },
+      script: { 2: () => { emit(h.log, OK_LINE); rmSync(claimPath(root, PID)); claim(777); } },
     });
     expect(await main(['start', A], h.deps)).toBe(EXIT.preflight);
-    expect(h.err.text).toMatch(/now held by pid 777/);
+    expect(h.err.text).toMatch(/now held by pid 777, not by this runner/);
   });
 
   // The control for both: still running, still holding ⇒ a real start.
@@ -304,27 +330,33 @@ describe('start — dimension: the pre-flight verdict', () => {
   });
 });
 
-describe('ownerState — dimension: who holds the sentinel', () => {
-  const state = (over = {}) => ownerState(root, { alive: () => true, commandOf: () => 'node scripts/night-run.mjs tkt-00000000000a', ...over });
+describe('claimStates — dimension: who holds the sentinel, one verdict per claim', () => {
+  const state = (over = {}) => claimStates(root, { alive: () => true, commandOf: () => 'node scripts/night-run.mjs tkt-00000000000a', ...over });
+  const only = (over) => {
+    const s = state(over);
+    expect(s.claims).toHaveLength(1);
+    return s.claims[0];
+  };
 
   it('absent when no sentinel is armed', () => {
-    expect(state().kind).toBe('absent');
+    expect(state()).toEqual({ kind: 'absent', claims: [], junk: [] });
   });
 
   it('live when the owner is alive AND is a night run, and reads its queue off the command line', () => {
     claim(PID);
-    const s = state();
-    expect(s.kind).toBe('live');
-    expect(s.pid).toBe(PID);
-    expect(s.queue).toEqual([A]);
+    expect(state().kind).toBe('dir');
+    const c = only();
+    expect(c.kind).toBe('live');
+    expect(c.pid).toBe(PID);
+    expect(c.queue).toEqual([A]);
   });
 
   // A checkout under `.claude/worktrees/tkt-<id>-slug` carries a ticket id in the RUNNER PATH. A
   // scrape of the whole command string reports it as queued work nobody queued.
   it('does not read a ticket id out of the runner’s own path', () => {
     claim(PID);
-    const s = state({ commandOf: () => `node /w/.claude/worktrees/tkt-999d1adc3aa4-x/scripts/night-run.mjs ${A}` });
-    expect(s.queue).toEqual([A]);
+    const c = only({ commandOf: () => `node /w/.claude/worktrees/tkt-999d1adc3aa4-x/scripts/night-run.mjs ${A}` });
+    expect(c.queue).toEqual([A]);
   });
 
   // The case above is carried entirely by the whole-token regex — the path segment never matches it
@@ -332,30 +364,70 @@ describe('ownerState — dimension: who holds the sentinel', () => {
   // real control for the anchor: a bare id token sitting BEFORE the runner path.
   it('reads no id from a bare token appearing before the runner path', () => {
     claim(PID);
-    const s = state({ commandOf: () => `node --title tkt-999d1adc3aa4 /w/scripts/night-run.mjs ${A}` });
-    expect(s.queue).toEqual([A]);
+    const c = only({ commandOf: () => `node --title tkt-999d1adc3aa4 /w/scripts/night-run.mjs ${A}` });
+    expect(c.queue).toEqual([A]);
   });
 
   // pidAlive alone answers the wrong question: pids get reused.
   it('foreign when the owner pid is alive but is not a night run', () => {
     claim(PID);
-    expect(state({ commandOf: () => '/Applications/SomeEditor -w' }).kind).toBe('foreign');
+    expect(only({ commandOf: () => '/Applications/SomeEditor -w' }).kind).toBe('foreign');
   });
 
   it('dead when the owner is gone', () => {
     claim(PID);
-    expect(state({ alive: () => false }).kind).toBe('dead');
+    expect(only({ alive: () => false }).kind).toBe('dead');
   });
 
-  it('unreadable when the sentinel holds no parseable pid', () => {
-    writeFileSync(sentinelPaths(root).active, 'not-a-pid\n');
-    expect(state().kind).toBe('unreadable');
+  it('legacy with an unreadable claim when the single-owner file holds no parseable pid', () => {
+    legacy('not-a-pid\n');
+    const s = state();
+    expect(s.kind).toBe('legacy');
+    expect(s.claims).toEqual([{ kind: 'unreadable' }]);
   });
 
   // `ps` failing is "cannot confirm", which must not collapse into `live`.
   it('unknown-command when ps cannot answer', () => {
     claim(PID);
-    expect(state({ commandOf: () => null }).kind).toBe('unknown-command');
+    expect(only({ commandOf: () => null }).kind).toBe('unknown-command');
+  });
+
+  // Two runs, two verdicts (tkt-c248cfbc5d8c): the dead one must not hide behind the live one, and
+  // the live one must not be reported dead because its neighbour is.
+  it('judges two claims independently', () => {
+    claim(PID);
+    claim(777);
+    const byPid = Object.fromEntries(state({ alive: (p) => p === PID }).claims.map((c) => [c.pid, c.kind]));
+    expect(byPid).toEqual({ [PID]: 'live', 777: 'dead' });
+  });
+
+  it('empty when every run has disarmed but the directory is still there', () => {
+    mkdirSync(sentinelPaths(root).active, { recursive: true });
+    expect(state()).toEqual({ kind: 'empty', claims: [], junk: [] });
+  });
+
+  it('carries a claim’s note — where its run lives — onto the live verdict', () => {
+    claim(PID);
+    noteClaim(root, { logDir: '/runs/x', worktree: '/wt/night-x' }, { pid: PID });
+    expect(only()).toMatchObject({ kind: 'live', pid: PID, logDir: '/runs/x', worktree: '/wt/night-x' });
+  });
+
+  // The note is free-form JSON any session can write. Only the two pointers come off it: a note
+  // saying `dead` would otherwise have `--now` sweep a live run's claim (review, CONFIRMED).
+  it('takes only the pointers off a note, never a verdict — a note saying dead cannot kill a live run', () => {
+    claim(PID);
+    writeFileSync(claimPath(root, PID), JSON.stringify({ pid: PID, kind: 'dead', queue: 'x', cmd: 'nope', logDir: '/runs/x' }));
+    const c = only();
+    expect(c.kind).toBe('live');
+    expect(c.queue).toEqual([A]);
+    expect(c.logDir).toBe('/runs/x');
+    expect(c.worktree).toBeUndefined();
+  });
+
+  it('reports an entry that is not a pid as junk, never as a claim', () => {
+    mkdirSync(sentinelPaths(root).active, { recursive: true });
+    writeFileSync(join(sentinelPaths(root).active, '.DS_Store'), '');
+    expect(state()).toEqual({ kind: 'dir', claims: [], junk: ['.DS_Store'] });
   });
 });
 
@@ -389,16 +461,58 @@ describe('status — dimension: what an operator is told', () => {
     expect(r.out.text).not.toMatch(/alive, running night-run\.mjs/);
   });
 
-  it('reports a crashed run that left the gate armed', async () => {
+  it('reports a crashed run that left its claim behind', async () => {
     claim(PID);
     const r = await run({ alive: () => false });
-    expect(r.out.text).toMatch(/is GONE — a crashed run left the gate armed/);
+    expect(r.out.text).toMatch(/is GONE — a crashed run left its claim behind/);
+    expect(r.out.text).toMatch(/Clear it with `npm run night:stop -- --now`/);
+  });
+
+  // `--now` reaches every claim, so beside a live run the advice must not be to run it.
+  it('does not advise --now for a dead claim while another run is live', async () => {
+    claim(PID);
+    claim(777);
+    const r = await run({ alive: (p) => p === PID });
+    expect(r.out.text).toMatch(/pid 777 is GONE/);
+    expect(r.out.text).toMatch(/would also STOP the live run/);
+    expect(r.out.text).not.toMatch(/Clear it with/);
   });
 
   it('reports an unparseable pid rather than guessing', async () => {
-    writeFileSync(sentinelPaths(root).active, 'garbage\n');
+    legacy('garbage\n');
     const r = await run();
     expect(r.out.text).toMatch(/pid could not be parsed/);
+  });
+
+  it('lists every live run with its own queue', async () => {
+    claim(PID);
+    claim(777);
+    const r = await run({ commandOf: (pid) => `node x/night-run.mjs ${pid === PID ? A : B}` });
+    expect(r.out.text).toMatch(new RegExp(`owner: pid ${PID}, alive, running night-run.mjs\\nqueue: ${A}`));
+    expect(r.out.text).toMatch(new RegExp(`owner: pid 777, alive, running night-run.mjs\\nqueue: ${B}`));
+  });
+
+  it('reads an emptied claims directory as NOT armed', async () => {
+    mkdirSync(sentinelPaths(root).active, { recursive: true });
+    const r = await run();
+    expect(r.out.text).toMatch(/sentinel: NOT armed \(the claims directory is present but empty\)/);
+  });
+
+  // A claim that names its run directory is read there, so two runs each show their own ticket.
+  it('names the run directory, the worktree and the ticket in flight from a claim that carries them', async () => {
+    claim(PID);
+    const dir = join(root, '.night-run', '2026-01-01T00-00-00-000Z');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${A}.live.log`), 'assistant: reading the ticket\n');
+    noteClaim(root, { logDir: dir, worktree: '/wt/night-x' }, { pid: PID });
+    const r = await run();
+    expect(r.out.text).toMatch(/worktree: \/wt\/night-x/);
+    expect(r.out.text).toMatch(new RegExp(`run dir: .*2026-01-01T00-00-00-000Z\\nin flight: ${A}`));
+    expect(r.out.text).toMatch(/assistant: reading the ticket/);
+
+    writeFileSync(join(dir, `${A}.log`), 'finished\n'); // the tee has a finished log beside it now
+    const done = await run();
+    expect(done.out.text).toMatch(/in flight: none/);
   });
 
   // The newest runner log outlives the run that wrote it, so the in-flight block must be gated on a
@@ -489,12 +603,63 @@ describe('stop — dimension: one actor, and the wrong actor', () => {
     expect(h.killed).toEqual([]);
   });
 
-  it('--now says there is nothing to signal when the owner is already gone', async () => {
+  // A dead claim is the leak the next run would sweep; `--now` is that takeover on demand, and no
+  // STOP is written for a run that is not there to consume it.
+  it('--now sweeps a dead claim and signals nothing, writing no STOP', async () => {
     claim(PID);
     const h = harness();
     h.deps.alive = () => false;
     expect(await main(['stop', '--now'], h.deps)).toBe(EXIT.ok);
     expect(h.killed).toEqual([]);
+    expect(h.out.text).toMatch(new RegExp(`swept the claim left by dead pid ${PID}`));
+    expect(existsSync(claimPath(root, PID))).toBe(false);
+    expect(existsSync(sentinelPaths(root).stop)).toBe(false);
+  });
+
+  // Can't-check is not dead: a single-owner file whose pid cannot be parsed may be an older runner
+  // that is very much live, and `claimSentinel` refuses the same state (review, CONFIRMED).
+  it('--now leaves a single-owner sentinel whose pid cannot be parsed for a hand, and sweeps nothing', async () => {
+    legacy('garbage\n');
+    const h = harness();
+    expect(await main(['stop', '--now'], h.deps)).toBe(EXIT.ok);
+    expect(existsSync(sentinelPaths(root).active)).toBe(true);
+    expect(h.out.text).toMatch(/remove it by hand/);
+    expect(h.killed).toEqual([]);
+  });
+
+  it('writes no STOP when only a dead claim remains', async () => {
+    claim(PID);
+    const h = harness();
+    h.deps.alive = () => false;
+    expect(await main(['stop'], h.deps)).toBe(EXIT.ok);
+    expect(h.out.text).toMatch(/No LIVE night run holds the sentinel \(dead pid 424242\)/);
+    expect(existsSync(sentinelPaths(root).stop)).toBe(false);
+  });
+
+  // STOP is one file every run reads, so the hard form reaches every live run too (tkt-c248cfbc5d8c).
+  it('--now signals every live run’s process group', async () => {
+    claim(PID);
+    claim(777);
+    const h = harness();
+    expect(await main(['stop', '--now'], h.deps)).toBe(EXIT.ok);
+    expect(h.killed.sort()).toEqual([[-PID, 'SIGTERM'], [-777, 'SIGTERM']].sort());
+    expect(h.out.text).toMatch(/all 2 queues end cleanly/);
+  });
+
+  // The mixed case: the live run is signalled, the dead claim is swept, and the foreign one is
+  // refused — one verdict per claim, and the refusal still fails the exit status.
+  it('--now handles each claim on its own verdict', async () => {
+    claim(PID);
+    claim(777);
+    claim(888);
+    const h = harness();
+    h.deps.alive = (p) => p !== 777;
+    h.deps.commandOf = (p) => (p === 888 ? '/Applications/SomeEditor -w' : `node x/night-run.mjs ${A}`);
+    expect(await main(['stop', '--now'], h.deps)).toBe(EXIT.stopped);
+    expect(h.killed).toEqual([[-PID, 'SIGTERM']]);
+    expect(existsSync(claimPath(root, 777))).toBe(false);
+    expect(existsSync(claimPath(root, 888))).toBe(true);
+    expect(h.err.text).toMatch(/refusing to signal pid 888/);
   });
 });
 
@@ -515,7 +680,7 @@ describe('the STOP round trip — night:stop writes it, the runner consumes it',
     fn.calls = [];
     return fn;
   };
-  const nightOpts = (extra) => ({ resolveSentinelRoot: () => root, env: {}, spawnProbe: passingProbe(), ...extra });
+  const nightOpts = (extra) => ({ resolveSentinelRoot: () => root, env: {}, spawnProbe: passingProbe(), ...wtStubs, ...extra });
 
   // The control: with no STOP file the queue runs. Without it, "the queue stopped" proves nothing.
   it('absent — the queue runs', async () => {
@@ -534,7 +699,7 @@ describe('the STOP round trip — night:stop writes it, the runner consumes it',
     h.deps.alive = () => true;
     await main(['stop'], h.deps);
     expect(existsSync(sentinelPaths(root).stop)).toBe(true);
-    rmSync(sentinelPaths(root).active, { force: true });
+    rmSync(claimPath(root, PID));
     const runSession = sessionStub();
     await nightMain([A], root, nightOpts({ runSession }));
     expect(runSession.calls).toEqual([]);
@@ -678,7 +843,7 @@ describe('the live tee — both halves of the seam', () => {
     seed(A, 'todo');
     const seen = [];
     const runSession = (id, opts) => { seen.push(opts); seed(id, 'qa'); return Promise.resolve({ code: 0, out: '', capped: false }); };
-    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: passingProbe(), runSession });
+    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: passingProbe(), runSession, ...wtStubs });
     expect(seen).toHaveLength(1);
     expect(typeof seen[0].logDir).toBe('string');
     expect(existsSync(seen[0].logDir)).toBe(true);
@@ -713,7 +878,7 @@ describe('summary.json — the machine-readable record tkt-4ea4e17f1419 reads', 
   it('records every ticket’s transition straight from classify, with the run’s exit', async () => {
     seed(A, 'todo');
     const runSession = (id) => { seed(id, 'qa'); return Promise.resolve({ code: 0, out: '', capped: false }); };
-    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: probe('BLOCKED')(), runSession });
+    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: probe('BLOCKED')(), runSession, ...wtStubs });
     const s = latestSummary();
     expect(s.queue).toEqual([A]);
     expect(s.exit).toBe(EXIT.ok);
@@ -724,7 +889,7 @@ describe('summary.json — the machine-readable record tkt-4ea4e17f1419 reads', 
   // The night worth reading is the one that aborted, so the record must exist on that path too.
   it('is written even when the pre-flight aborts before any ticket runs', async () => {
     seed(A, 'todo');
-    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: probe('RAN')(), runSession: () => Promise.resolve({ code: 0, out: '' }) });
+    await nightMain([A], root, { resolveSentinelRoot: () => root, env: {}, spawnProbe: probe('RAN')(), runSession: () => Promise.resolve({ code: 0, out: '' }), ...wtStubs });
     const s = latestSummary();
     expect(s.exit).toBe(EXIT.preflight);
     expect(s.results).toEqual([]);

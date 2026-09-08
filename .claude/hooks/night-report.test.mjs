@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collect, assess, scanRuns, isOutstanding, formatReport, main, report, resolveRoot, ticketsDirFor }
   from './night-report.mjs';
-import { primaryRoot } from './guard-unattended-merge.mjs';
+import { primaryRoot, nightRunActive } from './guard-unattended-merge.mjs';
 
 // Fixtures live INSIDE the repo, not os.tmpdir(): no suite may write outside the workspace, and
 // `repoHygiene.test.mjs` greps the whole index for `/Users/<name>` paths. `.tmp-test` is gitignored.
@@ -103,6 +103,40 @@ describe('night-report hook: what it emits', () => {
     writeFileSync(join(root, '.night-run', 'ACTIVE'), '12345');
 
     expect(run().join(' ')).toContain('ACTIVE');
+  });
+
+  // tkt-c248cfbc5d8c: ACTIVE is a directory of per-run claims. Any claim is a run, an emptied
+  // directory is not, and the single-owner file above still reads as active.
+  it('emits for a claims directory holding a claim, and not for an emptied one', () => {
+    oneTicketNight(ID);
+    seedTicket(ID, 'done');
+    const active = join(root, '.night-run', 'ACTIVE');
+    mkdirSync(active, { recursive: true });
+    expect(run().join(' ')).not.toContain('ACTIVE');
+    writeFileSync(join(active, '4242'), '4242\n');
+    expect(run().join(' ')).toContain('ACTIVE');
+  });
+
+  // Found by the case above: `scanRuns` read every directory under `.night-run/` as a run, so the
+  // claims directory was reported at every session start as a crashed run with no summary.
+  it('does not read the claims directory as a run that never finished', () => {
+    mkdirSync(join(root, '.night-run', 'ACTIVE'), { recursive: true });
+    expect(scanRuns(join(root, '.night-run'))).toEqual({ runs: [], missing: [], corrupt: [], error: null });
+  });
+
+  // The hook cannot import the guard (node builtins only — see its header), so its predicate is a
+  // copy. This pins the copy to the original across every shape the sentinel can take.
+  it.each([
+    ['absent', () => {}, false],
+    ['empty directory', (active) => mkdirSync(active), false],
+    ['one claim', (active) => { mkdirSync(active); writeFileSync(join(active, '1'), '1'); }, true],
+    ['legacy file', (active) => writeFileSync(active, '12345'), true],
+  ])('reads the sentinel exactly as the guard does when it is %s', (_name, make, expected) => {
+    mkdirSync(join(root, '.night-run'), { recursive: true });
+    const active = join(root, '.night-run', 'ACTIVE');
+    make(active);
+    expect(nightRunActive(active)).toBe(expected); // the original's answer, pinned
+    expect(collect({ root, boardDir: root }).active).toBe(expected);
   });
 
   it('names a run directory that has no summary.json — the crashed-runner case', () => {

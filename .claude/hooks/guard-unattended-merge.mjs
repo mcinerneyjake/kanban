@@ -31,7 +31,7 @@
 // COMMIT / PUSH / PR-CREATE STAY ALLOWED. Crossing those is the entire point of `--gates auto-pr`;
 // the queue's whole output is open PRs. This gate set is strictly smaller than guard-subagent-gates'.
 
-import { accessSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -91,14 +91,18 @@ export function stripLeadingKeywords(segment) {
 }
 
 /**
+ * ACTIVE is a DIRECTORY of per-run claim files (tkt-c248cfbc5d8c): any entry is a run, and only an
+ * EMPTY directory or a genuine "not there" may permit. The single-owner FILE an older runner writes
+ * cannot be listed (ENOTDIR) and so reads as active, which is the direction it should fail.
+ *
  * @param {string|null} [sentinel] path to test; null means "could not be determined"
  */
 export function nightRunActive(sentinel = SENTINEL) {
   // Cannot locate the primary checkout → cannot rule out a run in flight → active.
   if (!sentinel) return true;
+  let entries;
   try {
-    accessSync(sentinel);
-    return true;
+    entries = readdirSync(sentinel);
   } catch (err) {
     // `existsSync` was the obvious call and is WRONG here: it swallows every error and returns
     // false, so a sentinel under an unreadable directory read as "no run active" and the documented
@@ -106,6 +110,7 @@ export function nightRunActive(sentinel = SENTINEL) {
     // EACCES). Only a genuine "not there" may permit.
     return err?.code !== 'ENOENT';
   }
+  return entries.length > 0;
 }
 
 // `gh api` reaching a merge endpoint is the same action by another route. Matched on the ENDPOINT
@@ -190,8 +195,9 @@ export function message(reason, sentinel = SENTINEL, remedy = MERGE_REMEDY) {
   return (
     `[guard-unattended-merge] Blocked: ${reason} while a night run is active.\n` +
     `${remedy}\n` +
-    `The run is marked active by this file: ${sentinel ?? '(primary checkout could not be located)'}\n` +
-    'If no night run is going, the runner exited without cleaning up — remove that file to lift this block.\n'
+    `A run is marked active by a claim under this directory: ${sentinel ?? '(primary checkout could not be located)'}\n` +
+    'If no night run is going, a runner exited without cleaning up: `npm run night:status` says who holds a claim, and\n' +
+    '`npm run night:stop -- --now` sweeps the claims of runs that are gone. Never remove the directory while a run is live.\n'
   );
 }
 

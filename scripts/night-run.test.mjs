@@ -5,18 +5,23 @@
 // never leaves the sentinel behind. Every stopping case is paired with a continuing control, because
 // a runner that stops on everything is as useless as one that stops on nothing.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, openSync, closeSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import {
+  mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, openSync, closeSync,
+  chmodSync, lstatSync,
+} from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   classify, gateFailed, hookRejected, decodeLog, strandedBackgroundTasks,
   describe as describeResult, readStatus, guardBlocked,
-  arm, disarm, claimSentinel, ownerOf, pidAlive, fileHere, sentinelPaths,
+  arm, disarm, claimSentinel, readClaims, claimHeld, claimPath, othersLive, noteClaim, readClaimNote,
+  pidAlive, runAlive, fileHere, sentinelPaths,
   preflightGuard, main, run, sessionArgs, sessionEnv, defaultRunSession, capMsFrom, USAGE, EXIT,
-  MERGE_PROBE_PAYLOAD, renderProbes,
+  MERGE_PROBE_PAYLOAD, renderProbes, createRunWorktree, removeRunWorktree, runWorktreePath,
 } from './night-run.mjs';
+import { nightRunActive } from '../.claude/hooks/guard-unattended-merge.mjs';
 
 let board;
 beforeEach(() => {
@@ -54,8 +59,37 @@ const sessionStub = (outcomes = {}) => {
   return fn;
 };
 
+// The run's worktree needs a git repository with an `origin`, which a temp board is not; the real
+// thing is exercised against real git in its own describe below. The stub still makes a directory,
+// so the `cwd` handed to each session is a path that exists.
+const fakeWorktree = (root, stamp) => {
+  const path = join(root, 'wt', stamp);
+  mkdirSync(path, { recursive: true });
+  return { ok: true, path, provisioned: [] };
+};
+
 // main() resolves the sentinel root through the guard; tests point it at the temp board.
-const opts = (extra = {}) => ({ resolveSentinelRoot: () => board, env: {}, ...extra });
+const opts = (extra = {}) => ({
+  resolveSentinelRoot: () => board,
+  env: {},
+  createWorktree: fakeWorktree,
+  removeWorktree: () => ({ removed: true }),
+  ...extra,
+});
+
+const captureStdout = async (fn) => {
+  const orig = process.stdout.write.bind(process.stdout);
+  let buf = '';
+  process.stdout.write = (chunk) => { buf += chunk; return true; };
+  try { await fn(); } finally { process.stdout.write = orig; }
+  return buf;
+};
+
+const latestSummary = () => {
+  const dir = join(board, '.night-run');
+  const stampDir = readdirSync(dir).filter((n) => /^\d{4}-/.test(n)).sort().at(-1);
+  return JSON.parse(readFileSync(join(dir, stampDir, 'summary.json'), 'utf8'));
+};
 
 // Polls rather than sleeping a fixed interval: the child has to spawn, import and clear its
 // pre-flight before it arms, and a fixed wait would be either flaky or slow.
@@ -81,6 +115,8 @@ const driverFor = (name, runSessionSrc) => {
     const runSession = ${runSessionSrc};
     main([${JSON.stringify(A)}], ${JSON.stringify(board)}, {
       spawnProbe, runSession, env: {}, resolveSentinelRoot: () => ${JSON.stringify(board)},
+      createWorktree: (root) => ({ ok: true, path: root + '/wt', provisioned: [] }),
+      removeWorktree: () => { writeFileSync(${JSON.stringify(join(board, 'worktree-removed'))}, ''); return { removed: true }; },
     });
   `);
   return driver;
@@ -469,60 +505,164 @@ describe('fileHere — the STOP check that must not fail open', () => {
 });
 
 describe('sentinel lifecycle and ownership — dimension 3, and two actors', () => {
-  it('arm creates it and disarm removes it', () => {
-    const { active } = sentinelPaths(board);
+  const active = () => sentinelPaths(board).active;
+
+  it('arm creates this run’s claim and disarm removes it, dropping the emptied directory', () => {
     arm(board);
-    expect(existsSync(active)).toBe(true);
+    expect(claimHeld(board, process.pid)).toBe(true);
+    expect(nightRunActive(active())).toBe(true);
     disarm(board);
-    expect(existsSync(active)).toBe(false);
+    expect(existsSync(active())).toBe(false);
+    expect(nightRunActive(active())).toBe(false);
   });
 
   it('disarm on an already-absent sentinel does not throw', () => {
     expect(() => disarm(board)).not.toThrow();
   });
 
-  it('a fresh claim writes this process as the owner', () => {
+  it('a fresh claim writes this process as an owner, under a file named by its pid', () => {
     expect(claimSentinel(board)).toEqual({ ok: true });
-    expect(ownerOf(board)).toBe(process.pid);
+    expect(claimHeld(board, process.pid)).toBe(true);
+    expect(readFileSync(claimPath(board, process.pid), 'utf8').trim()).toBe(String(process.pid));
   });
 
-  // The first draft disarmed and re-armed unconditionally, so a second runner deleted the first
-  // one's gate mid-queue and its live sessions could merge (review, HIGH).
-  it('refuses to claim a sentinel a LIVE owner already holds', () => {
+  // Two actors, both live: the case the single-owner sentinel refused, and the whole point of the
+  // claims directory (tkt-c248cfbc5d8c). Neither can drop the other's claim, and the guard — the
+  // real predicate, imported — reads armed until the LAST claim is gone.
+  it('two live runners hold the sentinel at once, and each disarms only its own claim', () => {
+    expect(claimSentinel(board, { pid: 4242, alive: () => true }).ok).toBe(true);
+    expect(claimSentinel(board, { pid: 99, alive: () => true }).ok).toBe(true);
+    expect([...readClaims(board).pids].sort()).toEqual([4242, 99].sort());
+    expect(nightRunActive(active())).toBe(true);
+    expect(disarm(board, { pid: 4242 })).toBe(true);
+    expect(claimHeld(board, 99)).toBe(true);
+    expect(nightRunActive(active())).toBe(true); // still armed for the other run
+    expect(disarm(board, { pid: 99 })).toBe(true);
+    expect(nightRunActive(active())).toBe(false);
+  });
+
+  // The takeover, per claim: an owner that is gone left a leak, not a run, and it is swept on the
+  // way in while a live neighbour is left alone. Without this, one crash wedges every later run.
+  it('sweeps a claim whose owner is gone and leaves a live one alone', () => {
     claimSentinel(board, { pid: 4242, alive: () => true });
+    claimSentinel(board, { pid: 5555, alive: () => true });
+    const res = claimSentinel(board, { pid: 99, alive: (p) => p !== 4242 });
+    expect(res).toEqual({ ok: true, swept: [4242] });
+    expect([...readClaims(board).pids].sort()).toEqual([5555, 99].sort());
+  });
+
+  // The runner from before the claims directory writes a single-owner FILE. It is exclusive by
+  // design, so it is honoured while alive and taken over into the directory form once dead.
+  it('honours a live single-owner sentinel from an older runner', () => {
+    mkdirSync(join(board, '.night-run'), { recursive: true });
+    writeFileSync(active(), '4242\n');
     const res = claimSentinel(board, { pid: 99, alive: () => true });
     expect(res.ok).toBe(false);
-    expect(res.why).toMatch(/already holds/i);
-    expect(ownerOf(board)).toBe(4242); // the incumbent keeps it
+    expect(res.why).toMatch(/single-owner form/);
+    expect(readClaims(board)).toMatchObject({ kind: 'legacy', legacyPid: 4242 }); // untouched
   });
 
-  // The control for the case above, and the only thing that stops one crash wedging every later
-  // merge: an owner that is gone left a leak, not a run.
-  it('takes over a sentinel whose owner is gone', () => {
-    claimSentinel(board, { pid: 4242, alive: () => true });
+  it('takes over a dead single-owner sentinel into the claims directory', () => {
+    mkdirSync(join(board, '.night-run'), { recursive: true });
+    writeFileSync(active(), '4242\n');
     const res = claimSentinel(board, { pid: 99, alive: () => false });
-    expect(res.ok).toBe(true);
-    expect(res.tookOver).toBe(4242);
-    expect(ownerOf(board)).toBe(99);
+    expect(res).toEqual({ ok: true, tookOver: 4242 });
+    expect(readClaims(board)).toMatchObject({ kind: 'dir', pids: [99] });
   });
 
   it('refuses when a sentinel exists but its owner cannot be read', () => {
     mkdirSync(join(board, '.night-run'), { recursive: true });
-    writeFileSync(sentinelPaths(board).active, 'not-a-pid\n');
+    writeFileSync(active(), 'not-a-pid\n');
     const res = claimSentinel(board, { pid: 99, alive: () => false });
     expect(res.ok).toBe(false);
     expect(res.why).toMatch(/could not be read/i);
   });
 
-  it('disarm refuses to remove a sentinel this process does not own', () => {
+  // Unreadable is "cannot rule out a run": the claim refuses, and the guard stays armed.
+  it('refuses when the claims directory cannot be listed, and the guard reads it as armed', () => {
+    mkdirSync(active(), { recursive: true });
+    chmodSync(active(), 0o000);
+    try {
+      const res = claimSentinel(board, { pid: 99, alive: () => false });
+      expect(res.ok).toBe(false);
+      expect(res.why).toMatch(/could not be read/i);
+      expect(nightRunActive(active())).toBe(true);
+    } finally {
+      chmodSync(active(), 0o755);
+    }
+  });
+
+  // An entry that is not a pid cannot be swept and is not an owner: the claim proceeds and names it,
+  // and it keeps the guard armed after every real claim is gone — loud, never silently permissive.
+  it('names a non-pid entry, leaves it in place, and it keeps the gate armed', () => {
+    mkdirSync(active(), { recursive: true });
+    writeFileSync(join(active(), '.DS_Store'), '');
+    const res = claimSentinel(board, { pid: 99, alive: () => true });
+    expect(res).toEqual({ ok: true, junk: ['.DS_Store'] });
+    disarm(board, { pid: 99 });
+    expect(existsSync(join(active(), '.DS_Store'))).toBe(true);
+    expect(nightRunActive(active())).toBe(true);
+  });
+
+  // A pid reused after a crash finds its own number already claimed. That is a leak, not a holder.
+  it('replaces a stale claim left under this process’s own pid', () => {
+    mkdirSync(active(), { recursive: true });
+    writeFileSync(claimPath(board, 99), '{"pid":99,"logDir":"/old"}\n');
+    expect(claimSentinel(board, { pid: 99, alive: () => true })).toEqual({ ok: true });
+    expect(readFileSync(claimPath(board, 99), 'utf8').trim()).toBe('99');
+  });
+
+  it('disarm refuses to remove a claim this process does not own', () => {
     claimSentinel(board, { pid: 4242, alive: () => true });
     expect(disarm(board, { pid: 99 })).toBe(false);
-    expect(existsSync(sentinelPaths(board).active)).toBe(true);
+    expect(claimHeld(board, 4242)).toBe(true);
+  });
+
+  it('a claim note is advisory: read back when written, empty for a bare pid, never the identity', () => {
+    claimSentinel(board, { pid: 99, alive: () => true });
+    expect(readClaimNote(board, 99)).toEqual({});
+    noteClaim(board, { logDir: '/runs/x' }, { pid: 99 });
+    expect(readClaimNote(board, 99)).toEqual({ pid: 99, logDir: '/runs/x' });
+    expect(claimHeld(board, 99)).toBe(true);
+  });
+
+  it('othersLive counts only claims that are not this pid and whose owner is alive', () => {
+    claimSentinel(board, { pid: 4242, alive: () => true });
+    claimSentinel(board, { pid: 99, alive: () => true });
+    expect(othersLive(board, { pid: 99, alive: () => true })).toBe(true);
+    expect(othersLive(board, { pid: 99, alive: (p) => p === 99 })).toBe(false);
+    expect(othersLive(board, { pid: 4242, alive: () => true })).toBe(true);
   });
 
   it('pidAlive says yes for this process and no for a pid that cannot exist', () => {
     expect(pidAlive(process.pid)).toBe(true);
     expect(pidAlive(2 ** 30, () => { const e = new Error('x'); e.code = 'ESRCH'; throw e; })).toBe(false);
+  });
+
+  // The review's confirmed finding: a live pid is not a live RUN. Pids are reused, so a crashed
+  // run's claim under somebody's editor would be swept by nobody, skip the disarmed probe every
+  // night, and hold STOP unswept forever. Each claim decision defaults to this predicate.
+  describe('runAlive — a claim’s pid must be a live night run, not merely a live pid', () => {
+    const night = () => 'node scripts/night-run.mjs tkt-00000000000a';
+    it('dead → not a run, whatever ps would say', () => {
+      expect(runAlive(1, { alive: () => false, commandOf: night })).toBe(false);
+    });
+    it('alive and running night-run.mjs → a run', () => {
+      expect(runAlive(1, { alive: () => true, commandOf: night })).toBe(true);
+    });
+    it('alive but somebody else’s process — a reused pid — → not a run', () => {
+      expect(runAlive(1, { alive: () => true, commandOf: () => '/Applications/SomeEditor -w' })).toBe(false);
+    });
+    it('alive with a command ps cannot read → a run, since one cannot be ruled out', () => {
+      expect(runAlive(1, { alive: () => true, commandOf: () => null })).toBe(true);
+    });
+    it('is what the claim sweeps by: a reused pid is swept, a night run is not', () => {
+      claimSentinel(board, { pid: 4242, alive: () => true });
+      claimSentinel(board, { pid: 5555, alive: () => true });
+      const commandOf = (p) => (p === 4242 ? '/Applications/SomeEditor -w' : night());
+      const res = claimSentinel(board, { pid: 99, alive: (p) => runAlive(p, { alive: () => true, commandOf }) });
+      expect(res).toEqual({ ok: true, swept: [4242] });
+    });
   });
 
   // The third case of this dimension, and the only one that cannot be driven in-process: the handler
@@ -539,6 +679,26 @@ describe('sentinel lifecycle and ownership — dimension 3, and two actors', () 
       await exited;
       expect(existsSync(active)).toBe(false);
       expect(existsSync(stop)).toBe(false);
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+  });
+
+  // The runner kills nothing on its own signal, so the `claude` child may outlive it with the
+  // worktree as its cwd; a clean-looking tree is not a free one here (review, CONFIRMED). KEPT, and
+  // said so — the summary carries the reason.
+  it('KEEPS the worktree when the run is killed mid-ticket, rather than deleting a live session’s cwd', async () => {
+    const outPath = join(board, 'runner.out');
+    const fd = openSync(outPath, 'a');
+    const { child, exited } = await spawnParked('keep.mjs', { stdout: fd });
+    closeSync(fd);
+    try {
+      child.kill('SIGTERM');
+      await exited;
+      expect(existsSync(join(board, 'worktree-removed'))).toBe(false);
+      expect(readFileSync(outPath, 'utf8')).toMatch(/worktree KEPT at .* — the run was interrupted/);
+      expect(latestSummary().worktree).toMatchObject({ removed: false, why: expect.stringMatching(/interrupted/) });
     } finally {
       child.kill('SIGKILL');
       await exited;
@@ -660,6 +820,36 @@ describe('preflightGuard — dimension 4', () => {
     expect(res.why).toMatch(/stuck on, or the launcher itself failed to load/i);
   });
 
+  // The disarmed half hands the launcher an ABSENT sentinel path, so it never reads the real gate:
+  // both halves run beside another live run, and neither run's claim moves (review, CONFIRMED —
+  // the first draft disarmed and re-armed around the probe for nothing, then skipped it for nothing).
+  it('probes both halves beside another live run, and moves nobody’s claim', async () => {
+    claimSentinel(board, { pid: 4242, alive: () => true });
+    arm(board, { pid: 99 });
+    const seen = [];
+    let call = 0;
+    const spawnProbe = (cmd, args) => { seen.push(args); return call++ === 0 ? armedProbe() : hookOk(); };
+    const res = await preflightGuard(board, { spawnProbe });
+    expect(res.ok).toBe(true);
+    expect(res.disarmed).toEqual({ code: 0, out: '' });
+    expect(seen[1].at(-1)).toMatch(/NOT-THERE$/); // the probe's sentinel is the absent path, not ours
+    expect([...readClaims(board).pids].sort()).toEqual([4242, 99].sort());
+  });
+
+  // An entry that is not a claim is swept by nobody, so once every run ends it alone keeps the gate
+  // armed for every session on the machine. Refused first, by name, before a live model is spent.
+  it('refuses, naming the entry, when the claims directory holds something that is not a claim', async () => {
+    mkdirSync(sentinelPaths(board).active, { recursive: true });
+    writeFileSync(join(sentinelPaths(board).active, '.DS_Store'), '');
+    arm(board, { pid: 99 });
+    const calls = [];
+    const spawnProbe = () => { calls.push(1); return armedProbe(); };
+    const res = await preflightGuard(board, { spawnProbe });
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/"\.DS_Store" .* is not a claim/);
+    expect(calls).toEqual([]);
+  });
+
   // The sentinel is claimed before the probes run, so a hung probe parks the night with every merge
   // blocked and no ticket run (review, MEDIUM).
   it.each([0, 1])('aborts when probe %i times out rather than hanging the night', async (which) => {
@@ -747,9 +937,18 @@ describe('sessionEnv — how a night child knows the runner it found is its own'
   it('is what the runner actually drives each per-ticket session with', async () => {
     let seen;
     const exec = (_cmd, _args, opts) => { seen = opts; return Promise.resolve({ code: 0, out: '', capped: false }); };
-    await defaultRunSession(A, { capMs: 1000, exec });
+    await defaultRunSession(A, { capMs: 1000, exec, cwd: '/wt/night-x', boardDir: '/board' });
     expect(seen.env.NIGHT_RUN_TICKET).toBe(A);
     expect(seen.env.NIGHT_RUN_PID).toBe(String(process.pid));
+    expect(seen.cwd).toBe('/wt/night-x');
+    expect(seen.env.BOARD_DIR_OVERRIDE).toBe('/board');
+  });
+
+  // The session works in a worktree, where `tickets/` does not exist; without this the board tools
+  // resolve an empty board from cwd and every status reads null (tkt-c248cfbc5d8c).
+  it('points the board tools at the board when told where it is, and adds nothing otherwise', () => {
+    expect(sessionEnv(A, { env: {}, boardDir: '/board' }).BOARD_DIR_OVERRIDE).toBe('/board');
+    expect('BOARD_DIR_OVERRIDE' in sessionEnv(A, { env: {} })).toBe(false);
   });
 
   // Driven through `main` with NO runSession override, so the DEFAULT binding is under test: the case
@@ -856,13 +1055,32 @@ describe('main — dimensions 5 and 6: the queue and the STOP file', () => {
     expect(runSession.calls).toEqual([A, B]);
   });
 
-  it('a STOP file present up front ends the queue without running anything', async () => {
+  // A STOP found before ANY ticket was never addressed to this run, and a night that ran nothing is
+  // not a clean night (tkt-c248cfbc5d8c) — under concurrency this is another live run's stop still
+  // in force, so `night:start` must read it as a non-start rather than exit 0.
+  it('a STOP file present up front runs nothing, prints no verdict line, and exits stopped', async () => {
     seed(A, 'todo');
     mkdirSync(join(board, '.night-run'), { recursive: true });
     writeFileSync(sentinelPaths(board).stop, '');
     const runSession = sessionStub();
-    expect(await main([A], board, opts({ spawnProbe: passingProbe(), runSession }))).toBe(EXIT.ok);
+    let code;
+    const out = await captureStdout(async () => { code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession })); });
+    expect(code).toBe(EXIT.stopped);
     expect(runSession.calls).toEqual([]);
+    expect(out).toMatch(/STOP file present before any ticket — a stop is in force \(no other run is live/);
+    expect(out).not.toMatch(/^pre-flight: /m); // `night:start` must not read this as a started night
+    expect(existsSync(sentinelPaths(board).stop)).toBe(false); // swept: nobody else was live
+    expect(latestSummary().exit).toBe(EXIT.stopped);
+  });
+
+  it('a STOP file present up front names the live run that has not consumed it, and leaves it', async () => {
+    seed(A, 'todo');
+    mkdirSync(sentinelPaths(board).active, { recursive: true });
+    writeFileSync(claimPath(board, 424242), '424242\n');
+    writeFileSync(sentinelPaths(board).stop, '');
+    const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), alive: (p) => p === process.pid || p === 424242 })));
+    expect(out).toMatch(/another live run has not consumed it yet/);
+    expect(existsSync(sentinelPaths(board).stop)).toBe(true);
   });
 
   // Dimension 5's third case: the STOP file appears while a ticket is running. It must not kill the
@@ -882,19 +1100,243 @@ describe('main — dimensions 5 and 6: the queue and the STOP file', () => {
     expect(existsSync(sentinelPaths(board).active)).toBe(false);
   });
 
-  it('refuses to start while another live runner holds the sentinel', async () => {
+  // Another run, live by the injected liveness — the same seam night-control uses, since a pid the
+  // test does not own is not something it can keep alive.
+  const OTHER = 424242;
+  const withOther = () => (p) => p === process.pid || p === OTHER;
+
+  // The single-owner sentinel refused here. Now the run starts alongside, and the other run's claim
+  // is exactly where it was when this one leaves (tkt-c248cfbc5d8c).
+  it('starts alongside another live runner and leaves its claim in place', async () => {
+    seed(A, 'todo');
+    mkdirSync(sentinelPaths(board).active, { recursive: true });
+    writeFileSync(claimPath(board, OTHER), `${OTHER}\n`);
+    const runSession = sessionStub();
+    const code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession, alive: withOther() }));
+    expect(code).toBe(EXIT.ok);
+    expect(runSession.calls).toEqual([A]);
+    expect(readClaims(board).pids).toEqual([OTHER]);
+  });
+
+  // The review's confirmed finding, driven through main's DEFAULT liveness with a real process: the
+  // claim's pid is alive — a node child parked on a timer — but it is not a night run, so it is
+  // swept and it holds neither the gate nor the STOP. Injecting `alive` would leave the default
+  // unpinned, which is how the hole passed nine green tests.
+  it('sweeps a claim whose pid was reused by a live process that is not a night run, by default', async () => {
+    seed(A, 'todo');
+    const stranger = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      await waitFor(() => pidAlive(stranger.pid));
+      mkdirSync(sentinelPaths(board).active, { recursive: true });
+      writeFileSync(claimPath(board, stranger.pid), `${stranger.pid}\n`);
+      const runSession = sessionStub({ [A]: { status: 'qa', thenStop: true } });
+      const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession })));
+      expect(out).toMatch(new RegExp(`swept stale claim\\(s\\) left by dead pid\\(s\\) ${stranger.pid}`));
+      expect(out).toMatch(/arms and disarms correctly/); // both halves probed: no live RUN beside us
+      expect(existsSync(sentinelPaths(board).stop)).toBe(false); // and STOP was not held for it
+    } finally {
+      stranger.kill('SIGKILL');
+    }
+  });
+
+  // The control for the case above: the same claim, dead, is swept on the way in.
+  it('sweeps another runner’s claim when that runner is gone', async () => {
+    seed(A, 'todo');
+    mkdirSync(sentinelPaths(board).active, { recursive: true });
+    writeFileSync(claimPath(board, OTHER), `${OTHER}\n`);
+    const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), alive: (p) => p === process.pid })));
+    expect(out).toMatch(new RegExp(`swept stale claim\\(s\\) left by dead pid\\(s\\) ${OTHER}`));
+    expect(existsSync(sentinelPaths(board).active)).toBe(false);
+  });
+
+  it('refuses to start while an older single-owner runner holds the sentinel', async () => {
     seed(A, 'todo');
     mkdirSync(join(board, '.night-run'), { recursive: true });
-    writeFileSync(sentinelPaths(board).active, `${process.pid}\n`); // a live pid: this one
+    writeFileSync(sentinelPaths(board).active, `${OTHER}\n`);
     const runSession = sessionStub();
-    const code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession }));
+    const code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession, alive: withOther() }));
     expect(code).toBe(EXIT.preflight);
     expect(runSession.calls).toEqual([]);
-    expect(readFileSync(sentinelPaths(board).active, 'utf8').trim()).toBe(String(process.pid));
+    expect(readFileSync(sentinelPaths(board).active, 'utf8').trim()).toBe(String(OTHER));
+  });
+
+  // STOP is one file read by every run. Swept by the first run out, a stop meant for both would end
+  // one and be lost on the other: the last LIVE runner out is the one that sweeps it.
+  it('leaves a STOP in place for a run that is still live, and sweeps it as the last one out', async () => {
+    seed(A, 'todo');
+    mkdirSync(sentinelPaths(board).active, { recursive: true });
+    writeFileSync(claimPath(board, OTHER), `${OTHER}\n`);
+    const runSession = sessionStub({ [A]: { status: 'qa', thenStop: true } });
+    await main([A], board, opts({ spawnProbe: passingProbe(), runSession, alive: withOther() }));
+    expect(existsSync(sentinelPaths(board).stop)).toBe(true); // the other run has not seen it yet
+    rmSync(claimPath(board, OTHER)); // ...and now that run is gone
+    seed(B, 'todo');
+    await main([B], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub() }));
+    expect(existsSync(sentinelPaths(board).stop)).toBe(false);
+  });
+
+  it('hands every session the run’s worktree as cwd and the board as the override', async () => {
+    seed(A, 'todo');
+    const seen = [];
+    const runSession = (id, o) => { seen.push(o); seed(id, 'qa'); return Promise.resolve({ code: 0, out: '', capped: false }); };
+    let made;
+    const createWorktree = (root, stamp) => { made = fakeWorktree(root, stamp); return made; };
+    await main([A], board, opts({ spawnProbe: passingProbe(), runSession, createWorktree }));
+    expect(seen[0].cwd).toBe(made.path);
+    expect(seen[0].boardDir).toBe(board);
+  });
+
+  // Before the verdict line, so `night:start` reads it as the pre-flight failure it is rather than a
+  // run that passed and then died.
+  it('a worktree that cannot be made is a pre-flight failure, before any ticket and before the verdict line', async () => {
+    seed(A, 'todo');
+    const runSession = sessionStub();
+    let code;
+    const out = await captureStdout(async () => {
+      code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession, createWorktree: () => ({ ok: false, why: 'no origin' }) }));
+    });
+    expect(code).toBe(EXIT.preflight);
+    expect(runSession.calls).toEqual([]);
+    expect(out).not.toMatch(/^pre-flight: /m);
+    expect(existsSync(sentinelPaths(board).active)).toBe(false);
+    expect(latestSummary().exit).toBe(EXIT.preflight);
+  });
+
+  it('records the worktree in summary.json, and KEEPS one that is not clean by name', async () => {
+    seed(A, 'todo');
+    const kept = { removed: false, why: 'it is not clean: ?? scratch.txt' };
+    const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), removeWorktree: () => kept })));
+    expect(out).toMatch(/worktree KEPT at .* — it is not clean: \?\? scratch\.txt/);
+    expect(latestSummary().worktree).toMatchObject({ removed: false, why: kept.why });
+    expect(typeof latestSummary().worktree.path).toBe('string');
+  });
+
+  it('records a removed worktree as removed', async () => {
+    seed(A, 'todo');
+    const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub() })));
+    expect(out).toMatch(/worktree removed: /);
+    expect(latestSummary().worktree).toMatchObject({ removed: true });
   });
 
   it('exports a usage string that names the npm entrypoint', () => {
     expect(USAGE).toContain('npm run night');
+  });
+});
+
+// tkt-c248cfbc5d8c — the isolation itself, against real git rather than a stub. Fixtures live INSIDE
+// the repo (`.tmp-test`, gitignored): no suite may write outside the workspace.
+describe('the run’s worktree — one per run, against real git', () => {
+  const FIXTURES = join(here, '..', '.tmp-test');
+  let base;
+  let primary;
+  let origin;
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const seedRepo = (dir) => {
+    execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+    git(dir, 'config', 'user.email', 't@example.com');
+    git(dir, 'config', 'user.name', 'T');
+  };
+
+  beforeEach(() => {
+    mkdirSync(FIXTURES, { recursive: true });
+    base = mkdtempSync(join(FIXTURES, 'night-wt-'));
+    primary = join(base, 'primary');
+    origin = join(base, 'origin.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+    seedRepo(primary);
+    // `.claude/worktrees` ignored as in the real repo: that is what blinds the porcelain to a nested one.
+    writeFileSync(join(primary, '.gitignore'), 'node_modules\n.env\nrepos.local.json\n.claude/worktrees\n');
+    mkdirSync(join(primary, '.claude', 'skills', 'kanban-workflow'), { recursive: true });
+    writeFileSync(join(primary, '.claude', 'keep'), '');
+    writeFileSync(join(primary, '.claude', 'skills', 'kanban-workflow', 'SKILL.md'), '# skill\n');
+    git(primary, 'add', '.gitignore', '.claude/keep', '.claude/skills/kanban-workflow/SKILL.md');
+    git(primary, 'commit', '-qm', 'init');
+    git(primary, 'remote', 'add', 'origin', origin);
+    git(primary, 'push', '-q', 'origin', 'main');
+    mkdirSync(join(primary, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(primary, 'node_modules', 'pkg', 'index.js'), 'ok');
+    writeFileSync(join(primary, '.env'), 'X=1\n');
+    writeFileSync(join(primary, '.claude', 'settings.local.json'), '{}');
+    writeFileSync(join(primary, '.claude', 'skills', 'kanban-workflow', 'repos.local.json'), '{"baseDir":"/x"}');
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  // The repo map is the one every session reads first: SKILL.md §1 resolves it under
+  // CLAUDE_PROJECT_DIR — the worktree — and hard-stops without it (review, CONFIRMED: the first
+  // draft left it out, and every session of the first night would have stopped before its ticket).
+  it('creates it detached at origin/main, links node_modules, and copies the gitignored config in — the skill’s repo map included', () => {
+    const made = createRunWorktree(primary, 'stamp');
+    expect(made.ok).toBe(true);
+    expect(made.path).toBe(runWorktreePath(primary, 'stamp'));
+    expect(git(made.path, 'rev-parse', 'HEAD').trim()).toBe(git(primary, 'rev-parse', 'origin/main').trim());
+    expect(git(made.path, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('HEAD'); // detached
+    expect(lstatSync(join(made.path, 'node_modules')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(made.path, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('ok');
+    expect(readFileSync(join(made.path, '.env'), 'utf8')).toBe('X=1\n');
+    expect(existsSync(join(made.path, '.claude', 'settings.local.json'))).toBe(true);
+    expect(readFileSync(join(made.path, '.claude', 'skills', 'kanban-workflow', 'repos.local.json'), 'utf8')).toBe('{"baseDir":"/x"}');
+  });
+
+  // `.claude/worktrees` is gitignored, so a session that took EnterWorktree from inside leaves work
+  // the porcelain cannot see; `git worktree remove` would delete it (review, PLAUSIBLE — measured).
+  it('keeps a worktree that holds a nested worktree, whose uncommitted work the porcelain cannot see', () => {
+    const made = createRunWorktree(primary, 'stamp');
+    const inner = join(made.path, '.claude', 'worktrees', 'inner');
+    git(made.path, 'worktree', 'add', '-q', '--detach', inner, 'HEAD');
+    writeFileSync(join(inner, 'half-done.txt'), 'uncommitted');
+    expect(git(made.path, 'status', '--porcelain').trim()).toBe(''); // the control: porcelain is blind to it
+    const res = removeRunWorktree(primary, made);
+    expect(res.removed).toBe(false);
+    expect(res.why).toMatch(/nested worktree/);
+    expect(existsSync(join(inner, 'half-done.txt'))).toBe(true);
+  });
+
+  // The fetch is real: a commit that reached origin after the primary last looked is where the
+  // worktree starts, so a night's PRs are cut from what origin has now.
+  it('fetches first, so the worktree starts from origin’s tip and not the primary’s stale view', () => {
+    const other = join(base, 'other');
+    execFileSync('git', ['clone', '-q', origin, other]);
+    git(other, 'config', 'user.email', 't@example.com');
+    git(other, 'config', 'user.name', 'T');
+    writeFileSync(join(other, 'later.txt'), 'x');
+    git(other, 'add', 'later.txt');
+    git(other, 'commit', '-qm', 'later');
+    git(other, 'push', '-q', 'origin', 'main');
+    const stale = git(primary, 'rev-parse', 'origin/main').trim();
+    const made = createRunWorktree(primary, 'stamp');
+    expect(made.ok).toBe(true);
+    const head = git(made.path, 'rev-parse', 'HEAD').trim();
+    expect(head).toBe(git(other, 'rev-parse', 'HEAD').trim());
+    expect(head).not.toBe(stale);
+  });
+
+  // The removal must not follow the link: the primary's node_modules is the whole machine's install,
+  // and the settings copy is untracked, so it must read as ours rather than as dirt.
+  it('removes a clean worktree and never follows the node_modules link into the primary', () => {
+    const made = createRunWorktree(primary, 'stamp');
+    expect(removeRunWorktree(primary, made)).toEqual({ removed: true });
+    expect(existsSync(made.path)).toBe(false);
+    expect(readFileSync(join(primary, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('ok');
+    expect(git(primary, 'worktree', 'list')).not.toContain('night-stamp');
+  });
+
+  it('keeps a worktree that is not clean, names why, and leaves its provisioned files for the human', () => {
+    const made = createRunWorktree(primary, 'stamp');
+    writeFileSync(join(made.path, 'scratch.txt'), 'a halted ticket left this');
+    const res = removeRunWorktree(primary, made);
+    expect(res.removed).toBe(false);
+    expect(res.why).toMatch(/not clean/);
+    expect(res.why).toMatch(/scratch\.txt/);
+    expect(existsSync(made.path)).toBe(true);
+    expect(existsSync(join(made.path, '.env'))).toBe(true);
+  });
+
+  it('refuses, leaving nothing behind, when origin/main cannot be fetched', () => {
+    git(primary, 'remote', 'remove', 'origin');
+    const res = createRunWorktree(primary, 'stamp');
+    expect(res.ok).toBe(false);
+    expect(res.why).toMatch(/fetch/);
+    expect(existsSync(runWorktreePath(primary, 'stamp'))).toBe(false);
   });
 });
 

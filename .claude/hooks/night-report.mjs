@@ -28,7 +28,7 @@
 // returning clean, and an unreadable ticket status counts as outstanding. A hook that prints nothing
 // is indistinguishable from a hook that did not run.
 
-import { readFileSync, readdirSync, accessSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -46,15 +46,18 @@ export function resolveRoot(startDir = HERE) {
   return dirname(res.stdout.trim());
 }
 
-// Mirrors night-run.mjs's fileHere. `existsSync` swallows every error and returns false, so a file
-// under a directory that has become unreadable would read as absent — only a genuine ENOENT is.
-function present(path) {
+// Mirrors guard-unattended-merge.mjs's nightRunActive (tkt-c248cfbc5d8c): ACTIVE is a directory of
+// per-run claims, so any entry, an unlistable directory, or the legacy single-owner file is armed and
+// only an empty directory or a genuine ENOENT is not. `existsSync` swallows every error and returns
+// false, which would read an unreadable sentinel as absent.
+function armed(path) {
+  let entries;
   try {
-    accessSync(path);
-    return true;
+    entries = readdirSync(path);
   } catch (err) {
     return err?.code !== 'ENOENT';
   }
+  return entries.length > 0;
 }
 
 // Mirrors night-run.mjs's readStatus, but resolves the tickets directory itself: CLAUDE.md gives
@@ -123,7 +126,9 @@ export function scanRuns(nightDir) {
   }
 
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory()) continue;
+    // Only stamp-named directories are runs. `ACTIVE` is the claims directory (tkt-c248cfbc5d8c)
+    // and would otherwise be reported at every session start as a crashed run with no summary.
+    if (!entry.isDirectory() || !/^\d{4}-\d{2}-\d{2}T/.test(entry.name)) continue;
     const stamp = entry.name;
     try {
       out.runs.push({ stamp, summary: readSummary(join(nightDir, stamp)) });
@@ -149,7 +154,7 @@ export function collect({ root, boardDir, ticketsDir = null, readStatus = status
     };
   }
   const scan = scanRuns(join(root, '.night-run'));
-  const active = present(join(root, '.night-run', 'ACTIVE'));
+  const active = armed(join(root, '.night-run', 'ACTIVE'));
   const tickets_ = ticketsDir ?? ticketsDirFor(boardDir);
 
   // Keyed by id so a ticket queued on two nights reports once, carrying every verdict.
