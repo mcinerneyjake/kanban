@@ -5,7 +5,7 @@
 // never leaves the sentinel behind. Every stopping case is paired with a continuing control, because
 // a runner that stops on everything is as useless as one that stops on nothing.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, openSync, closeSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -65,6 +65,47 @@ const waitFor = async (pred, timeoutMs = 5000) => {
     await new Promise((r) => setTimeout(r, 25));
   }
   return false;
+};
+
+// One driver template for every subprocess case — they exist because the handlers under test end
+// with process.exit. runSession arrives as source so each case can say how the session dies.
+const here = dirname(fileURLToPath(import.meta.url));
+const driverFor = (name, runSessionSrc) => {
+  const driver = join(board, name);
+  writeFileSync(driver, `
+    import { main } from ${JSON.stringify(join(here, 'night-run.mjs'))};
+    import { writeFileSync } from 'node:fs';
+    let c = 0;
+    const spawnProbe = () => Promise.resolve(c++ === 0 ? { code: 0, out: 'BLOCKED' } : { code: 0, out: '' });
+    const runSession = ${runSessionSrc};
+    main([${JSON.stringify(A)}], ${JSON.stringify(board)}, {
+      spawnProbe, runSession, env: {}, resolveSentinelRoot: () => ${JSON.stringify(board)},
+    });
+  `);
+  return driver;
+};
+
+// Spawns a runner and resolves once its session is parked mid-ticket. "Parked" is a marker the
+// session writes itself, never the sentinel: arming precedes the loop's STOP check, so a STOP
+// written on "armed" is consumed on the normal path and the signal lands on a finished run.
+// The hold timer is load-bearing: a bare pending promise holds nothing on the loop, and the child drains.
+const spawnParked = async (name, { stdout = 'ignore', prelude = '', hold = 'setTimeout(() => {}, 5000);' } = {}) => {
+  const parked = join(board, 'parked');
+  const driver = driverFor(name, `() => new Promise(() => {
+    ${prelude}
+    writeFileSync(${JSON.stringify(parked)}, '');
+    ${hold}
+  })`);
+  seed(A, 'todo');
+  const child = spawn(process.execPath, [driver], { stdio: ['ignore', stdout, 'ignore'] });
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  const isParked = await waitFor(() => existsSync(parked));
+  if (!isParked) {
+    child.kill('SIGKILL');
+    await exited;
+  }
+  expect(isParked).toBe(true); // control: genuinely mid-ticket
+  return { ...sentinelPaths(board), child, exited };
 };
 
 describe('classify — dimension 1: the status transition', () => {
@@ -288,70 +329,63 @@ describe('sentinel lifecycle and ownership — dimension 3, and two actors', () 
   });
 
   // The third case of this dimension, and the only one that cannot be driven in-process: the handler
-  // ends with process.exit. A run killed mid-ticket must still clear the sentinel, because a leaked
-  // one silently blocks every later merge. SIGHUP is here because an ssh session dropping is the
-  // likeliest overnight death of the three (review, MEDIUM/HIGH), and each signal is its own
-  // registration — one missing cleanup() is invisible to a test that sends only the others.
-  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'])('clears the sentinel when the run is killed with %s mid-ticket', async (signal) => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const driver = join(board, 'driver.mjs');
-    writeFileSync(driver, `
-      import { main } from ${JSON.stringify(join(here, 'night-run.mjs'))};
-      let c = 0;
-      const spawnProbe = () => Promise.resolve(c++ === 0 ? { code: 0, out: 'BLOCKED' } : { code: 0, out: '' });
-      // Parked mid-ticket when the signal arrives. The timer is load-bearing: a bare never-resolving
-      // promise holds nothing on the event loop, so the child drains and exits before the signal —
-      // which is what this stub did first, and it looked exactly like a leaked sentinel.
-      const runSession = () => new Promise(() => { setTimeout(() => {}, 60000); });
-      main([${JSON.stringify(A)}], ${JSON.stringify(board)}, {
-        spawnProbe, runSession, env: {}, resolveSentinelRoot: () => ${JSON.stringify(board)},
-      });
-    `);
-    seed(A, 'todo');
-
-    const child = spawn(process.execPath, [driver], { stdio: 'ignore' });
-    const { active } = sentinelPaths(board);
+  // ends with process.exit. A run killed mid-ticket must still clear the sentinel (a leaked one blocks
+  // every later merge) AND the STOP that `night:stop --now` wrote just before signalling (a leftover
+  // one silences the next night, tkt-b90152b23e62). SIGHUP is the likeliest overnight death — an ssh
+  // session dropping — and each signal is its own registration, so each is sent.
+  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'])('clears the sentinel and a STOP when the run is killed with %s mid-ticket', async (signal) => {
+    const { active, stop, child, exited } = await spawnParked('driver.mjs');
     try {
-      const armedByChild = await waitFor(() => existsSync(active));
-      expect(armedByChild).toBe(true); // control: it really was armed before the signal
-
-      const exited = new Promise((resolve) => child.on('close', resolve));
-      child.kill(signal);
+      expect(existsSync(active)).toBe(true); // control: armed
+      writeFileSync(stop, ''); // what night:stop does first...
+      child.kill(signal); // ...and then, with --now, this
       await exited;
       expect(existsSync(active)).toBe(false);
+      expect(existsSync(stop)).toBe(false);
     } finally {
       child.kill('SIGKILL');
+      await exited;
+    }
+  });
+
+  // The unremovable case on the signal path: a directory defeats a non-recursive rmSync. It must be
+  // LOUD, and stdout goes to a file because a pipe can lose a write made just before process.exit.
+  it('says so loudly when the STOP a signal should sweep cannot be removed', async () => {
+    const outPath = join(board, 'runner.out');
+    const fd = openSync(outPath, 'a');
+    const { active, stop, child, exited } = await spawnParked('loud.mjs', { stdout: fd });
+    closeSync(fd);
+    try {
+      mkdirSync(stop);
+      child.kill('SIGTERM');
+      await exited;
+      expect(readFileSync(outPath, 'utf8')).toMatch(/STOP file could NOT be removed/);
+      expect(existsSync(stop)).toBe(true);
+      expect(existsSync(active)).toBe(false); // the sentinel still clears
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
     }
   });
 });
 
 describe('a crash mid-run — the other half of dimension 3', () => {
-  // The signals above cover a killed run; an uncaught throw in a stream handler is the other way an
-  // overnight run dies without reaching the finally, and it leaks the same sentinel (review,
-  // MEDIUM/HIGH). Asserts the exit code too, so a crash cannot report the night as clean.
-  it('clears the sentinel and exits non-zero when something throws uncaught', async () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const driver = join(board, 'crash.mjs');
-    writeFileSync(driver, `
-      import { main } from ${JSON.stringify(join(here, 'night-run.mjs'))};
-      let c = 0;
-      const spawnProbe = () => Promise.resolve(c++ === 0 ? { code: 0, out: 'BLOCKED' } : { code: 0, out: '' });
-      const runSession = () => new Promise(() => { setTimeout(() => { throw new Error('boom'); }, 150); });
-      main([${JSON.stringify(A)}], ${JSON.stringify(board)}, {
-        spawnProbe, runSession, env: {}, resolveSentinelRoot: () => ${JSON.stringify(board)},
-      });
-    `);
-    seed(A, 'todo');
-
-    const child = spawn(process.execPath, [driver], { stdio: 'ignore' });
-    const { active } = sentinelPaths(board);
+  // An uncaught throw in a stream handler is the other way an overnight run dies without reaching the
+  // finally; it leaks the same sentinel (review, MEDIUM/HIGH), and the crash handler is the same
+  // cleanup, so it must sweep STOP too. Asserts the exit code, so a crash cannot report a clean night.
+  it('clears the sentinel and a STOP, and exits non-zero, when something throws uncaught', async () => {
+    const { active, stop, child, exited } = await spawnParked('crash.mjs', {
+      prelude: `writeFileSync(${JSON.stringify(sentinelPaths(board).stop)}, '');`,
+      hold: "setTimeout(() => { throw new Error('boom'); }, 150);",
+    });
     try {
-      expect(await waitFor(() => existsSync(active))).toBe(true); // control: armed before the crash
-      const code = await new Promise((resolve) => child.on('close', resolve));
-      expect(existsSync(active)).toBe(false);
+      const code = await exited;
       expect(code).not.toBe(0);
+      expect(existsSync(active)).toBe(false);
+      expect(existsSync(stop)).toBe(false);
     } finally {
       child.kill('SIGKILL');
+      await exited;
     }
   });
 });
