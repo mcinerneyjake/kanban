@@ -13,12 +13,12 @@ import {
   dtachSocket, filterAdoptable, isHostGatewayRejection, isValidSessionId, parseClientFrame,
   parseSessionParam, parseTicketParam, resolveSessionCommand, rootMountArgs, ROOT_LABEL_KEY,
   SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY, withoutHostGateway,
-  type RunCommand, type AttachCommand,
+  type RunCommand, type AttachCommand, type CredMount,
 } from './terminalAuth.js';
-import { TerminalRegistry, type TerminalEntry } from './terminalRegistry.js';
+import { TerminalRegistry, type TerminalEntry, type ClientSocket } from './terminalRegistry.js';
 import { spawnDockerCli, type DockerCli } from './terminalDocker.js';
 import { startReaper } from './terminalReaper.js';
-import { seedSessionHome, removeSessionHome } from './terminalHome.js';
+import { seedSessionHome, removeSessionHome, sessionHomeExists } from './terminalHome.js';
 
 // Bidirectional terminal transport (tkt-be809dd2b7fb): a WS on /terminal-ws whose bytes are piped,
 // verbatim, to a node-pty that wraps `docker run -it` for a confined Claude Code session. Dev-only
@@ -161,22 +161,54 @@ async function waitForDtachSocket(containerName: string, socket: string, timeout
 // NOTE (deliberate trade-off): with the old process-'exit' kill-all removed, quitting the dev server
 // leaves detached containers running until the next boot re-adopts (then reaps) them, or S3b's
 // reaper / `terminal:clean` removes them.
-async function adoptRunningSessions(): Promise<void> {
+// Injected deps because this is the one DESTRUCTIVE consumer of `docker ps`: an unknown (null) answer
+// must adopt nothing AND remove nothing (tkt-6233ae50f62a). Never rejects — the boot chain has no catch.
+export async function adoptSurvivors(deps: {
+  docker: Pick<DockerCli, 'ps' | 'remove'>;
+  registry: Pick<TerminalRegistry, 'has' | 'adopt'>;
+  rootLabel: string;
+  maxSessions: number;
+  removeHome: (session: string) => void;
+}): Promise<'adopted' | 'unknown'> {
   // Scope to THIS checkout's containers (kanban.root label) so a second dev server on the same
   // daemon isn't adopted (and later reaped) by us (review F3). Async so a hung daemon can't block
   // the event loop at boot (review G6).
-  const rows = await docker.ps(
+  const rows = await deps.docker.ps(
     SESSION_LABEL_KEY, SESSION_CREATED_LABEL_KEY,
-    [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${kanbanRoot()}`], 'adoption',
+    [SESSION_LABEL_KEY, `${ROOT_LABEL_KEY}=${deps.rootLabel}`], 'adoption',
   );
-  const adoptable = filterAdoptable(rows, (id) => registry.has(id));
-  // Cap adoption at MAX_SESSIONS (docker ps is newest-first): adopt the most recent, force-remove any
+  if (rows === null) {
+    console.error('[terminal] boot adoption: docker ps answer unknown — adopting nothing, removing nothing; a reopened survivor will be refused until the next restart');
+    return 'unknown';
+  }
+  const adoptable = filterAdoptable(rows, (id) => deps.registry.has(id));
+  // Cap adoption at maxSessions (docker ps is newest-first): adopt the most recent, force-remove any
   // excess — with cap 2, extras for THIS root are crash-orphans, never live user sessions (review F6).
-  adoptable.slice(0, MAX_SESSIONS).forEach(({ name, session }) => registry.adopt(session, name));
+  adoptable.slice(0, deps.maxSessions).forEach(({ name, session }) => deps.registry.adopt(session, name));
   // Force-remove the excess crash-orphans AND drop their isolated HOME dirs — once the container is
   // gone, neither the reaper nor `terminal:clean` (both docker-ps-driven) would ever revisit them, so
   // the token-bearing HOME would leak forever otherwise (S4 review F2). `session` is a valid UUID here.
-  adoptable.slice(MAX_SESSIONS).forEach(({ name, session }) => { docker.remove(name); removeSessionHome(session); });
+  // rmSync's `force` suppresses only ENOENT, so a throw here is logged rather than allowed to reject.
+  for (const { name, session } of adoptable.slice(deps.maxSessions)) {
+    try { deps.docker.remove(name); deps.removeHome(session); }
+    catch (err) { console.error(`[terminal] boot adoption: could not remove crash-orphan ${name}:`, err instanceof Error ? err.message : err); }
+  }
+  return 'adopted';
+}
+
+// True once boot adoption settled without an answer: a survivor may be running under an id the registry does not know.
+let adoptionUnknown = false;
+
+// Refuse a reopen that would reseed (rm) a survivor's HOME while adoption is unknown. Must run BEFORE
+// registry.create: dispose → cleanupSession → removeSessionHome would delete the very dir being protected.
+export function provisionSessionHome(opts: {
+  sessionId: string;
+  adoptionUnknown: boolean;
+  homeExists: (id: string) => boolean;
+  seed: (id: string) => CredMount;
+}): CredMount | null {
+  if (opts.adoptionUnknown && opts.homeExists(opts.sessionId)) return null;
+  return opts.seed(opts.sessionId);
 }
 
 // Host git identity so in-container commits are attributed correctly.
@@ -198,9 +230,12 @@ export function attachTerminal(server: Server): void {
   // Re-adopt containers that survived a previous process (S3a), THEN arm the reaper (S3b). Ordering
   // matters: the reaper reaps orphans the registry doesn't track, so it must not run until adoption
   // has populated the registry — else a still-unadopted survivor would look like a reapable orphan.
-  // adoptRunningSessions never rejects (docker.ps resolves [] on failure), so `.finally` always runs.
+  // adoptSurvivors never rejects (docker.ps resolves null, not a rejection, on failure), so `.finally`
+  // always runs — and `adoptionUnknown` is set before it, so openSession never reads a stale false.
   let adoptionSettled = false;
-  const adoptionDone = adoptRunningSessions().finally(() => {
+  const adoptionDone = adoptSurvivors({
+    docker, registry, rootLabel: kanbanRoot(), maxSessions: MAX_SESSIONS, removeHome: removeSessionHome,
+  }).then((outcome) => { adoptionUnknown = outcome === 'unknown'; }).finally(() => {
     adoptionSettled = true;
     startReaper({
       docker,
@@ -297,21 +332,41 @@ function bindMessages(id: string, entry: TerminalEntry, ws: WebSocket): void {
   });
 }
 
+// Message first (so `docker logs` hints are visible), then the startup-failure code rather than a bare
+// close, so the client keeps the widget with the error instead of self-dismissing (tkt-171759eb29f6).
+function closeWithStartupFailure(ws: ClientSocket, message: string): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(`\r\n[terminal] ${message}\r\n`);
+  ws.close(TERMINAL_STARTUP_FAILURE_CODE, 'startup failure');
+}
+
 async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Promise<void> {
   const ticket = parseTicketParam(req.url ?? '');
   const containerName = `${CONTAINER_NAME_PREFIX}${randomUUID().slice(0, 8)}`;
+
+  // Synchronous and BEFORE registry.create (see provisionSessionHome), so the cap accounting is unchanged.
+  let credMount: CredMount | null;
+  try {
+    credMount = provisionSessionHome({ sessionId: id, adoptionUnknown, homeExists: sessionHomeExists, seed: seedSessionHome });
+  } catch (err) {
+    // A mid-seed failure leaves a partial dir that, under adoptionUnknown, would be refused as a survivor forever.
+    removeSessionHome(id);
+    closeWithStartupFailure(ws, err instanceof Error ? err.message : 'failed to start session');
+    return;
+  }
+  if (credMount === null) {
+    closeWithStartupFailure(ws, 'this session id may still be running from before the server restarted, and docker could not be queried at boot to confirm — restart the dev server once docker is reachable, or open a new terminal');
+    return;
+  }
+
   // Reserve the slot synchronously so the cap can't be undercounted during async setup, and bind
   // close BEFORE the await so a disconnect mid-setup still frees the slot.
   const entry = registry.create(id, containerName, ws);
   ws.on('close', () => registry.detach(id, ws));
 
   const fail = (message: string) => {
-    // Errors go to the CURRENT socket (a reload may have reattached during the await). Close with the
-    // startup-failure code (not a bare close) so the client can tell a container that never started
-    // from a clean session end and KEEP the widget with an error, rather than self-dismissing
-    // (tkt-171759eb29f6). The message is written first so `docker logs` hints are visible server-side.
-    const w = entry.currentWs;
-    if (w && w.readyState === WebSocket.OPEN) { w.send(`\r\n[terminal] ${message}\r\n`); w.close(TERMINAL_STARTUP_FAILURE_CODE, 'startup failure'); }
+    // Errors go to the CURRENT socket (a reload may have reattached during the await).
+    if (entry.currentWs) closeWithStartupFailure(entry.currentWs, message);
     registry.disposeIfCurrent(id, entry);
   };
 
@@ -319,7 +374,7 @@ async function openSession(ws: WebSocket, req: IncomingMessage, id: string): Pro
   try {
     command = await resolveSessionCommand({
       ticket, sessionId: id, getTicket, projectRoots: projectRoots(), kanbanRoot: kanbanRoot(),
-      createdAt: Date.now(), credMount: seedSessionHome(id), image: IMAGE, containerName, gitIdentity: gitIdentity(),
+      createdAt: Date.now(), credMount, image: IMAGE, containerName, gitIdentity: gitIdentity(),
     });
   } catch (err) {
     // Bad/unknown ticket → tell the terminal and close, rather than spawn a shell silently.

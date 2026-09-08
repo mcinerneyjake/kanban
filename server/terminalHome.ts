@@ -162,3 +162,10 @@ export function removeSessionHome(sessionId: string, env: NodeJS.ProcessEnv = pr
   if (home === null) return;
   rmSync(path.dirname(home), { recursive: true, force: true });
 }
+
+// Whether a session already has a HOME on disk — the trace a survivor of a restart leaves when boot
+// adoption could not confirm it is gone (tkt-6233ae50f62a). An invalid id has no home.
+export function sessionHomeExists(sessionId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const home = sessionHomeDir(sessionId, env);
+  return home !== null && existsSync(home);
+}

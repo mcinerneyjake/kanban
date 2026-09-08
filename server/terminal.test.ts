@@ -1,7 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
-import { startContainer } from './terminal.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { startContainer, adoptSurvivors, provisionSessionHome } from './terminal.js';
 import { buildDetachedRunArgs } from './terminalAuth.js';
-import type { RunResult } from './terminalDocker.js';
+import type { RunResult, PsRow } from './terminalDocker.js';
+import { seedSessionHome, sessionHomeDir, sessionHomeExists } from './terminalHome.js';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Round-trip cover for the host-gateway fallback (tkt-1cb370e16c55). The chain crosses three modules
 // — terminalDocker returns RunResult.stderr → terminal decides → terminalAuth strips the argv →
@@ -208,5 +212,144 @@ describe('startContainer — host-gateway fallback round trip', () => {
       expect(await promise).toEqual({ code: 1, aliasDropped: true });
       expect(notices).toEqual([]);
     });
+  });
+});
+
+// tkt-6233ae50f62a: boot adoption is the one DESTRUCTIVE consumer of `docker ps`. On a failed query it
+// used to see [] — "no survivors" — and the cascade from there was: nothing adopted, so a reopened
+// survivor routes to the NEW-session path, which rm's the live session's HOME to reseed it and spawns
+// a duplicate container. Null now means "unknown", and unknown must change nothing on disk.
+const SID_A = '3f8a1c2d-4b5e-4f6a-8b9c-0d1e2f3a4b5c';
+const SID_B = '11111111-2222-4333-8444-555566667777';
+const SID_C = '99999999-8888-4777-a666-555544443333';
+
+function fakeAdoptionDeps(answer: PsRow[] | null) {
+  const adopted: Array<[string, string]> = [];
+  const removed: string[] = [];
+  const homesRemoved: string[] = [];
+  return {
+    adopted, removed, homesRemoved,
+    deps: {
+      docker: { ps: vi.fn(async () => answer), remove: (name: string) => { removed.push(name); } },
+      registry: { has: () => false, adopt: (id: string, name: string) => { adopted.push([id, name]); } },
+      rootLabel: '/r',
+      maxSessions: 2,
+      removeHome: (session: string) => { homesRemoved.push(session); },
+    },
+  };
+}
+
+describe('adoptSurvivors (boot re-adoption from docker ps)', () => {
+  // The known path, so the null case below is measured against something: with three survivors and
+  // a cap of two, the newest two are adopted and the third is a crash-orphan to remove WITH its HOME.
+  it('adopts up to the cap and force-removes the excess with their HOMEs when ps answers', async () => {
+    const rows = [
+      { name: 'kanban-term-a', session: SID_A }, { name: 'kanban-term-b', session: SID_B }, { name: 'kanban-term-c', session: SID_C },
+    ];
+    const f = fakeAdoptionDeps(rows);
+    expect(await adoptSurvivors(f.deps)).toBe('adopted');
+    expect(f.deps.docker.ps).toHaveBeenCalledWith('kanban.session', 'kanban.created', ['kanban.session', 'kanban.root=/r'], 'adoption');
+    expect(f.adopted).toEqual([[SID_A, 'kanban-term-a'], [SID_B, 'kanban-term-b']]);
+    expect(f.removed).toEqual(['kanban-term-c']);
+    expect(f.homesRemoved).toEqual([SID_C]);
+  });
+
+  it('an empty answer is a KNOWN "no survivors": nothing to adopt, and adoption counts as done', async () => {
+    const f = fakeAdoptionDeps([]);
+    expect(await adoptSurvivors(f.deps)).toBe('adopted');
+    expect(f.adopted).toEqual([]);
+    expect(f.removed).toEqual([]);
+  });
+
+  it('a null answer is UNKNOWN: adopts nothing, removes no container and no HOME, and says so', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = fakeAdoptionDeps(null);
+    expect(await adoptSurvivors(f.deps)).toBe('unknown');
+    expect(f.adopted).toEqual([]);
+    expect(f.removed).toEqual([]);
+    expect(f.homesRemoved).toEqual([]);
+    expect(err.mock.calls.flat().join(' ')).toMatch(/adoption.*unknown/i);
+    err.mockRestore();
+  });
+
+  // rmSync's `force` suppresses only ENOENT; an EACCES/EBUSY on one crash-orphan's HOME must not
+  // reject the boot chain (which has no catch) nor turn a KNOWN answer into an unknown one.
+  it('a throwing removeHome on an excess orphan is logged, and adoption still resolves as known', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rows = [
+      { name: 'kanban-term-a', session: SID_A }, { name: 'kanban-term-b', session: SID_B }, { name: 'kanban-term-c', session: SID_C },
+    ];
+    const f = fakeAdoptionDeps(rows);
+    f.deps.removeHome = () => { throw new Error('EACCES'); };
+    await expect(adoptSurvivors(f.deps)).resolves.toBe('adopted');
+    expect(f.adopted).toHaveLength(2);
+    expect(f.removed).toEqual(['kanban-term-c']); // the container removal before the throw still happened
+    expect(err.mock.calls.flat().join(' ')).toMatch(/could not remove crash-orphan kanban-term-c.*EACCES/);
+    err.mockRestore();
+  });
+});
+
+describe('provisionSessionHome (refuse a reopen that would clobber a survivor\'s HOME)', () => {
+  // Real per-session HOME dirs under the repo's gitignored .tmp-test/ (never os.tmpdir()), driving the
+  // real seedSessionHome — the claim under test is that a directory on disk is left alone.
+  const tmpRoot = fileURLToPath(new URL('../.tmp-test', import.meta.url));
+  let base: string;
+  let env: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    mkdirSync(tmpRoot, { recursive: true });
+    base = mkdtempSync(path.join(tmpRoot, 'terminal-provision-'));
+    const seed = path.join(base, 'kanban-terminal', 'home');
+    const hostConfig = path.join(base, 'host-claude');
+    mkdirSync(path.join(seed, '.claude'), { recursive: true });
+    mkdirSync(hostConfig, { recursive: true });
+    writeFileSync(path.join(seed, '.claude.json'), '{"onboarded":true}');
+    env = { KANBAN_TERMINAL_HOME: seed, CLAUDE_CONFIG_DIR: hostConfig };
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  // A file the SEED does not carry, so a reseed (rm + copy) would make it vanish.
+  function plantSurvivorHome(id: string): string {
+    const home = sessionHomeDir(id, env);
+    if (home === null) throw new Error('fixture id must be valid');
+    mkdirSync(home, { recursive: true });
+    const marker = path.join(home, 'survivor.marker');
+    writeFileSync(marker, 'live session state');
+    return marker;
+  }
+  function provision(sessionId: string, adoptionUnknown: boolean) {
+    const seed = vi.fn((id: string) => seedSessionHome(id, env));
+    const result = provisionSessionHome({ sessionId, adoptionUnknown, homeExists: (id) => sessionHomeExists(id, env), seed });
+    return { result, seed };
+  }
+
+  it('adoption unknown + HOME already present → refused: seed never runs and the HOME is intact', () => {
+    const marker = plantSurvivorHome(SID_A);
+    const { result, seed } = provision(SID_A, true);
+    expect(result).toBeNull();
+    expect(seed).not.toHaveBeenCalled();
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('adoption unknown + no HOME → a genuinely new session still provisions (no denial of service)', () => {
+    const { result, seed } = provision(SID_B, true);
+    expect(seed).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ hostHome: sessionHomeDir(SID_B, env), containerHome: '/kanban-home' });
+    expect(existsSync(path.join(String(result?.hostHome), '.claude.json'))).toBe(true);
+  });
+
+  // Negative control: with adoption KNOWN a stale dir from a crashed prior run is the normal reseed
+  // case, so the guard must not fire there — otherwise every crash-recovery reopen would be refused.
+  it('adoption known + HOME present → reseeds as before', () => {
+    const marker = plantSurvivorHome(SID_C);
+    const { result, seed } = provision(SID_C, false);
+    expect(seed).toHaveBeenCalledTimes(1);
+    expect(result?.hostHome).toBe(sessionHomeDir(SID_C, env));
+    expect(existsSync(marker)).toBe(false); // the stale dir was cleared for a fresh copy
+  });
+
+  it('adoption known + no HOME → the ordinary first-open path provisions', () => {
+    const { result, seed } = provision(SID_A, false);
+    expect(seed).toHaveBeenCalledTimes(1);
+    expect(result?.hostHome).toBe(sessionHomeDir(SID_A, env));
   });
 });

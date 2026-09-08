@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawnDockerCli, parsePsLines, redactUserinfo } from './terminalDocker.js';
 
@@ -239,5 +239,95 @@ describe('redactUserinfo', () => {
     expect(redactUserinfo('git@github.com:me/repo.git')).toBe('git@github.com:me/repo.git');
     expect(redactUserinfo('http://localhost:1234/v1')).toBe('http://localhost:1234/v1');
     expect(redactUserinfo('')).toBe('');
+  });
+});
+
+// tkt-6233ae50f62a: every `ps` failure used to resolve `[]`, indistinguishable from "no containers" —
+// so a daemon hiccup at boot un-adopted live survivors and let a reopen clobber their HOME. The answer
+// on failure is now null ("unknown"), and `ps` runs through the INJECTED spawn so each kind is
+// drivable here with no docker.
+describe('spawnDockerCli.ps', () => {
+  afterEach(() => vi.useRealTimers()); // the timeout case installs fake timers; never leak them past a failed assertion
+  const FORMAT = '{{.Names}}\t{{.Label "kanban.session"}}\t{{.Label "kanban.created"}}';
+  const ARGS = ['ps', '--filter', 'label=kanban.session', '--filter', 'label=kanban.root=/r', '--format', FORMAT];
+
+  function fakeChildWithStdout() {
+    return Object.assign(fakeChild(), { stdout: new EventEmitter(), kill: vi.fn() });
+  }
+  function ps(spawn: Parameters<typeof spawnDockerCli>[0]) {
+    return spawnDockerCli(spawn).ps('kanban.session', 'kanban.created', ['kanban.session', 'kanban.root=/r'], 'adoption');
+  }
+
+  it('spawns through the injected seam with stdout piped, and parses the rows on a zero exit', async () => {
+    const child = fakeChildWithStdout();
+    const spawn = vi.fn(() => child);
+    const p = ps(spawn);
+    expect(spawn).toHaveBeenCalledWith('docker', ARGS, { stdio: ['ignore', 'pipe', 'ignore'] });
+    child.stdout.emit('data', 'kanban-term-aaa\t11111111-2222-4333-8444-555566667777\t1700000000000\n');
+    child.emit('close', 0);
+    expect(await p).toEqual([{ name: 'kanban-term-aaa', session: '11111111-2222-4333-8444-555566667777', createdAtMs: 1_700_000_000_000 }]);
+  });
+
+  // Positive control for the null cases below: a clean run that lists nothing IS "no containers".
+  it('a zero exit with no output is a known empty answer — [] not null', async () => {
+    const child = fakeChildWithStdout();
+    const p = ps(() => child);
+    child.emit('close', 0);
+    expect(await p).toEqual([]);
+  });
+
+  it('resolves null (unknown), never [], on a non-zero exit — and says so in the log', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = fakeChildWithStdout();
+    const p = ps(() => child);
+    child.stdout.emit('data', 'partial\tgarbage\n'); // whatever arrived before the failure is discarded
+    child.emit('close', 1);
+    expect(await p).toBeNull();
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/docker ps \(adoption\) exited 1 .*unknown/i);
+    err.mockRestore();
+  });
+
+  it('resolves null (unknown) when docker cannot spawn at all', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = fakeChildWithStdout();
+    const p = ps(() => child);
+    child.emit('error', new Error('ENOENT'));
+    expect(await p).toBeNull();
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/docker ps \(adoption\) failed.*unknown/i);
+    err.mockRestore();
+  });
+
+  it('resolves null (unknown) on the 5s timeout, kills the child, and ignores a late exit', async () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = fakeChildWithStdout();
+    const p = ps(() => child);
+    vi.advanceTimersByTime(5_000);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(await p).toBeNull();
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/docker ps \(adoption\) timed out.*unknown/i);
+    // The kill makes the child close AFTER the answer was given; that must not re-settle, throw, or
+    // log a second, contradictory cause for the same query.
+    child.stdout.emit('data', 'kanban-term-late\t11111111-2222-4333-8444-555566667777\n');
+    expect(() => child.emit('close', null)).not.toThrow();
+    expect(await p).toBeNull();
+    expect(err).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
+  // Node's contract: stdio may still be draining at 'exit'; only 'close' guarantees the listing is
+  // complete. Answering on 'exit' could drop a live survivor on the SUCCESS path.
+  it('does not answer on exit — only on close, once stdout is fully drained', async () => {
+    const child = fakeChildWithStdout();
+    let answered = false;
+    const p = ps(() => child).then((rows) => { answered = true; return rows; });
+    child.stdout.emit('data', 'kanban-term-aaa\t11111111-2222-4333-8444-555566667777\n');
+    child.emit('exit', 0);
+    await Promise.resolve();
+    expect(answered).toBe(false);
+    child.stdout.emit('data', 'kanban-term-bbb\t99999999-8888-4777-a666-555544443333\n'); // the late chunk
+    child.emit('close', 0);
+    expect((await p)?.map((r) => r.name)).toEqual(['kanban-term-aaa', 'kanban-term-bbb']);
   });
 });

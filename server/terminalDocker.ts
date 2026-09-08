@@ -9,14 +9,18 @@ import { spawn as nodeSpawn } from 'node:child_process';
 // detached-container slices.
 
 // Minimal structural signatures for the spawners, so both the real child_process functions and a
-// test fake satisfy them (the full `typeof spawn` overload set is awkward to fake). `stderr` is
-// present only on the piped shape; optional so a fake that ignores it still satisfies the type.
+// test fake satisfy them (the full `typeof spawn` overload set is awkward to fake). `stderr`/`stdout`
+// are present only on the matching piped shape; optional so a fake that ignores them still satisfies
+// the type, as is `kill` (only the bounded `ps` needs it).
 interface Spawned {
   on(event: 'error', listener: (err: Error) => void): unknown;
   on(event: 'exit', listener: (code: number | null) => void): unknown;
+  on(event: 'close', listener: (code: number | null) => void): unknown;
   stderr?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
+  stdout?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
+  kill?(): unknown;
 }
-type SpawnStdio = 'ignore' | ['ignore', 'ignore', 'pipe'];
+type SpawnStdio = 'ignore' | ['ignore', 'ignore', 'pipe'] | ['ignore', 'pipe', 'ignore'];
 type SpawnFn = (command: string, args: readonly string[], options: { stdio: SpawnStdio; env?: NodeJS.ProcessEnv }) => Spawned;
 
 // Cap on the diagnostic we buffer from a failing docker command. We keep the TAIL, not the head:
@@ -60,9 +64,10 @@ export interface DockerCli {
   // where session is the `sessionLabelKey` value. Used at boot to re-adopt containers that outlived a
   // restart (S3a) and periodically by the reaper (S3b). Each row also carries createdAtMs from the
   // `createdLabelKey` label so the reaper can compute age. ASYNC + bounded so a hung daemon can't
-  // block the event loop; resolves empty (and logs loudly, tagged with `context`) on any failure so
-  // a transient error can't silently look like "no survivors".
-  ps(sessionLabelKey: string, createdLabelKey: string, filterLabels: string[], context: string): Promise<PsRow[]>;
+  // block the event loop. Resolves NULL (never rejects, logs loudly tagged with `context`) on timeout,
+  // non-zero exit or spawn failure: an unanswered query must stay distinguishable from "no survivors",
+  // because callers act on [] and must not act on "don't know" (tkt-6233ae50f62a).
+  ps(sessionLabelKey: string, createdLabelKey: string, filterLabels: string[], context: string): Promise<PsRow[] | null>;
 }
 
 // Parse `docker ps --format '{{.Names}}\t{{.Label "sess"}}\t{{.Label "created"}}'` output → rows.
@@ -120,30 +125,33 @@ export function spawnDockerCli(spawn: SpawnFn = nodeSpawn): DockerCli {
       });
     },
     ps(sessionLabelKey, createdLabelKey, filterLabels, context) {
-      // Real async spawn (not the injected one, which pipes nothing) so we can capture stdout without
-      // a synchronous stall (review G6). Its logic is parsePsLines, tested separately.
       return new Promise((resolve) => {
         const filters = filterLabels.flatMap((l) => ['--filter', `label=${l}`]);
         const format = `{{.Names}}\t{{.Label "${sessionLabelKey}"}}\t{{.Label "${createdLabelKey}"}}`;
-        const proc = nodeSpawn('docker', ['ps', ...filters, '--format', format], { stdio: ['ignore', 'pipe', 'ignore'] });
+        const proc = spawn('docker', ['ps', ...filters, '--format', format], { stdio: ['ignore', 'pipe', 'ignore'] });
         let out = '';
         let settled = false;
-        const finish = (rows: PsRow[]) => {
+        const finish = (rows: PsRow[] | null) => {
           if (!settled) { settled = true; clearTimeout(timer); resolve(rows); }
         };
         const timer = setTimeout(() => {
-          try { proc.kill(); } catch { /* already gone */ }
-          console.error(`[terminal] docker ps (${context}) timed out (5s) — resolving empty`);
-          finish([]);
+          try { proc.kill?.(); } catch { /* already gone */ }
+          console.error(`[terminal] docker ps (${context}) timed out (5s) — result UNKNOWN`);
+          finish(null);
         }, 5_000);
         proc.stdout?.on('data', (d) => { out += String(d); });
-        proc.on('exit', (code) => {
+        // 'close', not 'exit': stdout may still be draining at 'exit', and a truncated listing would
+        // silently drop a live survivor on the SUCCESS path. After the timeout answered, the kill's
+        // late close is not a second answer and must not log a second cause.
+        proc.on('close', (code) => {
+          if (settled) return;
           if (code === 0) finish(parsePsLines(out));
-          else { console.error(`[terminal] docker ps (${context}) exited ${code ?? 'null'} — resolving empty`); finish([]); }
+          else { console.error(`[terminal] docker ps (${context}) exited ${code ?? 'null'} — result UNKNOWN`); finish(null); }
         });
         proc.on('error', (err) => {
-          console.error(`[terminal] docker ps (${context}) failed:`, err instanceof Error ? err.message : err);
-          finish([]);
+          if (settled) return;
+          console.error(`[terminal] docker ps (${context}) failed to spawn — result UNKNOWN:`, err instanceof Error ? err.message : err);
+          finish(null);
         });
       });
     },
