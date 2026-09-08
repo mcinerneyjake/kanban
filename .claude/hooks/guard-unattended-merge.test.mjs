@@ -414,3 +414,176 @@ describe('regressions from the high-effort review', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 });
+
+// tkt-cba2d225c6e0 — the payload flag is one of TWO routes to a detached turn. This block covers the
+// other: the command STRING. Same discipline as dimension 9 — every block paired with a permitting
+// control, because a scanner that refuses `2>&1` would wedge most real commands on the machine.
+describe('decide() — dimension 10: shell backgrounding in the command string', () => {
+  // The ticket's own example, plus the spellings a trailing-anchored test would miss.
+  it.each([
+    ['npm test &', 'the bare trailing form'],
+    ['npm run build > out.log 2>&1 &', "the ticket's example: a redirect then a fork"],
+    ['(npm test &)', 'grouped — ends in punctuation, not in `&`'],
+    ['{ npm test & }', 'brace group — same shape'],
+    ['npm test & npm run lint', '`&` as a SEPARATOR, mid-command'],
+    ['cd /some/other/repo && npm test &', 'the foreign-mode form'],
+    ['npm test &| cat', 'zsh `&|` — background and disown'],
+  ])('blocks %s (%s)', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(true);
+  });
+
+  it.each([
+    ['nohup npm test', 'bare'],
+    ['setsid npm test', 'bare'],
+    ['npm test & disown', 'after a fork'],
+    ['FOO=1 nohup npm test', 'behind an env prefix'],
+    ['if true; then setsid npm test; fi', 'behind a shell keyword'],
+    ['echo x | nohup cat', 'after a pipe — command position, not first word'],
+  ])('blocks the detach keyword in %s (%s)', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(true);
+  });
+
+  // THE CONTROLS. Without these the block cases are indistinguishable from a scanner that refuses
+  // every `&` — and `2>&1` alone appears in most non-trivial commands a night run runs.
+  it.each([
+    ['npm test && npm run lint', '`&&` is a separator, not a fork'],
+    ['npm run build > out.log 2>&1', '`2>&1` is a redirection'],
+    ['npm run build &> out.log', '`&>` is a redirection'],
+    ['npm test >& out.log', '`>&` is a redirection'],
+    ['npm run build >> out.log 2>&1', 'append plus dup'],
+    ['echo "npm test &"', 'a double-quoted mention is data'],
+    ["echo 'npm test &'", 'a single-quoted mention is data'],
+    ['git commit -m "fix & polish"', '`&` inside a commit message'],
+    ['./nohup-report.sh', 'a substring, not the command word'],
+    ['cat nohup.out', 'a substring in an ARGUMENT'],
+    ['echo disown', 'the keyword as an argument, not a command'],
+    ['npm test', 'the ordinary foreground case'],
+    ['npm test |& tee out.log', '`|&` is bash/zsh shorthand for `2>&1 |` — a pipe, not a fork'],
+    ['cat 1<&0', '`1<&0` — an input-descriptor dup'],
+  ])('permits %s (%s) even while active', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(false);
+  });
+
+  // The `|&` control needs its opposite, or it could be satisfied by a scanner that stopped seeing
+  // `&` after a pipe stage at all.
+  it('still blocks a fork in the stage after a pipe', () => {
+    expect(decide(payload('cat out.log | npm test &'), present).blocked).toBe(true);
+  });
+
+  // BACKSLASH — it failed both ways before the review (finding 3). The fail-CLOSED case is the
+  // costly one: an ordinary commit refused for a whole night.
+  it.each([
+    ['git commit -m "handle \\" quote & more"', 'an escaped quote must not flip dq and expose the &'],
+    ['echo hi \\& there', 'an escaped & is a literal, not a fork'],
+    ['git commit -m "a \\" b & c"', 'the same shape mid-message'],
+  ])('permits %s (%s)', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(false);
+  });
+
+  it('still sees a real fork after an escaped quote (fail-open half of finding 3)', () => {
+    expect(decide(payload("echo don\\'t & npm test"), present).blocked).toBe(true);
+  });
+
+  // `#` COMMENTS (finding 7) — another new false block, same class as the backslash one.
+  it.each([
+    ['npm test # background & wait', 'a trailing comment is not a fork'],
+    ['npm test  #  a & b', 'with padding'],
+  ])('permits %s (%s)', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(false);
+  });
+
+  it.each([
+    ['git log --format=%h#%s &', 'mid-word # is an ordinary character, so the & still forks'],
+    ['echo "a # b" &', 'a quoted # is not a comment either'],
+  ])('still blocks %s (%s)', (cmd) => {
+    expect(decide(payload(cmd), present).blocked).toBe(true);
+  });
+
+  // KNOWN RESIDUAL (tkt-9f7fe38a1628), pinned rather than left to be discovered. splitBackground masks `$( … )`, so a
+  // fork inside a command substitution is not seen — deliberately, and identically to upstream's
+  // scanner. In practice the substitution still blocks on the subshell's stdout, so this is not the
+  // detached turn the guard is about; the test exists so a future change to that reading is a
+  // DELIBERATE edit rather than a silent one.
+  it('does not scan inside a command substitution (documented residual)', () => {
+    expect(decide(payload('VAR=$(ls &) && echo done'), present).blocked).toBe(false);
+  });
+
+  // The sentinel dimension. A guard that blocks these outside a night run would wedge every
+  // interactive session on the machine.
+  it.each(['npm test &', 'nohup npm test', 'setsid npm test'])(
+    'permits %s when no run is active',
+    (cmd) => {
+      expect(decide(payload(cmd), absent).blocked).toBe(false);
+    },
+  );
+
+  it('inherits the fail-closed reading of an undeterminable sentinel', () => {
+    expect(decide(payload('npm test &'), null).blocked).toBe(true);
+  });
+
+  it('carries the BACKGROUND remedy, not the merge one', () => {
+    const { reason, remedy } = decide(payload('npm test &'), present);
+    expect(message(reason, present, remedy)).toMatch(/foreground with an explicit timeout/);
+  });
+
+  // ORDERING, the same regression dimension 9 pins for the payload flag. night-run.mjs's armed
+  // pre-flight asks a live model to run `gh pr merge 999999999` and accepts the SHARED
+  // `[guard-unattended-merge] Blocked:` marker as proof the MERGE gate fired. A model that complies
+  // by appending `&` must still trip the merge rule, or the night's single control passes while the
+  // gate it claims to prove never ran. Asserting the REASON is the whole point: both orderings block.
+  //
+  // The keyword half of the same hazard (review, HIGH). parseGh reads the command WORD, so a
+  // `nohup`/`setsid` prefix hid the merge from the merge loop entirely: `nohup gh pr merge 12` was
+  // ALLOWED before this ticket, and once the detach rule existed it blocked on the DETACH reason —
+  // which the pre-flight would have accepted as proof the merge gate fired.
+  it.each([
+    'gh pr merge 999999999 &',
+    'gh pr merge 12 &',
+    'gh api -X PUT /repos/o/r/pulls/1/merge &',
+    'nohup gh pr merge 999999999',
+    'nohup gh pr merge 12',
+    'setsid gh pr merge 12',
+    'nohup gh api -X PUT /repos/o/r/pulls/1/merge',
+    'nohup gh pr merge 12 &',
+  ])('reports the MERGE reason for %s', (cmd) => {
+    expect(decide(payload(cmd), present).reason).toMatch(/merge a pull request/);
+  });
+
+  // Stripping the wrapper for the merge scan must NOT blind the detach rule to the same word.
+  it('still reports the DETACH reason when the wrapped command is not a merge', () => {
+    expect(decide(payload('nohup npm test'), present).reason).toMatch(/detach/);
+  });
+
+  // `&` SEPARATES as well as backgrounds, and splitSegments deliberately does not break on it — so
+  // a merge sitting after one parsed as the command `npm` and the merge rule never ran at all. The
+  // background rule would refuse this anyway; the reason is what the pre-flight control reads.
+  it('finds a merge hidden after a bare `&`, where splitSegments does not break', () => {
+    expect(decide(payload('npm test & gh pr merge 12'), present).reason).toMatch(
+      /merge a pull request/,
+    );
+  });
+});
+
+describe('the wired launcher — dimension 10G: shell backgrounding end to end', () => {
+  const run = (command, sentinel) =>
+    spawnSync(process.execPath, [LAUNCHER, sentinel], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: tmp }),
+      encoding: 'utf8',
+    });
+
+  it('exits 2 and names the foreground remedy while active', () => {
+    const res = run('npm run build > out.log 2>&1 &', present);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('[guard-unattended-merge] Blocked:');
+    expect(res.stderr).toContain('foreground with an explicit timeout');
+  });
+
+  it('permits the same command when no run is active', () => {
+    expect(run('npm run build > out.log 2>&1 &', absent).status).toBe(0);
+  });
+
+  // The control that separates "correct" from "refuses every ampersand".
+  it('permits a plain redirection while active', () => {
+    expect(run('npm run build > out.log 2>&1', present).status).toBe(0);
+  });
+});

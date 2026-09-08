@@ -31,9 +31,23 @@ export const EXIT = { ok: 0, preflight: 1, stopped: 2, alarm: 3, usage: 64 };
 // Only a clean, expected transition is an OK. Everything else either stops the queue or is reported
 // as needing a human — "can't tell" never returns the permissive answer.
 export function classify({ before, after, capped = false }) {
-  if (capped) {
-    return { level: 'capped', stop: true, text: 'hit the wall-clock cap; left mid-ticket' };
+  const verdict = transitionVerdict({ before, after });
+  if (!capped) return verdict;
+  // A cap must never swallow the alarm: night-report's `isAlarm` is the ONLY thing that rescues a
+  // `done` ticket from `isOutstanding`, so returning `capped` here is what makes an unattended merge
+  // silent in the morning report — the one silence that hook says is worse than a false alarm.
+  if (verdict.level === 'alarm') return verdict;
+  // A cap that fires after the ticket reached `qa` has nothing left to interrupt, so dropping the
+  // rest of the queue costs a night for nothing (tkt-4fc11782b77b). Gating on the uncapped verdict
+  // being `ok`, not on `after === 'qa'`, keeps every transition guard in transitionVerdict binding
+  // here too. The wording stays a BOARD reading: nothing here observes that a PR was actually opened.
+  if (verdict.level === 'ok') {
+    return { level: 'capped-after-qa', stop: false, text: 'hit the wall-clock cap after the ticket reached qa; the queue continues' };
   }
+  return { level: 'capped', stop: true, text: 'hit the wall-clock cap; left mid-ticket' };
+}
+
+function transitionVerdict({ before, after }) {
   if (!after) {
     return { level: 'note', stop: true, text: `status unreadable after the run (was ${before ?? 'unknown'})` };
   }
@@ -62,45 +76,143 @@ export function classify({ before, after, capped = false }) {
   }
 }
 
-// Anchored on a runner's own summary line and a NON-ZERO count. The first draft scanned the whole
-// `--verbose --output-format stream-json` transcript for /\d+ failed/, which matched both
-// `Tests 0 failed | 12 passed` and any sentence the model wrote about failures — so nearly every
-// halt was labelled UNDIAGNOSED, which is how a genuinely broken branch gets waved past at 8am
-// (review, MEDIUM — both measured).
-const GATE_SUMMARY = /^\s*(?:Tests|Test Files)\s+[1-9]\d*\s+failed\b/m;
-const GATE_NAMED = /^\s*(?:typecheck|lint)\s+failed\b/im;
+// vitest's summary block in print order: `Test Files`, `Tests`, then `Errors` when an unhandled error
+// failed a run whose tests all passed. A zero count is green (the first draft matched /\d+ failed/).
+const SUMMARY_LINE = /^\s*(Test Files|Tests|Errors)\s+(?:(\d+)\s+(?:failed|errors?)\b|\d+\s+(?:passed|skipped)\b)/gm;
+const COVERAGE_FAILED = /^\s*ERROR: Coverage for\b/m;
+const TSC_ERROR = /\berror TS\d+:/;
+const ESLINT_ERRORS = /✖ \d+ problems? \((\d+) errors?/;
+// The session's own `echo "typecheck=$?"` after a redirected run — the whole line, so an env dump or
+// prose cannot pass as one. This is the only verdict a redirected run leaves in the transcript.
+const EXIT_LINE = /^\s*(typecheck|lint|test)(?:[_\s]exit)?\s*=\s*(\d+)\s*$/gim;
 // Since tkt-ea501e6d1a1d the unattended path may let the pre-commit hook BE the gate, so a failure
-// can surface only as husky aborting the commit — tsc/eslint output plus this marker, never the
-// session's own "typecheck failed" wording that GATE_NAMED keys on.
+// can surface only as husky aborting the commit.
 const HOOK_REJECTED = /^\s*husky\s+-\s+pre-commit script failed\b/im;
+// The run must BE the segment's command, behind at most a subshell paren, env assignments, `env`,
+// `time` or `timeout`: matching it anywhere let `echo "=== npm test ==="` register as a run.
+const PREFIX = String.raw`^(?:time\s+|timeout\s+\S+\s+)?(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S)*\s+)*(?:time\s+|timeout\s+\S+\s+)?`;
+const TEST_RUN = new RegExp(`${PREFIX}(?:(npm)\\s+(?:run\\s+)?test(?::(?:run|unit|ci))?|(?:npx\\s+)?vitest\\s+run)(?=\\s|$)(.*)$`);
+const scriptRun = (name) => new RegExp(`${PREFIX}npm\\s+run\\s+${name}(?=\\s|$)`);
+// vitest flags that take the next token as their value, so that token is not a file selection.
+const VALUE_FLAGS = /^(?:--reporter|--config|-c|--root|-r|--dir|--project|--outputFile|--pool|--shard|--environment|--retry|--bail|--testTimeout|--hookTimeout|--maxWorkers|--minWorkers|--coverage\.\w+)$/;
+const SUBSET_FLAGS = /^(?:-t|--testNamePattern|--changed|--related)(?:=|$)/;
+
+// A heredoc body is data, not commands: a line inside it starting `npx vitest run x` is not a run.
+const stripHeredocs = (command) => String(command ?? '').replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g, '');
+const segments = (command) => command.split(/&&|\|\||;|\|(?!\|)|\n/).map((s) => s.trim().replace(/^\(\s*|\s*\)$/g, ''));
+
+const parseEvent = (line) => {
+  if (!line.startsWith('{')) return null;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+};
 
 /**
  * `describe` is handed `res.out` — the stdout of `claude -p --output-format stream-json`, one JSON
  * object per line with the session's real output inside string FIELDS, where a newline is the two
- * characters `\n`. Decoding those restores the line starts every anchored pattern here needs.
+ * characters `\n`. Decoding those restores the line starts an anchored pattern needs.
  *
- * Used by `hookRejected` only, deliberately. Measured 2026-09-08 across all 27 night logs carrying
- * a `summary.json`:
- *
- *   GATE_SUMMARY on the raw log (today's behaviour)  0/27   — it has never once fired
- *   GATE_SUMMARY on the decoded log                  9/27   — but SEVEN of the nine ended `ok`
- *   this husky marker on the decoded log             0/27
- *
- * So decoding `gateFailed` would swap a silent false negative for a false positive on 7 of 9 hits:
- * an intermediate red test run is the NORMAL state of a healthy ticket here, since a red-first repro
- * and the mutation check both require observing red. Which occurrence should count is a real design
- * question and a pre-existing defect, owned by its own ticket — not decided as a rider on this one.
- * husky's marker has no such problem: it is printed only when a hook has actually failed.
+ * Used by `hookRejected` only: husky's marker is printed only when a hook has actually failed, so it
+ * is safe to match anywhere. `gateFailed` does NOT decode — see it for why.
  */
 export function decodeLog(log) {
   return String(log ?? '').replace(/\\r\\n|\\n|\\r/g, '\n');
 }
 
-// Left reading the RAW log, exactly as before this ticket. It is inert on a stream-json log
-// (0/27 above) — do not report it as a control that holds.
+// Every Bash tool result in transcript order, paired with the command that produced it. Only these
+// are the gate speaking: the model's own text, and a ticket body quoting a run into `appendBody`,
+// carry the same lines and are not observations.
+function* bashResults(log) {
+  const uses = new Map();
+  for (const line of String(log ?? '').split('\n')) {
+    const blocks = parseEvent(line)?.message?.content;
+    if (!Array.isArray(blocks)) continue;
+    for (const block of blocks) {
+      if (block.type === 'tool_use') {
+        uses.set(block.id, block);
+      } else if (block.type === 'tool_result' && uses.get(block.tool_use_id)?.name === 'Bash') {
+        const content = block.content;
+        const text = Array.isArray(content) ? content.map((c) => (typeof c === 'string' ? c : c.text ?? '')).join('\n') : String(content ?? '');
+        yield { command: String(uses.get(block.tool_use_id).input?.command ?? ''), text };
+      }
+    }
+  }
+}
+
+// Whether a Bash command's test summaries are the gate's verdict. A selection — a file, a directory,
+// `-t`, `--changed`, `npm test <path>` — is a repro or a mutation check, which REQUIRE observing red,
+// so it never counts. Mixed selection-and-full, or a selection through an unexpanded `$VAR`, cannot
+// be attributed and yields no observation. A `git commit` carrying a summary is the hook running the gate.
+export function gateRunKind(command) {
+  const cmd = stripHeredocs(command);
+  let kind = null;
+  for (const segment of segments(cmd)) {
+    const m = TEST_RUN.exec(segment);
+    if (!m) continue;
+    const tokens = m[2].replace(/\d?>>?\s*\S+/g, '').trim().split(/\s+/).filter(Boolean);
+    // npm forwards positionals as-is but keeps dash-flags for itself until `--`.
+    let vitestFlags = !m[1];
+    let here = 'full';
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t === '--') { vitestFlags = true; continue; }
+      if (t.includes('$')) { here = 'unknowable'; break; }
+      if (!t.startsWith('-')) { here = 'narrow'; break; }
+      if (!vitestFlags) continue;
+      if (SUBSET_FLAGS.test(t)) { here = 'narrow'; break; }
+      if (VALUE_FLAGS.test(t)) i++;
+    }
+    if (kind !== null && kind !== here) return 'unknowable';
+    kind = here;
+  }
+  return kind ?? (/\bgit\s+commit\b/.test(cmd) ? 'full' : 'none');
+}
+
+// One full run's verdict from its summary block; null when no block was printed.
+function summaryVerdict(text) {
+  let files = false;
+  let verdict = null;
+  for (const m of text.matchAll(SUMMARY_LINE)) {
+    const red = Number(m[2] ?? 0) > 0;
+    if (m[1] === 'Test Files') files = red;
+    else if (m[1] === 'Tests') { verdict = files || red; files = false; }
+    else if (verdict !== null && red) verdict = true;
+  }
+  return verdict !== null && COVERAGE_FAILED.test(text) ? true : verdict;
+}
+
+// The verdict is the LAST observation of each kind, read from Bash tool results: an intermediate red
+// is what a red-first repro or mutation check must produce (7 of 9 real logs with one ended `ok`), and
+// plain text is not an event, so the suite cannot go green on a shape production never sends.
+// Measurements and the adversary list: tkt-54ffcbeccb0c.
 export function gateFailed(log) {
-  const text = log ?? '';
-  return GATE_SUMMARY.test(text) || GATE_NAMED.test(text);
+  const last = new Map();
+  for (const { command, text } of bashResults(log)) {
+    const cmd = stripHeredocs(command);
+    // A verdict counts only from the command that ran it; an echoed exit status outranks the summary,
+    // which cannot see a coverage threshold or a collect error that exited 1 with every test green.
+    const exits = new Map();
+    for (const m of text.matchAll(EXIT_LINE)) exits.set(m[1].toLowerCase(), Number(m[2]) !== 0);
+    const full = gateRunKind(cmd) === 'full';
+    const summary = full ? summaryVerdict(text) : null;
+    const test = full ? exits.get('test') ?? summary : null;
+    if (test !== null) last.set('test', test);
+
+    const links = cmd.split('&&');
+    const testLink = links.findIndex((l) => segments(l).some((s) => TEST_RUN.test(s)));
+    for (const [kind, tool] of [['typecheck', TSC_ERROR], ['lint', ESLINT_ERRORS]]) {
+      const link = links.findIndex((l) => segments(l).some((s) => scriptRun(kind).test(s)));
+      if (link < 0) continue;
+      const shown = tool.exec(text);
+      // A summary printed at all proves every `&&` link before the run exited 0.
+      const verdict = exits.get(kind) ?? (shown ? Number(shown[1] ?? 1) > 0 : summary !== null && link < testLink ? false : null);
+      if (verdict !== null) last.set(kind, verdict);
+    }
+  }
+  return [...last.values()].some(Boolean);
 }
 
 /**
@@ -132,20 +244,12 @@ export function hookRejected(log) {
  */
 export function strandedBackgroundTasks(log) {
   const lines = String(log ?? '').split('\n').filter((line) => line !== '');
-  const parse = (line) => {
-    if (!line.startsWith('{')) return null;
-    try {
-      return JSON.parse(line);
-    } catch {
-      return null;
-    }
-  };
-  if (lines.length === 0 || !parse(lines[lines.length - 1])) return null;
+  if (lines.length === 0 || !parseEvent(lines[lines.length - 1])) return null;
 
   let sawResult = false;
   let stranded = [];
   for (const line of lines) {
-    const event = parse(line);
+    const event = parseEvent(line);
     if (!event) continue;
     // A fresh envelope closes the segment before it, so earlier strands are no longer the tail.
     if (event.type === 'result') {
@@ -167,9 +271,8 @@ const label = (summary) => {
 
 export function describe(result, log) {
   if (result.level !== 'halt') return result.text;
-  // Checked first so that if `gateFailed` is ever made to fire on a stream-json log, a gate failure
-  // inside the hook gets the gate's own wording, which is the more specific of the two. On today's
-  // logs it never fires, so a hook-run gate failure reaches the reader through `hookRejected`.
+  // Checked first: a gate failure inside the hook gets the gate's own wording, the more specific of
+  // the two. A hook that refused for some other reason falls through to `hookRejected`.
   if (gateFailed(log)) {
     return `${result.text} — the quality gate failed, so this is UNDIAGNOSED, not evidence against the branch`;
   }
@@ -177,9 +280,9 @@ export function describe(result, log) {
     return `${result.text} — a pre-commit hook refused the commit, so nothing landed; read the hook's own output before judging the branch`;
   }
   // States only what was DETECTED. An earlier draft added "no gate failed", which asserts the silence
-  // of `gateFailed` — a detector this file documents as inert on stream-json (0/27). Measured on
-  // `tkt-ab211de0101c`, a halt whose decoded log carries `Tests 1 failed`: that sentence would have
-  // told the reader to discount a real failure (review, HIGH).
+  // of `gateFailed` — and a run whose gate never printed a summary (redirected to a file, or cut off)
+  // yields no observation at all. That sentence would tell the reader to discount a real failure
+  // (review, HIGH).
   const stranded = strandedBackgroundTasks(log);
   if (stranded !== null) {
     const named = stranded.map(label).filter((s) => s !== '');
@@ -809,6 +912,12 @@ export async function main(
     const stamp = startedAt.replace(/[:.]/g, '-');
     const logDir = join(root, '.night-run', stamp);
     mkdirSync(logDir, { recursive: true });
+    // The link `night:status` attributes a log by. The launcher owns `runner-<stamp>.log` and the
+    // runner owns `logDir`, and until this line nothing tied either to the pid in ACTIVE — so status
+    // picked a log by mtime and showed a REFUSED launch's "Aborting; no tickets were run" under a
+    // healthy run's banner (tkt-166e6cfe2e2c). Written after the claim, so only a pid that really
+    // owns the sentinel ever declares itself.
+    process.stdout.write(`night-run pid ${process.pid} — logs ${logDir}\n`);
 
     // Rewritten after EVERY ticket rather than once at the end: the nights worth reading are the ones
     // that died mid-queue, and a summary written only on the way out is exactly the one they never

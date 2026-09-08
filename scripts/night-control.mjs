@@ -231,7 +231,9 @@ const tail = (text, n) => {
   return lines.length > n ? lines.slice(-n) : lines;
 };
 
-const newestMatching = (dir, pred) => {
+// null means the directory could not be READ — kept distinct from an empty list, so a status line
+// never reports absence it did not measure.
+const sortedMatching = (dir, pred) => {
   let entries;
   try {
     entries = readdirSync(dir);
@@ -245,9 +247,38 @@ const newestMatching = (dir, pred) => {
       return null;
     }
   }).filter(Boolean);
-  if (scored.length === 0) return null;
   scored.sort((a, b) => b.at - a.at);
-  return scored[0];
+  return scored;
+};
+
+const isRunnerLog = (n) => /^runner-.*\.log$/.test(n);
+
+/**
+ * The runner's self-declaration, written by night-run.mjs once it holds the sentinel.
+ *
+ * Two separate reasons for the shape. The distinct literal, rather than a bare `/pid (\d+)/`:
+ * a refused launch names the OWNER's pid in prose (`another night run (pid N) already holds the
+ * sentinel`), so a bare match attributes, with total confidence, the one log that certainly is not
+ * the owner's — the defect itself (tkt-166e6cfe2e2c). The line ANCHOR: `status` prints tails
+ * prefixed `  | `, so a re-logged status output carries a verbatim declaration belonging to another
+ * run. `readVerdict` guards the same mid-line quoting hazard.
+ */
+const declarationOf = (text) => {
+  // LAST match, not the first: `openLog` opens the runner log in append mode, so one file can carry
+  // two runs' output (a repeated ISO stamp — an NTP step back is enough). First-match-wins would let
+  // a dead run's declaration hide the current owner's, further down the same file.
+  const m = [...(text ?? '').matchAll(/^night-run pid (\d+) — logs (.+)$/gm)].at(-1);
+  return m ? { pid: Number.parseInt(m[1], 10), logDir: m[2].trim() } : null;
+};
+
+// Newest-first, so the ordinary case — the owner's log IS the newest — stops at the first read.
+const ownerLogFrom = (dir, logs, pid) => {
+  for (const { name } of logs) {
+    const text = readIfThere(join(dir, name));
+    const decl = declarationOf(text);
+    if (decl && decl.pid === pid) return { name, text, logDir: decl.logDir };
+  }
+  return null;
 };
 
 const since = (ms) => {
@@ -415,7 +446,6 @@ function status(deps) {
           lines.push(`owner: pid ${c.pid}, alive, running night-run.mjs`);
           lines.push(`queue: ${c.queue.length ? c.queue.join(' ') : '(none named on its command line)'}`);
           if (c.worktree) lines.push(`worktree: ${c.worktree}`);
-          if (c.logDir) lines.push(...inFlightLines(root, c.logDir));
           break;
         case 'foreign':
           lines.push(`owner: pid ${c.pid} is alive but is NOT a night run — stale, reused pid. Command: ${c.cmd}`);
@@ -438,26 +468,43 @@ function status(deps) {
 
   lines.push(`STOP: ${fileHere(stop) ? `present (${stop}) — every queue ends after its ticket in flight` : 'absent'}`);
 
-  const log = newestMatching(dir, (n) => /^runner-.*\.log$/.test(n));
-  if (!log) {
-    lines.push('runner log: none in .night-run/');
+  // Attribution keys off the OWNER PID, which `dead`, `foreign` and `unknown-command` carry just as
+  // `live` does — a crashed run's own log is exactly what an operator wants named, and reaching for
+  // the newest instead reproduces this ticket's defect in those states (review, MEDIUM). Only
+  // `absent` and `unreadable` have no pid at all. `in flight:` stays gated on `live` separately:
+  // the log outlives the run that wrote it (review, LOW).
+  const logs = sortedMatching(dir, isRunnerLog);
+  if (logs === null) {
+    lines.push(`runner log: UNKNOWN — ${dir} could not be read, so no log can be attributed. This is not a report that none exists.`);
   } else {
-    const text = readIfThere(join(dir, log.name));
-    lines.push(`runner log: ${log.name}`);
-    lines.push(...tail(text, 12).map((l) => `  | ${l}`));
-    // The runner prints `--- <id>` as it picks each ticket up, so the last one is the ticket in flight.
-    const inFlight = [...text.matchAll(/^--- (tkt-[0-9a-f]{12})/gm)].at(-1)?.[1] ?? null;
-    // Gated on a LIVE owner: the newest runner log outlives the run that wrote it, so after a
-    // finished night this block cheerfully reported a ticket as "in flight" with nothing running
-    // (review, LOW). The log and the stamp directory are also independent newest-of picks, so this
-    // is the fallback for a live claim that has not yet named its own run directory above.
-    if (inFlight && live.length > 0 && !live.some((c) => c.logDir)) {
-      const board = readStatus(root, inFlight);
-      lines.push(`in flight: ${inFlight} (board status now ${board ?? 'unreadable'})`);
-      const runDir = newestMatching(dir, (n) => /^\d{4}-/.test(n));
-      const tee = runDir ? readIfThere(join(dir, runDir.name, `${inFlight}.live.log`)) : '';
-      lines.push(tee ? `live tail (${inFlight}.live.log):` : `live tail: none yet for ${inFlight}`);
-      lines.push(...tail(tee, 12).map((l) => `  | ${l}`));
+    // One attribution PER CLAIM (tkt-c248cfbc5d8c), each keyed off that claim's pid.
+    const withPid = state.claims.filter((c) => c.pid !== undefined);
+    if (withPid.length === 0) {
+      const log = logs[0];
+      lines.push(log
+        ? `runner log: ${log.name} (newest — the sentinel names no pid to attribute it to)`
+        : 'runner log: none in .night-run/');
+      if (log) lines.push(...tail(readIfThere(join(dir, log.name)), 12).map((l) => `  | ${l}`));
+    }
+    for (const c of withPid) {
+      const owned = ownerLogFrom(dir, logs, c.pid);
+      if (!owned) {
+        // "Cannot tell" does not fall back to the newest. That fallback is what printed a refused
+        // launch's `Aborting; no tickets were run` under a healthy run (tkt-166e6cfe2e2c). The newest
+        // is named but NOT shown, and deliberately not called somebody else's: a runner declares
+        // itself only after claiming and making its log dir, so a status inside that window — or
+        // against a run started before this line existed — is disowning the live run's own log.
+        lines.push(`runner log: NOT identified — no runner-*.log in ${dir} declares pid ${c.pid}${logs[0] ? `; the newest (${logs[0].name}) is not shown, since nothing ties it to this pid` : ', and none is present'}.`);
+      } else {
+        lines.push(`runner log: ${owned.name} (pid ${c.pid})`);
+        lines.push(...tail(owned.text, 12).map((l) => `  | ${l}`));
+      }
+      // The run directory comes from the claim's own note or the owner's OWN declaration, never from an
+      // independent newest-of pick. The runner prints `--- <id>` as it picks each ticket up, so that
+      // names the ticket in flight before its live tee exists.
+      const runDir = c.logDir ?? owned?.logDir ?? null;
+      const declared = owned ? [...owned.text.matchAll(/^--- (tkt-[0-9a-f]{12})/gm)].at(-1)?.[1] ?? null : null;
+      if (c.kind === 'live' && runDir) lines.push(...inFlightLines(root, runDir, { declared }));
     }
   }
 
@@ -465,23 +512,30 @@ function status(deps) {
   return EXIT.ok;
 }
 
-// A claim that names its run directory is read there: the ticket whose live tee has no finished
-// `<id>.log` beside it yet is the one in flight.
-function inFlightLines(root, logDir) {
+// The ticket in flight is the one whose live tee has no finished `<id>.log` beside it yet, or failing
+// that the one the runner log last declared with `--- <id>` — a session that has not written a byte
+// yet has a tee-less tick.
+function inFlightLines(root, logDir, { declared = null } = {}) {
   const lines = [`run dir: ${logDir}`];
-  let names;
+  let names = [];
+  let readable = true;
   try {
     names = readdirSync(logDir);
   } catch {
-    return [...lines, 'in flight: unknown — the run directory could not be read'];
+    readable = false;
   }
   const finished = new Set(names.filter((n) => /^tkt-[0-9a-f]{12}\.log$/.test(n)).map((n) => n.slice(0, 16)));
-  const inFlight = names
+  const fromTees = names
     .filter((n) => /^tkt-[0-9a-f]{12}\.live\.log$/.test(n))
     .map((n) => n.slice(0, 16))
     .filter((id) => !finished.has(id))
     .at(-1) ?? null;
-  if (!inFlight) return [...lines, 'in flight: none — between tickets, or still in pre-flight'];
+  const inFlight = fromTees ?? (declared && !finished.has(declared) ? declared : null);
+  if (!inFlight) {
+    return [...lines, readable
+      ? 'in flight: none — between tickets, or still in pre-flight'
+      : 'in flight: unknown — the run directory could not be read'];
+  }
   const board = readStatus(root, inFlight);
   lines.push(`in flight: ${inFlight} (board status now ${board ?? 'unreadable'})`);
   const tee = readIfThere(join(logDir, `${inFlight}.live.log`));
@@ -576,7 +630,10 @@ function clearStale(state, { out, err }, root) {
 
 export async function main(argv = process.argv.slice(2), {
   resolveRoot = primaryRoot,
-  boundary = process.env.NIGHT_RUN_BOUNDARY,
+  // Injectable so the confinement default below is itself testable: a test supplies `env: {}` and
+  // omits `boundary`, which exercises this expression instead of bypassing it (tkt-f77eab475f15).
+  env = process.env,
+  boundary = env.NIGHT_RUN_BOUNDARY,
   spawnFn = spawn,
   openLog = (p) => openSync(p, 'a'),
   now = Date.now,
