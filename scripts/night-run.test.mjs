@@ -211,37 +211,236 @@ describe('classify — dimension 2: how the run exited', () => {
   });
 });
 
-describe('describe — dimension 7: gate-failure evidence changes the wording', () => {
+// The shape `describe` is actually handed: `claude -p --verbose --output-format stream-json`, one
+// event per line, the session's real output inside Bash `tool_result` blocks. Every case below is
+// built from these so no test can pass on a shape production never sees (tkt-54ffcbeccb0c).
+const event = (type, blocks, extra = {}) => JSON.stringify({ type, message: { content: blocks }, ...extra });
+let nextUse = 0;
+const ran = (command, output, { name = 'Bash', is_error = false, parent = null } = {}) => {
+  const id = `toolu_${++nextUse}`;
+  return [
+    event('assistant', [{ type: 'tool_use', id, name, input: name === 'Bash' ? { command } : command }]),
+    event('user', [{ type: 'tool_result', tool_use_id: id, content: output, is_error }], parent ? { parent_tool_use_id: parent } : {}),
+  ].join('\n');
+};
+const said = (text) => event('assistant', [{ type: 'text', text }]);
+const transcript = (...lines) => lines.join('\n');
+const RED_FULL = ' Test Files  1 failed | 74 passed (75)\n      Tests  3 failed | 2009 passed (2012)\n   Duration  40.1s';
+const GREEN_FULL = ' Test Files  75 passed (75)\n      Tests  2012 passed (2012)\n   Duration  38.7s';
+const RED_ONE = ' Test Files  1 failed (1)\n      Tests  1 failed | 93 skipped (94)';
+const GREEN_ONE = ' Test Files  1 passed (1)\n      Tests  1 passed | 93 skipped (94)';
+const NARROW = 'npx vitest run src/lib/detail.test.ts -t "trimmed value" 2>&1';
+
+describe('gateFailed — dimension 7: which occurrence is the gate verdict (tkt-54ffcbeccb0c)', () => {
   it('a halt with a failing gate is reported as UNDIAGNOSED, not a broken branch', () => {
     const r = classify({ before: 'todo', after: 'in-progress' });
-    const text = describeResult(r, 'Tests  3 failed | 40 passed');
-    expect(text).toMatch(/undiagnosed/i);
+    expect(describeResult(r, ran('npm test 2>&1 | tail -5', RED_FULL))).toMatch(/undiagnosed/i);
   });
 
   // The control. Without it the wording would be unconditional and carry no information.
   it('a halt with no gate failure is not called undiagnosed', () => {
     const r = classify({ before: 'todo', after: 'in-progress' });
-    expect(describeResult(r, 'all good, stopped at a hard stop')).not.toMatch(/undiagnosed/i);
+    expect(describeResult(r, ran('npm test 2>&1 | tail -5', GREEN_FULL))).not.toMatch(/undiagnosed/i);
   });
 
+  // Dimension 1 — encoding. The regression this ticket exists for: the raw detector never fired on
+  // a stream-json log (0/27 real logs), and the old unit cases fed plain text, which production
+  // never sends. Plain text is not an observation now, so the suite cannot go green on that shape.
+  it('reads the summary out of a stream-json Bash result', () => {
+    expect(gateFailed(ran('npm test', RED_FULL))).toBe(true);
+  });
+  it('plain text — the shape the old tests fed — is not an observation', () => {
+    expect(gateFailed('Tests  2 failed | 10 passed')).toBe(false);
+    expect(gateFailed('typecheck failed')).toBe(false);
+  });
+  it('a log cut mid-write still reads the events before the cut', () => {
+    expect(gateFailed(transcript(ran('npm test', RED_FULL), '{"type":"resu'))).toBe(true);
+  });
+
+  // Dimension 2 — source. Only a Bash result is the gate speaking; the model quoting a summary in
+  // its own text or in ticket paperwork is not. Measured: `tkt-7cab2f9cc082` (ended ok) carries
+  // `Tests 1 failed` in an assistant block; a text decode would have fired on it.
+  it('the same line in the model own text is not an observation', () => {
+    expect(gateFailed(said('Tests  3 failed | 2009 passed (2012)'))).toBe(false);
+  });
+  it('the same line quoted into a non-Bash tool input is not an observation', () => {
+    const paperwork = ran({ id: A, appendBody: 'Tests  2 failed | 10 passed\nmutation observed red' }, 'ok', { name: 'mcp__kanban__update_ticket' });
+    expect(gateFailed(paperwork)).toBe(false);
+  });
+
+  // Dimension 3 — position. A red-first repro and the mutation check both REQUIRE observing red, so
+  // the last observation is the verdict, never any occurrence. 7 of the 9 real logs with a red
+  // summary anywhere ended `ok`; all 9 end green under this rule.
+  it('red then green is green', () => {
+    expect(gateFailed(transcript(ran('npm test', RED_FULL), ran('npm test', GREEN_FULL)))).toBe(false);
+  });
+  it('green then red is red', () => {
+    expect(gateFailed(transcript(ran('npm test', GREEN_FULL), ran('npm test', RED_FULL)))).toBe(true);
+  });
+
+  // Dimension 4 — breadth. A selection is not the gate. This is what keeps a mutation check that
+  // happened to be the final run from labelling a healthy branch UNDIAGNOSED (`tkt-ab211de0101c`).
   it.each([
-    ['Tests  2 failed | 10 passed', true],
-    ['typecheck failed', true],
-    ['Tests  1772 passed (1772)', false],
-    ['', false],
-    // Both measured against the first draft, which scanned the whole transcript for /\d+ failed/:
-    // a green run and a sentence the model wrote both read as a gate failure, so nearly every halt
-    // was labelled UNDIAGNOSED (review, MEDIUM).
-    ['Tests  0 failed | 12 passed', false],
-    ['earlier that run 3 failed, but I fixed them', false],
-    // A pre-commit hook refusing the commit is NOT by itself a gate failure — see hookRejected.
-    ['husky - pre-commit script failed (code 1)', false],
-    // Pinning the known blindness rather than papering over it: on the stream-json shape `describe`
-    // is actually handed, this does not fire. Measured 0/27 on every real night log. Decoding it
-    // here would fire on 9, seven of which ended `ok` — a separate ticket owns that trade.
-    [JSON.stringify({ type: 'user', content: 'ok\nTests  14 failed | 3 passed\ndone' }), false],
-  ])('gateFailed(%s) === %s', (log, want) => {
-    expect(gateFailed(log)).toBe(want);
+    ['a file path', 'npx vitest run src/lib/detail.test.ts 2>&1'],
+    ['a -t name filter', NARROW],
+    ['a directory', 'npx vitest run hooks/ 2>&1'],
+    ['npm test -- <path>', 'npm test -- scripts/night-run.test.mjs'],
+  ])('a final narrow red after a full green is not the verdict — %s', (_name, selection) => {
+    expect(gateFailed(transcript(ran('npm test', GREEN_FULL), ran(selection, RED_ONE)))).toBe(false);
+  });
+  it('a final full red after a narrow green is the verdict', () => {
+    expect(gateFailed(transcript(ran(NARROW, GREEN_ONE), ran('npm test 2>&1', RED_FULL)))).toBe(true);
+  });
+  it('only narrow runs, last one red, is no verdict at all', () => {
+    expect(gateFailed(transcript(ran(NARROW, GREEN_ONE), ran(NARROW, RED_ONE)))).toBe(false);
+  });
+  it.each([
+    ['flags only after --', 'npm test -- --no-file-parallelism'],
+    ['a reporter flag', 'npx vitest run --reporter=basic 2>&1'],
+    ['an env prefix and a cd', 'cd /x/y && SKIP_DB_TESTS=1 npm test 2>&1 | tail -20'],
+    ['the run script', 'npm run test 2>&1'],
+    ['bare vitest', 'npx vitest run 2>&1'],
+  ])('a full run is still full with — %s', (_name, command) => {
+    expect(gateFailed(ran(command, RED_FULL))).toBe(true);
+  });
+
+  // Dimension 5 — kinds are independent: a green test run does not clear a red typecheck. The verdict
+  // line is the session's own `echo "typecheck=$?"`, the convention in 14 of 27 real logs; tsc is
+  // silent on success and the run is routinely redirected to a file, so nothing else is observable.
+  it('tests green last but typecheck red last is a failed gate', () => {
+    const red = ran('npm run typecheck > /tmp/tc.log 2>&1; echo "typecheck=$?"', 'typecheck=1');
+    expect(gateFailed(transcript(red, ran('npm test', GREEN_FULL)))).toBe(true);
+    // Its inverse: the named line is also last-of-kind, so a later green typecheck clears it.
+    expect(gateFailed(transcript(red, ran('npm run typecheck > /tmp/tc.log 2>&1; echo "typecheck=$?"', 'typecheck=0')))).toBe(false);
+    // The tools' own visible output is a verdict too; lint is its own kind.
+    expect(gateFailed(ran('npm run lint 2>&1 | tail -3', '✖ 2 problems (2 errors, 0 warnings)'))).toBe(true);
+    expect(gateFailed(ran('npm run lint 2>&1 | tail -3', '✖ 2 problems (0 errors, 2 warnings)'))).toBe(false);
+    expect(gateFailed(ran('npm run typecheck 2>&1 | tail -3', 'src/a.ts(3,1): error TS2322: x is not y'))).toBe(true);
+    expect(gateFailed(transcript(ran('npm run lint; echo "lint=$?"', 'lint=0'), red))).toBe(true);
+  });
+  // (review) A chained gate proves its earlier links: the summary printing at all means every `&&`
+  // before the run exited 0, which is the only green a silent tsc ever leaves.
+  it('a green chained gate clears an earlier red typecheck echo; a `;` chain proves nothing', () => {
+    const red = ran('npm run typecheck > /tmp/tc.log 2>&1; echo "typecheck=$?"', 'typecheck=1');
+    expect(gateFailed(transcript(red, ran('npm run typecheck && npm run lint && npm test 2>&1 | tail -5', GREEN_FULL)))).toBe(false);
+    expect(gateFailed(transcript(red, ran('npm run typecheck; npm run lint; npm test 2>&1 | tail -5', GREEN_FULL)))).toBe(true);
+    // A red summary proves the earlier links just as well.
+    expect(gateFailed(transcript(red, ran('npm run typecheck && npm test 2>&1 | tail -5', GREEN_FULL), ran('npm test', GREEN_FULL)))).toBe(false);
+  });
+  // (review) The named lines are attributed exactly like the summary: only from a command that ran
+  // that script. A cat of an old log, a per-file eslint, or PR prose is not the gate.
+  it.each([
+    ['a cat of an old gate log', 'cat /tmp/old-gate.log', 'typecheck=1'],
+    ['a per-file eslint', 'npx eslint src/foo.ts; echo "lint=$?"', 'lint=1'],
+    ['PR comment prose', 'gh pr view 12 --comments', 'Lint failed on CI last night, please rerun'],
+    ['an env dump', 'env | sort', 'TEST=1\nTEST_EXIT=1 FOO=2'],
+    ['a console line inside a run', 'npm test 2>&1 | tail -3', 'test failed to connect, retrying'],
+  ])('a verdict-looking line outside its command is not an observation — %s', (_name, command, output) => {
+    expect(gateFailed(transcript(ran('npm run typecheck; echo "typecheck=$?"', 'typecheck=0'), ran('npm run lint; echo "lint=$?"', 'lint=0'), ran(command, output)))).toBe(false);
+  });
+  // The same echo after a redirected `npm test` is the only verdict that run leaves in the transcript
+  // (`TEST_EXIT=$?` and `TYPECHECK=$?` are both real spellings). After a selection it is the
+  // selection's exit status, so breadth applies to it exactly as to the summary line.
+  it('an echoed exit status stands in for a redirected run, and is breadth-checked', () => {
+    expect(gateFailed(ran('npm test > /tmp/t.log 2>&1; echo "TEST_EXIT=$?"', 'TEST_EXIT=1'))).toBe(true);
+    expect(gateFailed(ran('npm test > /tmp/t.log 2>&1; echo "test exit=$?"', 'test exit=0'))).toBe(false);
+    expect(gateFailed(ran(`${NARROW} > /tmp/t.log; echo "TEST_EXIT=$?"`, 'TEST_EXIT=1'))).toBe(false);
+    expect(gateFailed(ran('npm run typecheck >/dev/null 2>&1; echo "TYPECHECK=$?"', 'TYPECHECK=2'))).toBe(true);
+  });
+
+  // Dimension 6 — a zero count is green. Measured against the first draft, which matched /\d+ failed/.
+  it('Tests 0 failed is not a failure', () => {
+    expect(gateFailed(ran('npm test', 'Tests  0 failed | 12 passed (12)'))).toBe(false);
+  });
+
+  // Dimension 7 — absent.
+  it.each([
+    ['empty', ''],
+    ['null', null],
+    ['undefined', undefined],
+    ['events but no Bash result', transcript(said('starting'), JSON.stringify({ type: 'result', subtype: 'success' }))],
+    ['a Bash result with no summary', ran('npm test > /tmp/t.log 2>&1; echo done', 'done')],
+  ])('makes no claim for %s', (_name, input) => {
+    expect(gateFailed(input)).toBe(false);
+  });
+
+  // Dimension 8 — the exit flag is not the signal. Every red run in the corpus was piped through
+  // `tail`, so `is_error` is false on all of them (0/27 carry a red summary with is_error true).
+  it('a red summary fires with is_error false; a green one does not fire with is_error true', () => {
+    expect(gateFailed(ran('npm test 2>&1 | tail -5', RED_FULL, { is_error: false }))).toBe(true);
+    expect(gateFailed(ran('npm test', GREEN_FULL, { is_error: true }))).toBe(false);
+  });
+
+  // Dimension 9 — attribution. A summary counts only from the command that produced it.
+  it('a summary shown by a non-test command is not an observation', () => {
+    expect(gateFailed(ran('cat /tmp/test.log', RED_FULL))).toBe(false);
+  });
+  it('a hook-run gate inside git commit is a full observation', () => {
+    const commit = ran('git commit -m "x"', `${RED_FULL}\nhusky - pre-commit script failed (code 1)`);
+    expect(gateFailed(commit)).toBe(true);
+    expect(gateFailed(transcript(ran('npm test', RED_FULL), ran('git commit -m "x"', `${GREEN_FULL}\n[main abc123] x`)))).toBe(false);
+  });
+  it('a command mixing a narrow and a full run cannot attribute its summaries, so it is not an observation', () => {
+    expect(gateFailed(ran(`${NARROW}; npm test 2>&1`, `${GREEN_ONE}\n${RED_FULL}`))).toBe(false);
+  });
+  it('a selection through an unexpanded variable is unknowable, not full', () => {
+    expect(gateFailed(ran('npx vitest run $SEL --coverage.enabled=false 2>&1', RED_ONE))).toBe(false);
+  });
+
+  // Dimension 10 — a review subagent running the gate is the gate running.
+  it('a result inside a subagent counts like any other', () => {
+    expect(gateFailed(transcript(ran('npm test', GREEN_FULL), ran('npx vitest run 2>&1', RED_FULL, { parent: 'toolu_parent' })))).toBe(true);
+  });
+
+  // A pre-commit hook refusing the commit is NOT by itself a gate failure — see hookRejected.
+  it('the husky marker alone is not a gate failure', () => {
+    expect(gateFailed(ran('git commit -m "x"', 'husky - pre-commit script failed (code 1)'))).toBe(false);
+  });
+
+  // Dimension 11 — the review's sweep of what the summary line alone cannot see. Each output shape
+  // was verified against vitest in this repo by the reviewer: a collect/import error prints
+  // `Test Files 1 failed` over a green `Tests` line; an unhandled error prints `Errors 1 error`;
+  // a coverage threshold prints `ERROR: Coverage for …`. All three exit 1.
+  it.each([
+    ['a collect failure', ' Test Files  1 failed | 74 passed (75)\n      Tests  2009 passed (2009)'],
+    ['an unhandled error', ' Test Files  75 passed (75)\n      Tests  2011 passed (2011)\n     Errors  1 error'],
+    ['a coverage threshold', `${GREEN_FULL}\nERROR: Coverage for lines (80%) does not meet global threshold (90%)`],
+  ])('a run that exited 1 with every test green is red — %s', (_name, output) => {
+    expect(gateFailed(ran('npm test 2>&1 | tail -8', output))).toBe(true);
+  });
+  it('an echoed exit status outranks the summary in the same result, whichever is printed first', () => {
+    expect(gateFailed(ran('npm test > /tmp/t.log 2>&1; echo "test=$?"; tail -5 /tmp/t.log', `test=1\n${GREEN_FULL}`))).toBe(true);
+    expect(gateFailed(ran('npm test > /tmp/t.log 2>&1; echo "test=$?"; tail -5 /tmp/t.log', `test=0\n${RED_FULL}`))).toBe(false);
+  });
+  it('npm forwards a positional without `--`, so it is a selection; its own flags are not', () => {
+    expect(gateFailed(transcript(ran('npm test', GREEN_FULL), ran('npm test scripts/night-run.test.mjs', RED_ONE)))).toBe(false);
+    expect(gateFailed(ran('npm test --silent', RED_FULL))).toBe(true);
+  });
+  it.each([
+    ['time', 'time npm test 2>&1 | tail -5'],
+    ['timeout with a unit', 'timeout 10m npm test'],
+    ['a quoted env value', 'FOO="a b" npm test'],
+    ['a subshell', '(cd x && npm test)'],
+    ['env', 'env CI=1 npm test'],
+    ['a space-separated flag value', 'npx vitest run --reporter basic'],
+    ['a config flag', 'npx vitest run --config vitest.ci.config.ts'],
+  ])('a full run stays full behind — %s', (_name, command) => {
+    expect(gateFailed(ran(command, RED_FULL))).toBe(true);
+  });
+  it.each([
+    ['--changed', 'npx vitest run --changed'],
+    ['npm test -- --related', 'npm test -- --related src/a.ts'],
+  ])('a subset flag is a selection — %s', (_name, command) => {
+    expect(gateFailed(transcript(ran('npm test', GREEN_FULL), ran(command, RED_ONE)))).toBe(false);
+  });
+  it('a script that is not the unit gate is not the `test` kind', () => {
+    expect(gateFailed(ran('npm run test:e2e; echo "test=$?"', 'test=1'))).toBe(false);
+  });
+  it('a heredoc body is data: a run command inside it does not classify the writing command', () => {
+    const write = `cat > "$T/fix.mjs" <<'SCR'\nnpx vitest run hooks/\nSCR\nnpm test 2>&1`;
+    expect(gateFailed(ran(write, RED_FULL))).toBe(true);
+    const commit = `git commit -m "$(cat <<'EOF'\nFix x\n\nnpx vitest run scripts/x.test.mjs stays red\nEOF\n)"`;
+    expect(gateFailed(ran(commit, `${RED_FULL}\nhusky - pre-commit script failed (code 1)`))).toBe(true);
   });
 });
 
@@ -286,7 +485,7 @@ describe('hookRejected — a hook refusing the commit is not the same claim as a
   });
 
   it('a gate failure inside the hook keeps the gate wording, which is the accurate one', () => {
-    const log = 'Tests  14 failed | 3 passed\nhusky - pre-commit script failed (code 1)';
+    const log = ran('git commit -m "x"', 'Tests  14 failed | 3 passed (17)\nhusky - pre-commit script failed (code 1)');
     expect(describeResult(halt(), log)).toMatch(/undiagnosed/i);
   });
 
@@ -415,7 +614,7 @@ describe('strandedBackgroundTasks — dimension 8: the halt left waiting on a ba
   });
 
   it('yields to the gate wording, which names a more specific cause', () => {
-    const text = describeResult(halt(), log('typecheck failed', RESULT, stopped('a watch')));
+    const text = describeResult(halt(), log(ran('npm run typecheck', 'src/a.ts(3,1): error TS2322: x'), RESULT, stopped('a watch')));
     expect(text).toMatch(/undiagnosed/i);
     expect(text).not.toMatch(/backgrounded command/);
   });
