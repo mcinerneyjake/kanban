@@ -111,6 +111,57 @@ export function hookRejected(log) {
   return HOOK_REJECTED.test(decodeLog(log));
 }
 
+/**
+ * The last turn ended with backgrounded tasks still running, so the harness killed them: the session
+ * stopped waiting on output that never arrived. Returns their summaries in order, or null when
+ * nothing was stranded.
+ *
+ * Position is the whole predicate, and it is weaker than it looks. A kill ANYWHERE also fires on
+ * `tkt-0564cfaeca12`, which opened a PR; requiring it after the FINAL `result` envelope still leaves
+ * that log, so `describe` gating on a halt is what makes the claim safe, not this function. Measured
+ * over all 27 night logs: 6/6 halts, 1/21 non-halts.
+ *
+ * Two positions are unknowable rather than negative, and both return null. A log with no envelope at
+ * all (`tkt-92360b0e2079`, level `capped`) has nothing to compare against. A log whose final line does
+ * not parse was cut mid-write — `run()` merges stderr into the same buffer, and a killed child can
+ * stop mid-line — so the closing envelope may be missing, which promotes a mid-session strand to the
+ * tail: measured to turn a correct null into a false positive (review, MEDIUM).
+ */
+export function strandedBackgroundTasks(log) {
+  const lines = String(log ?? '').split('\n').filter((line) => line !== '');
+  const parse = (line) => {
+    if (!line.startsWith('{')) return null;
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  };
+  if (lines.length === 0 || !parse(lines[lines.length - 1])) return null;
+
+  let sawResult = false;
+  let stranded = [];
+  for (const line of lines) {
+    const event = parse(line);
+    if (!event) continue;
+    // A fresh envelope closes the segment before it, so earlier strands are no longer the tail.
+    if (event.type === 'result') {
+      sawResult = true;
+      stranded = [];
+    } else if (event.type === 'system' && event.subtype === 'task_notification' && event.status === 'stopped') {
+      stranded.push(String(event.summary ?? ''));
+    }
+  }
+  return sawResult && stranded.length > 0 ? stranded : null;
+}
+
+// Summaries are model-authored free text carrying quotes and newlines, and the halt line is a single
+// row an 8am reader scans — one embedded newline splits it.
+const label = (summary) => {
+  const flat = summary.replace(/\s+/g, ' ').replace(/"/g, "'").trim();
+  return flat.length > 60 ? `${flat.slice(0, 59)}\u2026` : flat;
+};
+
 export function describe(result, log) {
   if (result.level !== 'halt') return result.text;
   // Checked first so that if `gateFailed` is ever made to fire on a stream-json log, a gate failure
@@ -121,6 +172,17 @@ export function describe(result, log) {
   }
   if (hookRejected(log)) {
     return `${result.text} — a pre-commit hook refused the commit, so nothing landed; read the hook's own output before judging the branch`;
+  }
+  // States only what was DETECTED. An earlier draft added "no gate failed", which asserts the silence
+  // of `gateFailed` — a detector this file documents as inert on stream-json (0/27). Measured on
+  // `tkt-ab211de0101c`, a halt whose decoded log carries `Tests 1 failed`: that sentence would have
+  // told the reader to discount a real failure (review, HIGH).
+  const stranded = strandedBackgroundTasks(log);
+  if (stranded !== null) {
+    const named = stranded.map(label).filter((s) => s !== '');
+    const what = stranded.length === 1 ? 'a backgrounded command' : `${stranded.length} backgrounded commands`;
+    const quoted = named.length > 0 ? ` (${named.map((s) => `"${s}"`).join(', ')})` : '';
+    return `${result.text} — it ended its last turn with ${what} still running${quoted}, which the harness then killed`;
   }
   return result.text;
 }
