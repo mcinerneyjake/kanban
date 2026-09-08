@@ -32,6 +32,6 @@ async function main(): Promise<void> {
 main().catch((err: unknown) => {
   const base = process.env.EMBED_BASE_URL ?? 'http://localhost:1234/v1';
   console.error(`\nSearch failed: ${err instanceof Error ? err.message : String(err)}`);
-  console.error(`Is the embeddings runtime up? Check:  curl ${base}/models`);
+  console.error(`Is the embeddings runtime up? Check:  node -e "fetch('${base}/models').then(r=>r.text()).then(console.log)"`);
   process.exit(1);
 });
