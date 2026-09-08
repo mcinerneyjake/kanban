@@ -455,6 +455,50 @@ An auto mode that crosses the commit gate without a check the repo defines is a 
 of that mode, not a faster one — the same hole as crossing it with no review. If one cannot be run,
 name it and stop (§14); a check you could not run is never reported as one that passed.
 
+### In an `auto-*` mode, the hook may be the gate — but only where it demonstrably is
+
+Otherwise the night run pays for the whole gate twice, once here and once inside the commit's
+`pre-commit` hook: ~3 minutes per ticket of extra wall clock, spent inside the window halts happen in
+(`tkt-ea501e6d1a1d`). Ask the probe rather than the repo's reputation. Run it **from the session's own
+checkout, before §2a's `cd`** — that spelling is what the `Bash(node scripts/probe/*)` permission rule
+prefix-matches, and an absolute path or a `cd …&&` prefix matches no rule and prompts, which in an
+unattended run is a probe that never runs:
+
+    node scripts/probe/hook-gate.mjs <the tree the commit will happen in>
+
+**Point it at the working tree the commit will happen in — `git rev-parse --show-toplevel` from where
+you are about to commit — not at the path §1 resolved from `repos.local.json`.** In a worktree those
+are different directories and the difference silently removes the gate: husky's generated `.husky/_`
+is self-ignored (`.husky/_/.gitignore` is `*`), so it is never checked out into a worktree, and
+`git hook run pre-commit` there answers *"cannot find a hook named pre-commit"* — measured 2026-09-08.
+Probing the primary checkout would report the gate as covered while the commit runs no hook at all.
+The probe pointed at the worktree gets this right on its own; the mistake is only ever in which path
+it is handed.
+
+It names the gate scripts the target defines, which of them the **effective** `pre-commit` hook
+actually runs, and what is left over. Run what it leaves; skip what it covers. Three rules on reading
+it, each of which fails toward running more:
+
+- **Anything but an exit-0 report means run the full gate.** Exit 3 is *undetermined*, never "covers
+  nothing", and conflating them is the only reading that loses a gate.
+- **Coverage is positive evidence about one repo, never a fleet-wide fact.** Measured 2026-09-08, four
+  of the nine projects are fully covered; `equipment-schedule`'s hook runs an unrelated script and four
+  repos have no `pre-commit` hook at all. Re-probe per ticket — the answer is a repo's current config,
+  and `HUSKY=0`, a non-executable hook, or a missing `.husky/pre-commit` each silently make it none.
+- **The mutation check and the red-first repro do not move.** They are narrow, targeted runs, they are
+  not what the hook repeats, and they still belong here — before the commit, in every mode.
+
+Then **verify the commit by effect, not by its exit status**: `git rev-parse HEAD` must have moved. A
+gate that fails inside the hook aborts the commit and prints husky's
+`pre-commit script failed (code N)` rather than any wording of yours, so a commit you did not confirm
+is a gate result you do not have.
+
+**Say in the summary which commands the hook ran for you.** `track-steps` keys its milestones off the
+literal `npm run typecheck` / `npm run lint` / `npm test` you type (§6), so a gate the hook ran emits
+**no** `typecheck`, `lint` or `test` milestone — only `commit`. Their absence on such a ticket means the
+hook covered them, never that the gate was skipped, and the `Tests:` line is the only place that
+distinction is recorded.
+
 ## 10. Review — calibrated, and stated
 
 **The target repo decides *whether*; this step decides only *how deep*.** Read its `CLAUDE.md`
