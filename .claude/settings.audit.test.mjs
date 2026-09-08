@@ -381,12 +381,67 @@ describe('.claude/settings.json permission allowlist', () => {
 
 });
 
+// A `deny` rule outranks every `allow`, including one a future edit adds. FORBIDDEN above rejects a
+// rule SPELLING and says nothing about what a session may run, so these three need this list too
+// (tkt-a9b55cabbc92).
+//
+// SCOPE, because this block is easy to over-read: it denies three shell binaries under the single
+// spelling `Bash(<binary> …)`. It does NOT deny the capability — `/usr/bin/curl …`, `sh -c "curl …"`
+// and `xargs curl` all miss it, and `npx playwright`, `npx vitest` and any inline `node -e` reach the
+// network without touching it at all. Narrowing the local `Bash(node *)` wildcard is what covers
+// inline code. Neither measure subsumes the other and neither is a boundary.
+const REQUIRED_DENY = ['Bash(curl *)', 'Bash(wget *)', 'Bash(nc *)'];
+const deny = settings.permissions?.deny ?? [];
+
+// `Bash(curl …)` → `curl`. This one spelling is all a rule string makes checkable.
+const deniedBinaries = REQUIRED_DENY.map((r) => /^Bash\(([\w-]+)/.exec(r)?.[1]).filter(Boolean);
+const contradicts = (rules) => rules.filter((r) => deniedBinaries.some((b) => r.startsWith(`Bash(${b} `)));
+
+describe('.claude/settings.json permission denylist', () => {
+  it('is a well-formed list of non-empty string rules', () => {
+    expect(Array.isArray(deny)).toBe(true);
+    for (const rule of deny) {
+      expect(typeof rule, `${JSON.stringify(rule)} is not a string`).toBe('string');
+      expect(rule.trim(), 'blank rule').not.toBe('');
+    }
+  });
+
+  // `?? []` makes an ABSENT key and an empty array fail identically — deleting the block must not
+  // read as satisfying it.
+  it('carries every shape in REQUIRED_DENY, so none is re-grantable by a later allow', () => {
+    expect(deny, 'do not remove an egress shape without retaking tkt-a9b55cabbc92').toEqual(
+      expect.arrayContaining(REQUIRED_DENY),
+    );
+  });
+
+  // The control: proves the matcher above fires on a short list, so its green means the entries are
+  // really present rather than that arrayContaining never discriminates.
+  it('the requirement discriminates — a list missing one shape does not satisfy it', () => {
+    expect(REQUIRED_DENY.length).toBeGreaterThan(0);
+    expect(() =>
+      expect(REQUIRED_DENY.slice(1)).toEqual(expect.arrayContaining(REQUIRED_DENY)),
+    ).toThrow();
+  });
+
+  // deny wins at runtime, so this catches unreadable config rather than a live hole. It matches ONE
+  // spelling: `Bash(/usr/bin/curl *)` and `Bash(xargs curl *)` pass it and are not thereby safe.
+  it('grants no allow rule spelled Bash(<denied binary> …)', () => {
+    expect(deniedBinaries.length, 'deny rules stopped parsing as Bash(<binary> …)').toBe(REQUIRED_DENY.length);
+    expect(contradicts(allow)).toEqual([]);
+  });
+});
+
 // The BROADEST permissions actually in effect were the ones nothing checked (tkt-fa2bd5a7a455).
-// `.claude/settings.local.json` grants `Bash(npm run *)`, `Bash(node *)`, `Bash(npm install *)` — exactly
-// the wildcard shapes CLAUDE.md said were never allowed — and it is gitignored GLOBALLY via
-// ~/.config/git/ignore, so the audit above and CI are both blind to it. Two facts make that matter:
-// `guard-bash` contains zero references to npm or node (measured), so those rules have no runtime
-// backstop at all; and `.husky/pre-commit` runs `npm test`, so a test here gates every local commit.
+// `.claude/settings.local.json` granted `Bash(node *)` and `Bash(npm install *)` — blanket arbitrary
+// execution — and it is gitignored GLOBALLY via ~/.config/git/ignore, so the audit above and CI are
+// both blind to it. Two facts make that matter: `guard-bash` contains zero references to npm or node
+// (measured), so those rules have no runtime backstop at all; and `.husky/pre-commit` runs `npm test`,
+// so a test here gates every local commit.
+//
+// tkt-a9b55cabbc92 narrowed both. The chain that decided it: a ticket body reaches the session as
+// unmarked context (tkt-0e885b80e794), is authored by the local intake model from arbitrary report
+// text, and `node -e "fetch(…)"` under a blanket rule reaches the network with no prompt and no hook.
+// Path-scoped rules keep that gate on inline code while leaving reviewed repo scripts unprompted.
 //
 // This can never be a CI gate — the file is legitimately absent there. What it must not do is pass
 // VACUOUSLY in that case, so the mode is asserted explicitly rather than skipped.
@@ -398,15 +453,25 @@ describe('.claude/settings.local.json (machine-local, audited only where it exis
     : null;
 
   // A wildcard that ends the rule is the dangerous shape: `Bash(npm run *)` admits any script. One
-  // inside a quoted literal (`Bash(git commit -m ' *)`) is a message body, not a subcommand.
-  const isOpenEnded = (rule) => /\*\s*\)$/.test(rule) && !/'[^']*\*/.test(rule);
+  // inside the quoted body of a MESSAGE flag (`Bash(git commit -m ' *)`) is prose, not a subcommand.
+  // The flag list is the whole guard: exempting any quote let `Bash(node -e ' *)` — the rule Claude
+  // Code writes for `node -e 'code'` — evade REVIEWED_LOCAL_WILDCARDS entirely (tkt-a9b55cabbc92).
+  const isOpenEnded = (rule) =>
+    /\*\s*\)$/.test(rule) && !/(?:^|\s)--?(?:m|body|title|message)\s+'[^']*\*/.test(rule);
 
   // Reviewed and deliberate. Each is Jake's own local choice; the point of the list is that a NEW one
   // has to be added here consciously rather than arriving unnoticed.
   const REVIEWED_LOCAL_WILDCARDS = new Set([
     'Bash(git push *)', 'Bash(git add *)', 'Bash(git switch *)', 'Bash(git pull *)', // git: guard-bash-backed
     'Bash(gh pr *)', 'Bash(npx playwright *)', 'Bash(npx vitest *)', 'Bash(npm test *)',
-    'Bash(npm run *)', 'Bash(node *)', 'Bash(npm install *)', // NO runtime backstop — see the header
+    'Bash(npm run *)', // NO runtime backstop — see the header
+    // Path-scoped replacements for `Bash(node *)` / `Bash(npm install *)`, which were REMOVED from
+    // this set rather than merely dropped from the file — re-adding either must come back through
+    // here (tkt-a9b55cabbc92). What they buy is that inline `node -e` now prompts. They are a PREFIX
+    // match, so `node scripts/probe/../../x.js` still runs: this narrows accidents, not an attacker
+    // who already controls the command string. `Bash(node_modules/.bin/tsx *)` was tried here and
+    // rejected — `tsx -e` is blanket arbitrary execution, measured.
+    'Bash(node scripts/probe/*)', 'Bash(node "$CLAUDE_PROJECT_DIR/scripts/probe/*)',
   ]);
 
   it('records whether it evaluated anything, so an absent file is not a silent pass', () => {
@@ -420,6 +485,12 @@ describe('.claude/settings.local.json (machine-local, audited only where it exis
   it.runIf(present)('grants no open-ended wildcard that has not been reviewed here', () => {
     const unreviewed = localAllow.filter((r) => isOpenEnded(r) && !REVIEWED_LOCAL_WILDCARDS.has(r));
     expect(unreviewed, 'add it to REVIEWED_LOCAL_WILDCARDS deliberately, or narrow the rule').toEqual([]);
+  });
+
+  // The array the header above says nothing was checking. deny still wins at runtime; this surfaces
+  // the contradiction where CI cannot see it.
+  it.runIf(present)('grants no local allow rule spelled Bash(<denied binary> …)', () => {
+    expect(contradicts(localAllow)).toEqual([]);
   });
 
   it.runIf(present)('rejects the same dangerous tokens as the checked-in file', () => {
