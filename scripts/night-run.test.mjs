@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  classify, gateFailed, hookRejected, decodeLog, describe as describeResult, readStatus, guardBlocked,
+  classify, gateFailed, hookRejected, decodeLog, strandedBackgroundTasks,
+  describe as describeResult, readStatus, guardBlocked,
   arm, disarm, claimSentinel, ownerOf, pidAlive, fileHere, sentinelPaths,
   preflightGuard, main, run, sessionArgs, sessionEnv, defaultRunSession, capMsFrom, USAGE, EXIT,
   MERGE_PROBE_PAYLOAD, renderProbes,
@@ -218,6 +219,138 @@ describe('hookRejected — a hook refusing the commit is not the same claim as a
   it('says nothing extra on a non-halt verdict', () => {
     const ok = classify({ before: 'todo', after: 'qa' });
     expect(describeResult(ok, 'husky - pre-commit script failed (code 1)')).toBe(ok.text);
+  });
+});
+
+describe('strandedBackgroundTasks — dimension 8: the halt left waiting on a background task', () => {
+  const RESULT = JSON.stringify({ type: 'result', subtype: 'success', num_turns: 40 });
+  const stopped = (summary) =>
+    JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'stopped', summary });
+  const completed = (summary) =>
+    JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'completed', summary });
+  const log = (...lines) => lines.join('\n');
+  const halt = () => classify({ before: 'todo', after: 'in-progress' });
+
+  it('names the tasks the session was left waiting on, in the transcript own wording', () => {
+    expect(strandedBackgroundTasks(log(RESULT, stopped('Re-run full gate after review fixes'))))
+      .toEqual(['Re-run full gate after review fixes']);
+  });
+
+  // THE discriminating dimension. `tkt-0564cfaeca12` ended `ok` with three killed tasks, two of them
+  // before its final envelope: a session that kills a task and then keeps working has not stranded.
+  it('a task stopped BEFORE the final result envelope is not stranded', () => {
+    expect(strandedBackgroundTasks(log(stopped('an abandoned watch'), RESULT))).toBeNull();
+  });
+
+  // A log is not one session per file: `tkt-6fc47c796754` holds 9 result envelopes, `tkt-cd9743d95ac2`
+  // 5. Keying on the FIRST would call every later segment stranded.
+  it('keys on the last result envelope, not the first', () => {
+    expect(strandedBackgroundTasks(log(RESULT, stopped('between segments'), RESULT))).toBeNull();
+    expect(strandedBackgroundTasks(log(RESULT, RESULT, stopped('after the last')))).toEqual(['after the last']);
+  });
+
+  // `tkt-92360b0e2079` (level `capped`) carries zero result envelopes. With no envelope there is no
+  // position to compare against, so "after it" is unanswerable — and a detector that cannot place the
+  // event must not claim a mechanism.
+  it('makes no claim when the log has no result envelope at all', () => {
+    expect(strandedBackgroundTasks(log(stopped('nowhere to anchor')))).toBeNull();
+  });
+
+  // The inversion this guard exists for (review, MEDIUM). `run()` merges stderr into the same buffer
+  // and a killed child stops mid-line, so the closing envelope can be lost — and the two logs below
+  // are INDISTINGUISHABLE from one where the strand really was the tail. Guessing turns a correct
+  // null into a false diagnosis, so an unparseable final line is unknowable, not negative.
+  it.each([
+    ['a truncated final envelope', '{"type":"resu'],
+    ['stderr interleaved into the final line', `warn: mcp${RESULT}`],
+  ])('makes no claim when the tail is unreadable — %s', (_name, tail) => {
+    expect(strandedBackgroundTasks(log(RESULT, stopped('mid-session watcher'), tail))).toBeNull();
+    // The control: the same log with an intact tail is also null, so the guard is not what decides it.
+    expect(strandedBackgroundTasks(log(RESULT, stopped('mid-session watcher'), RESULT))).toBeNull();
+  });
+
+  // Unparseable lines only defeat the tail. In the middle they are skipped, as a live capture requires.
+  it('skips unparseable lines that are not the tail', () => {
+    expect(strandedBackgroundTasks(log(RESULT, 'not json at all', stopped('still found'))))
+      .toEqual(['still found']);
+  });
+
+  it('a task that COMPLETED after the last envelope is not stranded', () => {
+    expect(strandedBackgroundTasks(log(RESULT, completed('Background command finished')))).toBeNull();
+  });
+
+  it.each([
+    ['no notification at all', log(RESULT, JSON.stringify({ type: 'assistant' }))],
+    ['empty log', ''],
+    ['null log', null],
+    ['undefined log', undefined],
+  ])('makes no claim for %s', (_name, input) => {
+    expect(strandedBackgroundTasks(input)).toBeNull();
+  });
+
+  it('reports a stranded task carrying no summary', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'task_notification', status: 'stopped' });
+    expect(strandedBackgroundTasks(log(RESULT, line))).toEqual(['']);
+  });
+
+  // Three of the six real halts strand MORE than one task; `tkt-5d7682011a3b` strands three. Reporting
+  // only the last would hide the majority case.
+  it('reports every task stranded after the final envelope, not just the last', () => {
+    const out = strandedBackgroundTasks(log(RESULT, stopped('Run typecheck, lint, test'), stopped('Check gate progress'), stopped('Wait for gate to finish')));
+    expect(out).toEqual(['Run typecheck, lint, test', 'Check gate progress', 'Wait for gate to finish']);
+  });
+
+  it('a halt left waiting on a background task says so, and quotes it', () => {
+    const text = describeResult(halt(), log(RESULT, stopped('Run the five-command quality gate')));
+    expect(text).toMatch(/a backgrounded command still running/);
+    expect(text).toContain('Run the five-command quality gate');
+  });
+
+  it('counts them when more than one was stranded', () => {
+    const text = describeResult(halt(), log(RESULT, stopped('first watch'), stopped('second watch')));
+    expect(text).toMatch(/2 backgrounded commands still running/);
+    expect(text).toContain('"first watch", "second watch"');
+  });
+
+  // The halt line is one row an 8am reader scans, and summaries are model-authored free text — real
+  // ones in the fleet already carry double quotes.
+  it('flattens a summary that would split or confuse the row', () => {
+    const text = describeResult(halt(), log(RESULT, stopped('Background command "x"\nsecond line')));
+    expect(text).not.toMatch(/\n/);
+    expect(text).toContain(`Background command 'x' second line`);
+  });
+
+  it('caps a summary long enough to bury the line', () => {
+    const text = describeResult(halt(), log(RESULT, stopped('y'.repeat(200))));
+    expect(text).toContain(`${'y'.repeat(59)}…`);
+    expect(text).not.toContain('y'.repeat(61));
+  });
+
+  // The authorizing line. `tkt-0564cfaeca12` carries this exact signal after its last envelope and
+  // opened a PR — describing it as a halt mechanism would be a false diagnosis at 8am.
+  it('says nothing extra on a non-halt verdict carrying the same signal', () => {
+    const ok = classify({ before: 'todo', after: 'qa' });
+    expect(describeResult(ok, log(RESULT, stopped('Wait for PR checks to settle')))).toBe(ok.text);
+  });
+
+  it('yields to the gate wording, which names a more specific cause', () => {
+    const text = describeResult(halt(), log('typecheck failed', RESULT, stopped('a watch')));
+    expect(text).toMatch(/undiagnosed/i);
+    expect(text).not.toMatch(/backgrounded command/);
+  });
+
+  // Asserting an undetected negative is the shape this clause must never take: `gateFailed` is inert
+  // on stream-json (0/27), and `tkt-ab211de0101c` is a real halt whose decoded log carries
+  // `Tests 1 failed` (review, HIGH). Claiming "no gate failed" there would discount a real defect.
+  it('claims only what it detected, never that no gate failed', () => {
+    const text = describeResult(halt(), log(RESULT, stopped('a watch')));
+    expect(text).not.toMatch(/no gate failed/i);
+    expect(text).not.toMatch(/not evidence against the branch/i);
+  });
+
+  // The control: without it the clause could be unconditional and carry no information.
+  it('is not attached to a halt with no stranded task', () => {
+    expect(describeResult(halt(), log(RESULT, completed('all done')))).not.toMatch(/backgrounded command/);
   });
 });
 
