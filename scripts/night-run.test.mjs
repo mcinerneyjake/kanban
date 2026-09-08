@@ -1534,7 +1534,9 @@ describe('the run’s worktree — one per run, against real git', () => {
     const inner = join(made.path, '.claude', 'worktrees', 'inner');
     git(made.path, 'worktree', 'add', '-q', '--detach', inner, 'HEAD');
     writeFileSync(join(inner, 'half-done.txt'), 'uncommitted');
-    expect(git(made.path, 'status', '--porcelain').trim()).toBe(''); // the control: porcelain is blind to it
+    // The control: porcelain is blind to it. (Not asserted empty — the copied settings file is
+    // untracked and shows here on CI, where no global ignore hides it; it is filtered as ours.)
+    expect(git(made.path, 'status', '--porcelain')).not.toMatch(/worktrees|half-done/);
     const res = removeRunWorktree(primary, made);
     expect(res.removed).toBe(false);
     expect(res.why).toMatch(/nested worktree/);
