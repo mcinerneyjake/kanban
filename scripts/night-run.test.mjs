@@ -164,10 +164,50 @@ describe('classify — dimension 1: the status transition', () => {
 });
 
 describe('classify — dimension 2: how the run exited', () => {
-  it('a capped run is never success, even if the status looks right', () => {
+  // The defect: a cap firing while the session wrote its handoff dropped the six tickets still
+  // queued behind it, even though the PR was open and the ticket had reached `qa`
+  // (tkt-4fc11782b77b, measured on tkt-92360b0e2079).
+  it('a cap after the ticket reached qa does not stop the queue', () => {
     const r = classify({ before: 'todo', after: 'qa', capped: true });
-    expect(r.level).toBe('capped');
+    expect(r.stop).toBe(false);
+    expect(r.level).toBe('capped-after-qa');
+  });
+
+  // Kept from the test this replaced: continuing the queue must not promote the run to a success,
+  // because the cap still truncated whatever the session was doing after the PR.
+  it('a capped run is never reported as a fresh success', () => {
+    expect(classify({ before: 'todo', after: 'qa', capped: true }).level).not.toBe('ok');
+  });
+
+  // The controls, one per dimension the carve-out above must NOT widen into. A cap landing before
+  // `qa` really is mid-ticket, and a `qa` whose transition cannot be PROVEN must not buy a continue
+  // merely because the status happens to read `qa`.
+  it.each([
+    ['mid-ticket', { before: 'todo', after: 'in-progress' }],
+    ['having moved nothing', { before: 'todo', after: 'todo' }],
+    ['on a ticket already in qa, so no transition is proven', { before: 'qa', after: 'qa' }],
+    ['on a qa with an unreadable before', { before: null, after: 'qa' }],
+    ['with an unreadable after', { before: 'todo', after: null }],
+    ['on a ticket that reached done', { before: 'todo', after: 'done' }],
+  ])('a cap %s stops the queue', (_what, statuses) => {
+    const r = classify({ ...statuses, capped: true });
     expect(r.stop).toBe(true);
+    expect(r.level).not.toBe('capped-after-qa');
+  });
+
+  // The row above passes on `stop` alone even when the cap SWALLOWS the alarm, which is exactly how
+  // the defect hid: `isAlarm` is the only thing that rescues a done ticket from `isOutstanding`, so
+  // a capped level here erases an unattended merge from the morning report entirely.
+  it('a cap does not swallow the alarm when the merge gate was crossed', () => {
+    expect(classify({ before: 'todo', after: 'done', capped: true }).level).toBe('alarm');
+  });
+
+  // The carve-out's OTHER side: these continue, and nothing recorded that until now. An orphan
+  // resumed from `in-progress` that reaches qa is as complete as a fresh todo → qa.
+  it('a cap after an in-progress orphan reached qa also continues', () => {
+    const r = classify({ before: 'in-progress', after: 'qa', capped: true });
+    expect(r.stop).toBe(false);
+    expect(r.level).toBe('capped-after-qa');
   });
 });
 
@@ -831,10 +871,21 @@ describe('main — dimensions 5 and 6: the queue and the STOP file', () => {
     expect(await main([A], board, opts({ spawnProbe: passingProbe(), runSession }))).toBe(EXIT.stopped);
   });
 
-  it('exits with the stopped code when the run is capped', async () => {
+  it('exits with the stopped code when a cap lands mid-ticket', async () => {
     seed(A, 'todo');
-    const runSession = sessionStub({ [A]: { status: 'qa', capped: true } });
+    const runSession = sessionStub({ [A]: { status: 'in-progress', capped: true } });
     expect(await main([A], board, opts({ spawnProbe: passingProbe(), runSession }))).toBe(EXIT.stopped);
+  });
+
+  // The regression, end to end: the cap fired after PR-open and every ticket behind it was dropped
+  // and relaunched by hand (tkt-92360b0e2079, 2026-09-08). B must still be driven.
+  it('runs the rest of the queue when a cap lands after the ticket reached qa', async () => {
+    seed(A, 'todo');
+    seed(B, 'todo');
+    const runSession = sessionStub({ [A]: { status: 'qa', capped: true }, [B]: { status: 'qa' } });
+    const code = await main([A, B], board, opts({ spawnProbe: passingProbe(), runSession }));
+    expect(code).toBe(EXIT.ok);
+    expect(runSession.calls).toEqual([A, B]);
   });
 
   // `claude` off PATH resolves {code:-1} per ticket, which read as "never started" and marched

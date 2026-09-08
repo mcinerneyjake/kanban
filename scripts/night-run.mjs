@@ -28,9 +28,23 @@ export const EXIT = { ok: 0, preflight: 1, stopped: 2, alarm: 3, usage: 64 };
 // Only a clean, expected transition is an OK. Everything else either stops the queue or is reported
 // as needing a human — "can't tell" never returns the permissive answer.
 export function classify({ before, after, capped = false }) {
-  if (capped) {
-    return { level: 'capped', stop: true, text: 'hit the wall-clock cap; left mid-ticket' };
+  const verdict = transitionVerdict({ before, after });
+  if (!capped) return verdict;
+  // A cap must never swallow the alarm: night-report's `isAlarm` is the ONLY thing that rescues a
+  // `done` ticket from `isOutstanding`, so returning `capped` here is what makes an unattended merge
+  // silent in the morning report — the one silence that hook says is worse than a false alarm.
+  if (verdict.level === 'alarm') return verdict;
+  // A cap that fires after the ticket reached `qa` has nothing left to interrupt, so dropping the
+  // rest of the queue costs a night for nothing (tkt-4fc11782b77b). Gating on the uncapped verdict
+  // being `ok`, not on `after === 'qa'`, keeps every transition guard in transitionVerdict binding
+  // here too. The wording stays a BOARD reading: nothing here observes that a PR was actually opened.
+  if (verdict.level === 'ok') {
+    return { level: 'capped-after-qa', stop: false, text: 'hit the wall-clock cap after the ticket reached qa; the queue continues' };
   }
+  return { level: 'capped', stop: true, text: 'hit the wall-clock cap; left mid-ticket' };
+}
+
+function transitionVerdict({ before, after }) {
   if (!after) {
     return { level: 'note', stop: true, text: `status unreadable after the run (was ${before ?? 'unknown'})` };
   }
