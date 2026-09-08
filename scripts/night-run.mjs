@@ -66,15 +66,61 @@ export function classify({ before, after, capped = false }) {
 // (review, MEDIUM — both measured).
 const GATE_SUMMARY = /^\s*(?:Tests|Test Files)\s+[1-9]\d*\s+failed\b/m;
 const GATE_NAMED = /^\s*(?:typecheck|lint)\s+failed\b/im;
+// Since tkt-ea501e6d1a1d the unattended path may let the pre-commit hook BE the gate, so a failure
+// can surface only as husky aborting the commit — tsc/eslint output plus this marker, never the
+// session's own "typecheck failed" wording that GATE_NAMED keys on.
+const HOOK_REJECTED = /^\s*husky\s+-\s+pre-commit script failed\b/im;
 
+/**
+ * `describe` is handed `res.out` — the stdout of `claude -p --output-format stream-json`, one JSON
+ * object per line with the session's real output inside string FIELDS, where a newline is the two
+ * characters `\n`. Decoding those restores the line starts every anchored pattern here needs.
+ *
+ * Used by `hookRejected` only, deliberately. Measured 2026-09-08 across all 27 night logs carrying
+ * a `summary.json`:
+ *
+ *   GATE_SUMMARY on the raw log (today's behaviour)  0/27   — it has never once fired
+ *   GATE_SUMMARY on the decoded log                  9/27   — but SEVEN of the nine ended `ok`
+ *   this husky marker on the decoded log             0/27
+ *
+ * So decoding `gateFailed` would swap a silent false negative for a false positive on 7 of 9 hits:
+ * an intermediate red test run is the NORMAL state of a healthy ticket here, since a red-first repro
+ * and the mutation check both require observing red. Which occurrence should count is a real design
+ * question and a pre-existing defect, owned by its own ticket — not decided as a rider on this one.
+ * husky's marker has no such problem: it is printed only when a hook has actually failed.
+ */
+export function decodeLog(log) {
+  return String(log ?? '').replace(/\\r\\n|\\n|\\r/g, '\n');
+}
+
+// Left reading the RAW log, exactly as before this ticket. It is inert on a stream-json log
+// (0/27 above) — do not report it as a control that holds.
 export function gateFailed(log) {
   const text = log ?? '';
   return GATE_SUMMARY.test(text) || GATE_NAMED.test(text);
 }
 
+/**
+ * The commit was refused by a pre-commit hook. Deliberately NOT folded into `gateFailed`: husky
+ * prints this marker for whatever the hook runs, and across this fleet that is not always the gate
+ * — `equipment-schedule`'s hook runs only a semicolon guard, `copart-filter`'s adds `vacuous`.
+ * Calling those "the quality gate failed, so this is UNDIAGNOSED, not evidence against the branch"
+ * tells the 8am reader to discount a real defect, which is worse than saying nothing.
+ */
+export function hookRejected(log) {
+  return HOOK_REJECTED.test(decodeLog(log));
+}
+
 export function describe(result, log) {
-  if (result.level === 'halt' && gateFailed(log)) {
+  if (result.level !== 'halt') return result.text;
+  // Checked first so that if `gateFailed` is ever made to fire on a stream-json log, a gate failure
+  // inside the hook gets the gate's own wording, which is the more specific of the two. On today's
+  // logs it never fires, so a hook-run gate failure reaches the reader through `hookRejected`.
+  if (gateFailed(log)) {
     return `${result.text} — the quality gate failed, so this is UNDIAGNOSED, not evidence against the branch`;
+  }
+  if (hookRejected(log)) {
+    return `${result.text} — a pre-commit hook refused the commit, so nothing landed; read the hook's own output before judging the branch`;
   }
   return result.text;
 }

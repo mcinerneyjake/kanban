@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  classify, gateFailed, describe as describeResult, readStatus, guardBlocked,
+  classify, gateFailed, hookRejected, decodeLog, describe as describeResult, readStatus, guardBlocked,
   arm, disarm, claimSentinel, ownerOf, pidAlive, fileHere, sentinelPaths,
   preflightGuard, main, run, sessionArgs, sessionEnv, defaultRunSession, capMsFrom, USAGE, EXIT,
   MERGE_PROBE_PAYLOAD, renderProbes,
@@ -152,8 +152,72 @@ describe('describe — dimension 7: gate-failure evidence changes the wording', 
     // was labelled UNDIAGNOSED (review, MEDIUM).
     ['Tests  0 failed | 12 passed', false],
     ['earlier that run 3 failed, but I fixed them', false],
+    // A pre-commit hook refusing the commit is NOT by itself a gate failure — see hookRejected.
+    ['husky - pre-commit script failed (code 1)', false],
+    // Pinning the known blindness rather than papering over it: on the stream-json shape `describe`
+    // is actually handed, this does not fire. Measured 0/27 on every real night log. Decoding it
+    // here would fire on 9, seven of which ended `ok` — a separate ticket owns that trade.
+    [JSON.stringify({ type: 'user', content: 'ok\nTests  14 failed | 3 passed\ndone' }), false],
   ])('gateFailed(%s) === %s', (log, want) => {
     expect(gateFailed(log)).toBe(want);
+  });
+});
+
+describe('decodeLog — the log shape describe() is actually handed', () => {
+  // The regression this exists for: every matcher is line-anchored, and stream-json carries the
+  // session's output inside JSON strings, so before this no anchored pattern could ever fire.
+  it('restores line starts from JSON-escaped newlines', () => {
+    expect(decodeLog(String.raw`a\nTests  1 failed`)).toBe('a\nTests  1 failed');
+    expect(decodeLog(String.raw`a\r\nb`)).toBe('a\nb');
+  });
+
+  it('leaves already-decoded text and empty input alone', () => {
+    expect(decodeLog('a\nb')).toBe('a\nb');
+    expect(decodeLog(null)).toBe('');
+    expect(decodeLog(undefined)).toBe('');
+  });
+});
+
+describe('hookRejected — a hook refusing the commit is not the same claim as a failed gate', () => {
+  it.each([
+    ['husky - pre-commit script failed (code 1)', true],
+    ['  husky - pre-commit script failed (code 2)', true],
+    [JSON.stringify({ content: 'x\nhusky - pre-commit script failed (code 1)\n' }), true],
+    // A DIFFERENT hook is not the commit gate and must not borrow its wording.
+    ['husky - pre-push script failed (code 1)', false],
+    // The model describing the mechanism is not the mechanism firing.
+    ['if the gate fails you will see husky - pre-commit script failed', false],
+    ['', false],
+  ])('hookRejected(%s) === %s', (log, want) => {
+    expect(hookRejected(log)).toBe(want);
+  });
+
+  const halt = () => classify({ before: 'todo', after: 'in-progress' });
+
+  // equipment-schedule's pre-commit runs only a semicolon guard, so "the quality gate failed, so
+  // this is UNDIAGNOSED, not evidence against the branch" would tell the reader to discount a real
+  // defect. It gets its own wording instead.
+  it('a non-gate hook failure is not called a gate failure', () => {
+    const text = describeResult(halt(), 'husky - pre-commit script failed (code 1)');
+    expect(text).toMatch(/pre-commit hook refused the commit/);
+    expect(text).not.toMatch(/undiagnosed/i);
+  });
+
+  it('a gate failure inside the hook keeps the gate wording, which is the accurate one', () => {
+    const log = 'Tests  14 failed | 3 passed\nhusky - pre-commit script failed (code 1)';
+    expect(describeResult(halt(), log)).toMatch(/undiagnosed/i);
+  });
+
+  it('neither wording is attached to a halt with no failure evidence at all', () => {
+    const text = describeResult(halt(), 'stopped at a hard stop');
+    expect(text).not.toMatch(/undiagnosed/i);
+    expect(text).not.toMatch(/refused the commit/);
+  });
+
+  // The wording rides on a halt; a successful run must never pick it up.
+  it('says nothing extra on a non-halt verdict', () => {
+    const ok = classify({ before: 'todo', after: 'qa' });
+    expect(describeResult(ok, 'husky - pre-commit script failed (code 1)')).toBe(ok.text);
   });
 });
 
