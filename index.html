@@ -3,6 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Second layer under TicketModal's PREVIEW_SANITIZE, covering the egress directives a hostile
+      ticket body can reach. It lives in the markup, not as an Express header, because Express
+      mounts only /api/* — the page comes from Vite in dev and `vite preview` after a build, so a
+      header in server/app.ts would protect nothing while reporting success (verified: no static
+      or sendFile handler there).
+
+      Do NOT read this as deny-by-default: there is no `default-src`, so every directive not named
+      here — connect-src, form-action, frame-src, prefetch-src — is unrestricted. It is an
+      allowlist of five, and the two layers overlap rather than nest: `feImage` is stopped only by
+      img-src, while `@import`/`@font-face` are stopped only once style-src/font-src are named
+      here. Neither layer closes the set alone, which is why e2e/previewEgress.spec.ts asserts the
+      CSP-stripped arm separately. Adding `default-src` is deliberately left out of this fix — it
+      needs the embedded terminal exercised, which no test covers (tkt-5037f1a9fb57).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="img-src 'self' data:; media-src 'none'; object-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'"
+    />
     <title>Kanban</title>
   </head>
   <body>

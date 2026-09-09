@@ -19,6 +19,24 @@ import Spinner from './ui/Spinner.js';
 import Modal from './ui/Modal.jsx';
 import { draftFailureOf, type DraftFailure } from '../lib/draftFailure.js';
 
+// Ticket bodies are written by night runs, the intake agent and sessions in other repos, and
+// `marked` passes raw HTML straight through — so a body arrives here carrying whatever tags its
+// author chose, which hands an otherwise egress-free agent an exfiltration channel.
+// e2e/previewEgress.spec.ts drives every entry below; its CSP-stripped arm is what holds this
+// list honest, since with the CSP up a leak here is invisible.
+//
+// `style` is the one to keep: the ELEMENT is in DOMPurify's default allowlist and its `@import`
+// and `@font-face src:url()` reach the network even with the `style` ATTRIBUTE forbidden — and an
+// unscoped <style> also lets a body restyle the whole app. `object`/`embed`/`iframe`/`ping`/
+// `formaction` are NOT in DOMPurify 3.4.14's defaults and are inert today; they are kept only as
+// belt against a future default widening. Deliberately absent: `href`, since a link does not fetch
+// until clicked, and `input`, whose only egress shape (`type=image`) is already disarmed by
+// dropping `src` — banning it would strip GFM task-list checkboxes (tkt-5037f1a9fb57).
+const PREVIEW_SANITIZE = {
+  FORBID_TAGS: ['img', 'video', 'audio', 'source', 'track', 'image', 'use', 'feimage', 'style', 'object', 'embed', 'iframe'],
+  FORBID_ATTR: ['src', 'srcset', 'poster', 'style', 'background', 'xlink:href', 'formaction', 'ping', 'data'],
+};
+
 type FormState = Pick<Ticket, 'title' | 'type' | 'priority' | 'status' | 'body' | 'project' | 'blockers' | 'parent' | 'dueDate' | 'assignee'>
 
 type Props = {
@@ -513,7 +531,10 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
             <div
               className="md-preview"
               dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(String(marked.parse(form.body || '_No description_'))),
+                __html: DOMPurify.sanitize(
+                  String(marked.parse(form.body || '_No description_')),
+                  PREVIEW_SANITIZE,
+                ),
               }}
             />
           ) : (
