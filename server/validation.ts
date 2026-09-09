@@ -6,3 +6,4 @@ export {
   validatedStatus,
   extractTicketFields,
 } from 'ticket-workflow';
+export type { TicketFields } from 'ticket-workflow';
