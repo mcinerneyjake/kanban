@@ -562,10 +562,16 @@ re-reading a diff whose remaining hole nobody had named.
 > **Changing either of the two paragraphs above — or any instruction — is currently unmeasurable.**
 > Run `node scripts/probe/clean-room.mjs` (in `kanban`) first. Both arms of an A/B load
 > `~/.claude/CLAUDE.md`, so a difference between them is unattributable; that confound is what
-> invalidated the `tkt-70ab03c22f43` A/B. As of 2026-08-11 the probe reports **BLOCKED** — the
-> mechanisms exist (`--bare`, isolated `CLAUDE_CONFIG_DIR`) but both fail auth without an
-> `ANTHROPIC_API_KEY`. Until it reports `CLEAN`, **do not delete an instruction on the strength of an
-> A/B** (`tkt-b86d2a318f8b`).
+> invalidated the `tkt-70ab03c22f43` A/B. Re-measured 2026-09-09 (`tkt-b6879d3f5daf`) it still reports
+> **BLOCKED**, with the control arm `MARKER_PRESENT`: the instrument detects instructions, the
+> isolated arm is what fails — `--bare` and an isolated `CLAUDE_CONFIG_DIR` both exist and both fail
+> auth without an `ANTHROPIC_API_KEY`. Run it rather than trusting that date.
+>
+> Until it reports `CLEAN` this cuts **both** ways. **Do not delete an instruction on the strength of
+> an A/B** (`tkt-b86d2a318f8b`) — and do not add one described as measured: a diff adding a tenet
+> lands `unmeasured` and records its **Claim** and **Falsifier**, per kanban's `CLAUDE.md`
+> (*"Adding an instruction"* — the phrase its contract test matches, so this reference survives a
+> reworded heading). Neither direction blocks the change; both forbid the claim.
 
 ### Before `record_review` — confirm the review reviewed *this*
 

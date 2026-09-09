@@ -413,4 +413,34 @@ output** (its phrase list is incomplete by construction, so a human reading the 
 check on the instrument); **do not delete an instruction on the strength of one A/B** until
 `clean-room.mjs` reports `CLEAN`; and **do not build an assertion-word probe over prose** — measured
 at ~2% precision, because the claims that rot are unremarkable declaratives, not the hedged sentences
-those words select for.
+those words select for. The eviction rule there governs the way **out**; the way **in** is below.
+
+### Adding an instruction: record the claim, and the falsifier
+
+The eviction rule above has no counterpart on the way in, and that asymmetry is what makes the ruleset
+append-only *on the merits*: an instruction never required to show it changes behaviour can never be
+shown useless later (`tkt-b6879d3f5daf`). So a new tenet, rule or directive added to this file or to
+`SKILL.md` carries two lines in the `## Implementation summary` of the ticket that adds it:
+
+- **Claim** — the behaviour it is meant to change, written as something a session would do differently
+  with it than without.
+- **Falsifier** — the question that would settle that claim, shaped like `clean-room.mjs`'s
+  `DEFAULT_QUESTION`: answerable `YES`/`NO`, and never quoting the marker inside the question, which
+  supplies the answer and is true by construction in every arm.
+
+**Run `scripts/probe/clean-room.mjs` for the verdict; never recall one** — it is mutable external
+state. **Its arms are not yet the right instrument for a rule in *this* file:** `probe()` runs both in
+a neutral temp cwd, deliberately, so no project `CLAUDE.md` is loaded in either arm — which measures
+**user-scope** instructions and would report a repo-scoped one `INSTRUMENT_BROKEN` rather than absent.
+Recording the falsifier is therefore the whole deliverable today; running it needs that cwd handling
+fixed first.
+
+**While the probe is not `CLEAN`, the instruction lands `unmeasured` and the summary says so.** It is
+not blocked: a gate conditioned on a verdict the probe cannot currently produce could never pass, and
+would deny service. What is forbidden is the *claim* — an `unmeasured` instruction may never be
+described as justified, validated or shown to work. Those recorded pairs are the queue that gets
+A/B'd first on the day the probe goes green.
+
+**Nothing enforces this.** `skillContract.test.mjs` binds that this section exists, still names
+**Claim** and **Falsifier**, and still says it is unenforced — a rewrite reversing its meaning passes
+green, and no test can read what a session actually did.
