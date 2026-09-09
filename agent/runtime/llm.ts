@@ -1,9 +1,8 @@
 import { type ChatTool } from './tools.js';
 import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
-import { RuntimeUnavailableError } from './unavailable.js';
+import { RuntimeUnavailableError, UNAVAILABLE_STATUS } from './unavailable.js';
 
 // Gateway-class statuses: the request never reached a working model.
-const UNAVAILABLE_STATUS = new Set([502, 503, 504]);
 
 // Chat client for the agent loop — OpenAI-compatible /v1/chat/completions via fetch, no SDK. The provider seam (local vs cloud) is config-driven; a cloud driver would be a separate ChatClient (tkt-29788d084c21).
 

@@ -1,6 +1,7 @@
 import { type EmbedConfig, resolveEmbedConfig } from './models.js';
 import { chunkText, type ChunkOptions } from './chunk.js';
 import { UsageMeter, type RunUsage, type CallTokens } from '../cost/usage.js';
+import { RuntimeUnavailableError, UNAVAILABLE_STATUS } from '../runtime/unavailable.js';
 
 // Retrieval layer (RAG): an `Embedder` seam + an in-memory cosine index over the board. Provider access is the OpenAI-compatible /v1/embeddings endpoint via fetch, no SDK.
 
@@ -29,6 +30,15 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
     && 'data' in v && Array.isArray(v.data) && v.data.every(isEmbeddingDatum);
 }
 
+// Ids from a /v1/models payload, or null when the reply is unusable. Entries WITHOUT a string `id` are
+// skipped rather than failing the whole list (llm.ts:listModelIds does the same): one cosmetic entry
+// from a proxy must not hard-block embedding when the configured model is right there beside it.
+function modelIdsOf(v: unknown): string[] | null {
+  if (typeof v !== 'object' || v === null || !('data' in v) || !Array.isArray(v.data)) return null;
+  return v.data.flatMap((m: unknown) =>
+    typeof m === 'object' && m !== null && 'id' in m && typeof m.id === 'string' ? [m.id] : []);
+}
+
 // Usage is optional + best-effort (embeddings report prompt/total, no completion); omit when absent/malformed so it never breaks the response.
 // A reported 0 is treated as UNREPORTED (return undefined), NOT a measured zero: a non-empty embedding
 // input can never genuinely be 0 tokens, and LM Studio's /v1/embeddings returns `prompt_tokens: 0`
@@ -49,6 +59,10 @@ function embedUsageOf(v: unknown): CallTokens | undefined {
 const EMBED_BATCH_SIZE = 64;
 // Fail fast instead of hanging if the runtime is down or a model is still loading.
 const EMBED_TIMEOUT_MS = 30_000;
+// The model-list GET is a liveness-shaped probe, so it fails far faster than a generation request —
+// same split, and the same reasoning, as llm.ts's PING_TIMEOUT_MS. Sharing EMBED_TIMEOUT_MS would put
+// a hung runtime 60s away from the caller (30s listing + 30s embedding) instead of 35s.
+const MODELS_TIMEOUT_MS = 5_000;
 
 export class RuntimeEmbedder implements Embedder {
   private readonly meter = new UsageMeter();
@@ -76,7 +90,100 @@ export class RuntimeEmbedder implements Embedder {
     return out;
   }
 
+  // A runtime that does not serve `cfg.model` answers 200 and silently substitutes a different model,
+  // so `res.ok` cannot distinguish a correct run from a wrong one. Measured against LM Studio on
+  // 2026-09-09: `qwen3-embedding:0.6b` and `no-such-model-xyz` both returned 200 with 768-d nomic
+  // vectors instead of 1024-d qwen3 (tkt-01b784eb0030).
+  //
+  // What this check proves is NARROW, and the narrowness is the honest part: GET /models lists every
+  // DOWNLOADED model, loaded or not (measured 2026-07-27, llm.ts:249), so presence does not prove
+  // residency and absence is the only thing it can positively catch. That is exactly the measured
+  // incident — an id spelling this runtime never advertises. Residency is caught after the fact by
+  // assertServedModel() below, off the response's own `model` field.
+  //
+  // Only a FULFILLED check is memoized. Memoizing a rejection would turn a runtime blip during the
+  // first search into a permanent outage: indexCache.sharedEmbedder() holds one embedder for the life
+  // of the process and no production path resets it, so every later call would keep replaying a
+  // failure the runtime had long recovered from. Re-probing still fails closed for the call in hand.
+  private servedCheck: Promise<void> | null = null;
+
+  private ensureModelServed(): Promise<void> {
+    this.servedCheck ??= this.verifyModelServed().catch((err: unknown) => {
+      this.servedCheck = null;
+      throw err;
+    });
+    return this.servedCheck;
+  }
+
+  private async verifyModelServed(): Promise<void> {
+    const served = await this.listServedModels();
+    if (!served.includes(this.cfg.model)) {
+      // A plain Error, deliberately NOT RuntimeUnavailableError. An id missing from the list is a
+      // CONFIG fault (typo, never downloaded), not evidence the runtime is down — unavailable.ts is
+      // explicit that recognition must be positive. llm.ts's own analogue is preflight(), which
+      // likewise reports "fix your .env" rather than claiming unavailability; looksUnloaded() is a
+      // different case (a 4xx body from a runtime that IS serving). Landing this on the 500 path is
+      // also what gets the message below into the server log, where an operator can act on it —
+      // a 503 is answered in the UI with "is the model running?" and logged nowhere.
+      throw new Error(
+        `Embedding model "${this.cfg.model}" is not served by the runtime at ${this.cfg.baseUrl}. `
+        + 'That runtime answers 200 for an unknown model id and silently substitutes a different one, '
+        + 'so continuing would produce plausible-looking vectors from the wrong model. '
+        + `Served models: ${served.join(', ') || '(none)'}. Set EMBED_MODEL to one of these.`,
+      );
+    }
+  }
+
+  // Every failure path here THROWS: "could not determine the served set" is a refusal to embed, never
+  // permission to proceed. A guard that fails open is worse than no guard, because it reports success.
+  private async listServedModels(): Promise<string[]> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.cfg.baseUrl}/models`, { signal: AbortSignal.timeout(MODELS_TIMEOUT_MS) });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new RuntimeUnavailableError(`Model list request timed out after ${MODELS_TIMEOUT_MS}ms — is the runtime at ${this.cfg.baseUrl} up?`, { cause: err });
+      }
+      // Not classified here: `cause` carries the connection code, and isRuntimeUnavailable walks the chain.
+      throw new Error(`Could not list models at ${this.cfg.baseUrl} to verify "${this.cfg.model}" — refusing to embed.`, { cause: err });
+    }
+    if (!res.ok) {
+      const body = (await res.text().catch(() => '')).slice(0, 500);
+      // Gateway-class only, matching llm.ts exactly: a 502/503/504 is the runtime (or a proxy) declining
+      // to serve. A 404 — the shape EMBED_BASE_URL missing its /v1 suffix produces — is a FAULT, and
+      // must stay on the 500 path so its body reaches the log instead of becoming "is the model running?".
+      if (UNAVAILABLE_STATUS.has(res.status)) {
+        throw new RuntimeUnavailableError(`Could not list models at ${this.cfg.baseUrl} to verify "${this.cfg.model}" — refusing to embed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
+      }
+      throw new Error(`Could not list models at ${this.cfg.baseUrl} to verify "${this.cfg.model}" — refusing to embed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
+    }
+    const ids = modelIdsOf(await res.json().catch(() => null));
+    if (ids === null) {
+      // Deliberately NOT RuntimeUnavailableError: a reply we cannot parse is no positive evidence the
+      // runtime is down, and unavailable.ts is explicit that an unrecognised failure must not claim it is.
+      throw new Error(`Could not list models at ${this.cfg.baseUrl} to verify "${this.cfg.model}" — refusing to embed: unexpected /v1/models response shape`);
+    }
+    return ids;
+  }
+
+  // The list check above cannot see residency; this can. OpenAI-compatible /v1/embeddings echoes the
+  // model that actually ran, which is the one piece of POSITIVE, post-hoc evidence about the vectors in
+  // hand — and it is exactly what the measured substitution changes (requesting an unserved id came back
+  // `served-as` nomic). A runtime that omits the field leaves us with the list check alone; that is a
+  // real limit, so it is stated rather than papered over with a stricter-sounding guarantee.
+  private assertServedModel(json: unknown): void {
+    if (typeof json !== 'object' || json === null || !('model' in json)) return;
+    const served = json.model;
+    if (typeof served !== 'string' || served === this.cfg.model) return;
+    throw new Error(
+      `Embeddings ran on "${served}" but "${this.cfg.model}" was requested (${this.cfg.baseUrl}). `
+      + 'The runtime substituted a different model, so these vectors are not comparable to any other '
+      + 'run of this model — refusing them. Set EMBED_MODEL to a model the runtime actually serves.',
+    );
+  }
+
   private async postBatch(inputs: string[]): Promise<number[][]> {
+    await this.ensureModelServed();
     const start = this.now();
     const res = await this.fetchEmbeddings(inputs);
     if (!res.ok) {
@@ -87,6 +194,7 @@ export class RuntimeEmbedder implements Embedder {
     if (!isEmbeddingResponse(json)) {
       throw new Error('Unexpected /v1/embeddings response shape');
     }
+    this.assertServedModel(json);
     this.meter.record({
       kind: 'embed',
       startedAt: start,
