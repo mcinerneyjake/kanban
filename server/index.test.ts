@@ -683,6 +683,60 @@ describe('POST /api/intake/search', () => {
     expect(res.status).toBe(200);
     expect(res.body.results).toEqual([]);
   });
+
+  /**
+   * The schema is the ONLY validation this endpoint has, and `k` reaches
+   * `retrieval.search` → `.slice(0, Math.max(0, k))` unexamined. So `0` and negatives clamp to an
+   * empty slice — the caller is told "no matches" about a board that matched — a fraction slices to
+   * its floor, and a huge `k` returns the whole board. Out-of-range now falls back to the
+   * documented default of 5, the same way a non-number already did (tkt-8585f0de3ef6 finding K).
+   */
+  describe('limit bounds', () => {
+    const seedSix = async () => {
+      for (const n of [1, 2, 3, 4, 5, 6]) await seedTicket(`tkt-lim${n}0000000`, `login issue ${n}`);
+      stubEmbeddings();
+    };
+    const search = (limit: unknown) => request(server).post('/api/intake/search').send({ query: 'login', limit });
+
+    it.each([
+      ['zero', 0],
+      ['negative', -1],
+      ['a fraction', 1.5],
+      ['above the bound', 10_000],
+    ])('falls back to the default of 5 for %s', async (_label, limit) => {
+      await seedSix();
+      const res = await search(limit);
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(5);
+    });
+
+    // The control. Without it every case above would also pass a schema that ignored `limit`
+    // entirely and always used 5 — the bound must reject out-of-range values, not all of them.
+    it('and still honours an in-range limit', async () => {
+      await seedSix();
+      const res = await search(2);
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(2);
+    });
+
+    // Both ends of the range are INSIDE it. 50 is the case worth having: it is above the fallback
+    // of 5, so an off-by-one that excluded it would return 5 results and look like a pass.
+    it.each([[1, 1], [50, 6]])('accepts the boundary limit %i', async (limit, expected) => {
+      await seedSix();
+      const res = await search(limit);
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(expected);
+    });
+
+    // The documented `.catch` behaviour the bound rides on top of: a non-number is still a
+    // fallback, never a 400 (server/schemas/intake.ts:6-7).
+    it('and a non-number is still the documented silent fallback, not a 400', async () => {
+      await seedSix();
+      const res = await search('lots');
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(5);
+    });
+  });
 });
 
 describe('POST /api/intake/propose', () => {
@@ -1026,6 +1080,63 @@ describe('POST /api/intake/apply', () => {
     expect(res.body.runId).toBeNull();
     expect(await readRun('run-orphan')).toBeNull();
   });
+
+  /**
+   * `args` was an open record, so anything the client sent was carried to the service and silently
+   * dropped there. The set is now closed to the keys the apply path actually reads: `id` (read by
+   * apply itself, for the update target) plus the fields `extractTicketFields` extracts. Value
+   * TYPES are deliberately still the service's job — a second copy of those rules here would be the
+   * hand-kept field list this slice exists to avoid (tkt-f9a2fc5604cd).
+   */
+  describe('args key set', () => {
+    it.each(['order', 'source', 'created', 'id ', '__proto__'])(
+      'rejects the unknown key %j with a 400, before the ticket service runs',
+      async (key) => {
+        const before = (await tickets.listTickets()).length;
+        const res = await request(server).post('/api/intake/apply')
+          .send({ action: 'create_ticket', runId: 'run-strict', args: { title: 'Strict', [key]: 'x' } });
+        expect(res.status).toBe(400);
+        // The write not landing is the point; a 400 that still created the ticket passes the line above.
+        expect((await tickets.listTickets()).length).toBe(before);
+      },
+    );
+
+    /**
+     * The control: every key the apply path reads must still be accepted, or the tightening has
+     * broken the endpoint rather than bounded it. `appendBody` is update-only and `id` is read by
+     * apply itself. Neither is simply ignored on create: `id` is dropped silently, and `appendBody`
+     * is TYPE-checked and then dropped, so a non-string 400s a metered create (tkt-5171e5aa3379).
+     * Both still belong in the key set — that defect is in the controller, not here. Two calls
+     * because the service rejects `body` and `appendBody` TOGETHER (replace vs append) — sending
+     * both in one request would 400 for a reason that has nothing to do with the key set.
+     */
+    it('accepts every key the apply path reads', async () => {
+      await seedTicket('tkt-strictkey01', 'Original');
+      const common = {
+        id: 'tkt-strictkey01', title: 'All fields', type: 'bug', priority: 'high',
+        status: 'todo', project: 'kanban', parent: null, dueDate: '2026-07-20',
+        assignee: 'Alice', blockers: [],
+      };
+      const appended = await request(server).post('/api/intake/apply')
+        .send({ action: 'update_ticket', runId: 'run-strict-ok', args: { ...common, appendBody: 'more' } });
+      expect(appended.status).toBe(200);
+      expect(appended.body).toMatchObject({ id: 'tkt-strictkey01', title: 'All fields', type: 'bug' });
+
+      const replaced = await request(server).post('/api/intake/apply')
+        .send({ action: 'update_ticket', runId: 'run-strict-ok-2', args: { ...common, body: 'replaced' } });
+      expect(replaced.status).toBe(200);
+      expect(replaced.body.body).toContain('replaced');
+    });
+
+    // Type validation stays where it was — the schema must not have absorbed it and started
+    // reporting a different error for a known key with the wrong type.
+    it('and leaves value-type validation to the service', async () => {
+      const res = await request(server).post('/api/intake/apply')
+        .send({ action: 'create_ticket', runId: 'run-strict-type', args: { title: 42 } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('title must be a string');
+    });
+  });
 });
 
 describe('GET /api/intake/health', () => {
@@ -1186,6 +1297,64 @@ describe('malformed JSON body', () => {
     expect(res.status).toBe(400);
     expect(res.headers['content-type']).toMatch(/application\/json/);
     expect(res.body).toHaveProperty('error');
+  });
+});
+
+// The edge contract for a path no router matched, and the banner Express sends by default.
+// Both are app-wide: they hold for every request that reaches the stack, not per route (tkt-f9a2fc5604cd).
+describe('Express edge: unmatched paths and the x-powered-by banner', () => {
+  // Express's built-in finalhandler answers an unmatched path with an HTML page, so every client
+  // that parses { error } gets a parse failure instead of the message. The three cases are
+  // deliberately different shapes: under a mounted router, under the /api prefix, and outside it.
+  it.each([
+    ['get', '/api/intake/not-a-real-endpoint'],
+    ['get', '/api/this-route-does-not-exist'],
+    ['get', '/not-even-under-api'],
+  ] as const)('%s %s → 404 on the JSON { error } contract', async (method, route) => {
+    const res = await request(server)[method](route);
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({ error: 'Not found' });
+  });
+
+  // A wrong METHOD on a real path is the same miss — the router declines it and it falls through.
+  it('a real path with no handler for the method → the same JSON 404', async () => {
+    const res = await request(server).post('/api/dashboard');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found' });
+  });
+
+  // The status assertions are the control: "header absent" would also pass against a request that
+  // never reached the app, so each case pins the response it is reading the headers off.
+  it('no response carries x-powered-by — on a match, a miss, or an error', async () => {
+    const ok = await request(server).get('/api/tickets');
+    expect(ok.status).toBe(200);
+    expect(ok.headers['x-powered-by']).toBeUndefined();
+
+    const miss = await request(server).get('/api/this-route-does-not-exist');
+    expect(miss.status).toBe(404);
+    expect(miss.headers['x-powered-by']).toBeUndefined();
+
+    const bad = await request(server).post('/api/tickets').set('Content-Type', 'application/json').send('{ "title": ');
+    expect(bad.status).toBe(400);
+    expect(bad.headers['x-powered-by']).toBeUndefined();
+  });
+
+  // The 404 must not shadow a route that matched and then threw. NOTE it does NOT pin the
+  // 404-vs-errorHandler ordering, though it reads like it should: wrap() catches the rejection and
+  // calls sendError itself, never next(err), so this stays green with errorHandler deleted
+  // (measured). The next(err) path — and thus the ordering — is pinned by 'malformed JSON body'.
+  it('and it does not swallow an error raised by a matched route', async () => {
+    const spy = vi.spyOn(tickets, 'listProjects').mockRejectedValueOnce(new Error('boom'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await request(server).get('/api/projects');
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'Internal server error' });
+    } finally {
+      spy.mockRestore();
+      consoleSpy.mockRestore();
+    }
   });
 });
 
@@ -1354,6 +1523,15 @@ describe('the Host gate covers every Express route (not the WS upgrade, which Or
   it('and the existence check can tell a real route from an invented one', async () => {
     const res = await request(server).get('/api/this-route-does-not-exist').set('Host', '127.0.0.1:3001');
     expect(res.status).toBe(404);
+  });
+
+  // The 404 catch-all is wired after every router but the Host gate is wired FIRST, so a rebound
+  // page must still be refused rather than told the path does not exist. A 404 here would leak
+  // which paths are real to an origin the gate exists to turn away (tkt-f9a2fc5604cd).
+  it('and a rebound Host on an unmatched path is still 403, not the new 404', async () => {
+    const res = await request(server).get('/api/this-route-does-not-exist').set('Host', FORGED);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'forbidden host' });
   });
 
   it('and /api/stream is a real SSE route, which is why it is checked apart', async () => {

@@ -12,6 +12,9 @@ import { hostGuard } from './middleware/hostGuard.js';
 // Assembles the app from resource routers. Layering: route -> controller ->
 // service. No business logic or port bind here (see index.ts).
 export const app = express();
+// Express stamps `X-Powered-By: Express` on every response by default. It hands a scanner a free
+// framework fingerprint and buys nothing back (tkt-f9a2fc5604cd).
+app.disable('x-powered-by');
 // First, so it covers every router below and refuses before a body is parsed. This API has no auth,
 // so the loopback bind is the whole access control — and a DNS-rebound page defeats that by being
 // same-origin. Only the Host header still tells them apart (tkt-fc40f49495c1).
@@ -28,6 +31,10 @@ app.use('/api', economicsRouter);
 
 // Dev-only embedded terminal token endpoint; the WS transport itself is attached in index.ts.
 if (process.env.KANBAN_TERMINAL === '1') app.use('/api', terminalRouter);
+
+// After every router: an unmatched path would otherwise get Express's HTML page, breaking the
+// { error } contract. Plain 2-arg middleware, so a next(err) still reaches errorHandler below.
+app.use((_req, res) => { res.status(404).json({ error: 'Not found' }); });
 
 // Last: catches errors thrown before a wrap()ed handler (e.g. malformed JSON) and keeps the { error } contract.
 app.use(errorHandler);
