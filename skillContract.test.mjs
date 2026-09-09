@@ -491,6 +491,43 @@ function untrustedBodyProblems(claudeMd) {
   return problems;
 }
 
+const ADDITION_RULE_WHERE = 'CLAUDE.md\'s "Adding an instruction" section';
+
+// Literal tokens, not a hedging-word scan — same reason as NOT_ENFORCED above. Each `Claim`/
+// `Falsifier` token is anchored to its BULLET: the section's own closing paragraph names both words
+// while describing what this checker binds, so an unanchored token would be satisfied by the
+// self-description alone after the bullets were deleted.
+const ADDITION_TOKENS = [
+  ['the instrument', 'clean-room.mjs'],
+  ['a `Claim` line', '- **Claim**'],
+  ['a `Falsifier` line', '- **Falsifier**'],
+  ['the `unmeasured` landing state', '`unmeasured`'],
+];
+
+function instructionAdditionProblems(claudeMd) {
+  const { section, headings } = sliceSection(claudeMd, 3, /adding an instruction/i);
+  // Not `[]` — an unfindable section is UNCHECKED. This rule is the way IN; deleting it silently
+  // leaves the eviction rule as the only half standing, which is the append-only asymmetry
+  // `tkt-b6879d3f5daf` closed.
+  if (!section) {
+    return [headings > 1
+      ? `${headings} headings match ${ADDITION_RULE_WHERE} — cannot tell which one carries the rule`
+      : `no section found for ${ADDITION_RULE_WHERE}`];
+  }
+  // The slice must BOUND the scan: `clean-room.mjs` is named in the eviction rule a few lines above
+  // in the real CLAUDE.md, so a whole-file scan is already satisfied without this section existing.
+  const fenced = fenceMask(section);
+  const text = section.filter((_, i) => !fenced[i]).join('\n');
+  const problems = [];
+  for (const [label, token] of ADDITION_TOKENS) {
+    if (!text.includes(token)) problems.push(`${ADDITION_RULE_WHERE} does not carry ${label}`);
+  }
+  if (!NOT_ENFORCED.some((re) => re.test(text))) {
+    problems.push(`${ADDITION_RULE_WHERE} does not say the rule is unenforced, so it reads as a mechanism`);
+  }
+  return problems;
+}
+
 // ---------------------------------------------------------------------------
 // The real files.
 
@@ -554,6 +591,16 @@ describe('kanban-workflow skill: the real SKILL.md and CLAUDE.md', () => {
 
   it('tells a session that ticket body text is data, not instructions', () => {
     expect(untrustedBodyProblems(REAL_CLAUDE)).toEqual([]);
+  });
+
+  it('requires a new instruction to record a claim and the falsifier for it', () => {
+    expect(instructionAdditionProblems(REAL_CLAUDE)).toEqual([]);
+  });
+
+  // The two halves are a pair. Binding only the way IN would let the eviction rule be deleted while
+  // this suite stayed green, which is the same append-only asymmetry inverted.
+  it('still carries the eviction half the addition rule balances', () => {
+    expect(REAL_CLAUDE).toMatch(/do not delete an instruction on the strength of one A\/B/i);
   });
 });
 
@@ -942,6 +989,127 @@ describe('the body-rule checker itself', () => {
     expect(untrustedBodyProblems(md)).toEqual([
       `${BODY_RULE_WHERE} does not name \`## Done when\` as a carrier a session is told to act on`,
       `${BODY_RULE_WHERE} does not name \`## Checkpoint\` as a carrier a session is told to act on`,
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Controls on the addition-rule checker. One case per DIMENSION of the state the rule lives in —
+// absent / duplicated / fenced heading, each required token independently, a fenced example, the
+// disclaimer, and the slice boundary — rather than several samples of the same point.
+
+const ADDITION_HEADING = '### Adding an instruction: record the claim, and the falsifier';
+const ADDITION_GOOD = [
+  '- **Claim** — the behaviour it is meant to change.',
+  '- **Falsifier** — the question `scripts/probe/clean-room.mjs` would put to both arms.',
+  'It lands `unmeasured` until the probe reports CLEAN.',
+  'Nothing enforces this.',
+];
+// No trailing heading: the real section runs to EOF, so the slice must terminate there too.
+const additionDoc = (...lines) =>
+  ['## Conventions, structure and probes', '', ADDITION_HEADING, '', ...lines].join('\n');
+
+describe('the addition-rule checker itself', () => {
+  it('passes a correct section — so the flags below are not fired by everything', () => {
+    expect(instructionAdditionProblems(additionDoc(...ADDITION_GOOD))).toEqual([]);
+  });
+
+  it('flags a repealed section rather than reporting it clean', () => {
+    const md = ['## Conventions, structure and probes', '', 'Nothing about adding rules here.'].join('\n');
+    expect(instructionAdditionProblems(md)).toEqual([`no section found for ${ADDITION_RULE_WHERE}`]);
+  });
+
+  it('flags two matching headings instead of picking one', () => {
+    const md = [additionDoc(...ADDITION_GOOD), '', ADDITION_HEADING, '', ...ADDITION_GOOD].join('\n');
+    expect(instructionAdditionProblems(md)).toEqual([
+      `2 headings match ${ADDITION_RULE_WHERE} — cannot tell which one carries the rule`,
+    ]);
+  });
+
+  it('does not accept a fenced copy of the heading as the real section', () => {
+    const md = [
+      '## Conventions, structure and probes', '', '```markdown', ADDITION_HEADING, ...ADDITION_GOOD, '```',
+    ].join('\n');
+    expect(instructionAdditionProblems(md)).toEqual([`no section found for ${ADDITION_RULE_WHERE}`]);
+  });
+
+  // Each token separately: a loop asserting "some token is present" passes on any one alone.
+  for (const [label, token] of ADDITION_TOKENS) {
+    it(`flags a section that stops carrying ${label}`, () => {
+      const md = additionDoc(...ADDITION_GOOD.map((l) => l.split(token).join('something else')));
+      expect(instructionAdditionProblems(md)).toEqual([`${ADDITION_RULE_WHERE} does not carry ${label}`]);
+    });
+  }
+
+  // A fenced EXAMPLE must not supply the tokens — the live prose can assert the opposite while a
+  // code sample satisfies every check.
+  it('does not credit tokens or a disclaimer supplied only by a fenced example', () => {
+    const md = additionDoc('This section is intentionally left blank.', '```markdown', ...ADDITION_GOOD, '```');
+    expect(instructionAdditionProblems(md)).toEqual([
+      ...ADDITION_TOKENS.map(([label]) => `${ADDITION_RULE_WHERE} does not carry ${label}`),
+      `${ADDITION_RULE_WHERE} does not say the rule is unenforced, so it reads as a mechanism`,
+    ]);
+  });
+
+  it('flags a section that claims the rule silently, with no unenforced disclaimer', () => {
+    const md = additionDoc(...ADDITION_GOOD.filter((l) => !/nothing enforces this/i.test(l)));
+    expect(instructionAdditionProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} does not say the rule is unenforced, so it reads as a mechanism`,
+    ]);
+  });
+
+  // The slice must BOUND the scan: the eviction rule a few lines above in the real CLAUDE.md names
+  // `clean-room.mjs`, so a whole-file scan would read that as if this section had named it.
+  it('does not credit the instrument named outside the section', () => {
+    const md = [
+      '## Conventions, structure and probes',
+      '',
+      '**do not delete an instruction** until `clean-room.mjs` reports `CLEAN`.',
+      '',
+      ADDITION_HEADING,
+      '',
+      '- **Claim** — the behaviour it is meant to change.',
+      '- **Falsifier** — the question put to both arms.',
+      'It lands `unmeasured` until the probe reports CLEAN.',
+      'Nothing enforces this.',
+    ].join('\n');
+    expect(instructionAdditionProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} does not carry the instrument`,
+    ]);
+  });
+
+  // The BULLET is what the tokens anchor to, and that anchoring was untested: widening them to a bare
+  // `**Claim**` left this file 69/69 green. The real section's closing paragraph names both words
+  // while describing what this checker binds, so an unanchored token is satisfied by that sentence
+  // alone once the bullets are gone — the section would then require nothing at all.
+  it("does not credit Claim/Falsifier named only by the section's own self-description", () => {
+    const md = additionDoc(
+      'It lands `unmeasured` until `clean-room.mjs` reports CLEAN.',
+      'Nothing enforces this.',
+      'This section is bound to still name **Claim** and **Falsifier**.',
+    );
+    expect(instructionAdditionProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} does not carry a \`Claim\` line`,
+      `${ADDITION_RULE_WHERE} does not carry a \`Falsifier\` line`,
+    ]);
+  });
+
+  // The real section is last in CLAUDE.md, so every fixture above terminates at EOF and the CLOSING
+  // boundary is uncontrolled. Without this, prose appended under a later heading would be absorbed
+  // into the slice and could satisfy the rule from outside it.
+  it('stops at the next heading rather than absorbing later prose', () => {
+    const md = [
+      additionDoc('- **Claim** — the behaviour it is meant to change.', 'Nothing enforces this.'),
+      '',
+      '## Something later',
+      '',
+      '- **Falsifier** — the question `clean-room.mjs` would put to both arms.',
+      'It lands `unmeasured` until the probe reports CLEAN.',
+    ].join('\n');
+    expect(instructionAdditionProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} does not carry the instrument`,
+      `${ADDITION_RULE_WHERE} does not carry a \`Falsifier\` line`,
+      `${ADDITION_RULE_WHERE} does not carry the \`unmeasured\` landing state`,
     ]);
   });
 });
