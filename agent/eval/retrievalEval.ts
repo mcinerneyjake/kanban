@@ -39,9 +39,22 @@ async function scoreCase(index: DocumentIndex, pair: GoldenPair): Promise<CaseRe
 
 // Loud instrument gate — runs BEFORE any metric is computed (via runEval). Any throw here aborts the
 // eval rather than letting it emit a plausible-but-false recall number.
-export async function assertRetrievalInstruments(index: DocumentIndex): Promise<void> {
+// `pairs` is REQUIRED, with no default: a default of `[]` would let a one-argument call check no
+// anchors at all and still report the instruments sound — the permissive answer to "can't check".
+export async function assertRetrievalInstruments(index: DocumentIndex, pairs: readonly GoldenPair[]): Promise<void> {
   if (index.size === 0) {
     throw new Error('retrieval-eval: the board index is EMPTY — nothing to search. Is the board readable / the embedder up? Refusing to report recall over an empty corpus.');
+  }
+  // Anchor presence, before any embedding call: a deleted ticket is not in the corpus, so its pair is
+  // unrankable and scores as an ordinary miss — indistinguishable in the report from genuinely poor
+  // retrieval, and it caps recall for a board reason rather than a retrieval one (tkt-0a076c4d3084).
+  // POSITIVE_CONTROL is checked here too: if its ticket is deleted the control fails below with
+  // "the embedder is broken", which is the exact misdiagnosis this gate exists to remove.
+  const indexed = index.documentIds;
+  const anchors = new Set([...pairs.map((p) => p.expectedId), POSITIVE_CONTROL.expectedId]);
+  const missing = [...anchors].filter((id) => !indexed.has(id));
+  if (missing.length > 0) {
+    throw new Error(`retrieval-eval: ${missing.length} golden anchor(s) ABSENT from the corpus — ${missing.join(', ')}. Those pairs can never rank, so recall would be capped by the board, not measured. Check the board FIRST: a ticket whose file failed to parse is dropped into listBoard's \`unreadable\` and is absent here too, so this can mean a corrupt file rather than a deleted ticket. Only once the ticket is really gone, fix the PAIR in agent/eval/golden.ts — never tune the query to force a hit.`);
   }
   // Positive control: a near-verbatim title MUST land top-1, or the embedder is miswired.
   const pos = await scoreCase(index, POSITIVE_CONTROL);
@@ -74,7 +87,7 @@ export function evaluateRetrieval(index: DocumentIndex, pairs: readonly GoldenPa
   return runEval<GoldenPair, CaseResult>({
     name: 'retrieval golden set',
     cases: [...pairs],
-    assertInstruments: () => assertRetrievalInstruments(index),
+    assertInstruments: () => assertRetrievalInstruments(index, pairs),
     scoreCase: (pair) => scoreCase(index, pair),
     summarize,
   });
