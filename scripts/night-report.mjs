@@ -20,7 +20,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { collect } from '../.claude/hooks/night-report.mjs';
+import { collect, ticketsDirFor } from '../.claude/hooks/night-report.mjs';
 import { primaryRoot } from '../.claude/hooks/guard-unattended-merge.mjs';
 
 export const REPORT_USAGE = 'usage: npm run night:report [-- --owner <github-owner>]';
@@ -109,9 +109,18 @@ export function renderTicket(ticket, prs) {
   return lines;
 }
 
+// `env` is injected because `night-run.mjs` exports BOARD_DIR_OVERRIDE into every night session, so
+// reading process.env here aimed the suite's fixture lookup at the real board (tkt-f55d1ce07347).
+// The hook this delegates to already took it as `report({ env })`; this caller skipped it.
 export function main(
   argv = process.argv.slice(2),
-  { gh = ghRunner, resolveRoot = primaryRoot, out = process.stdout, err = process.stderr } = {},
+  {
+    gh = ghRunner,
+    resolveRoot = primaryRoot,
+    out = process.stdout,
+    err = process.stderr,
+    env = process.env,
+  } = {},
 ) {
   const args = parseArgs(argv);
   if (!args.ok) {
@@ -124,8 +133,10 @@ export function main(
     err.write('could not locate the primary checkout, so `.night-run/` could not be read\n');
     return EXIT.unusable;
   }
-  const boardDir = process.env.BOARD_DIR_OVERRIDE ?? root;
-  const collected = collect({ root, boardDir });
+  const boardDir = env.BOARD_DIR_OVERRIDE ?? root;
+  // Resolved here rather than by collect()'s default, which reads process.env and would leak
+  // TICKETS_DIR_OVERRIDE past the seam above; ticketsDirFor encodes its documented precedence.
+  const collected = collect({ root, boardDir, ticketsDir: ticketsDirFor(boardDir, env) });
 
   for (const stamp of collected.scan.missing) {
     out.write(`run ${stamp}: NO summary.json — the runner did not finish. Read its log by hand.\n`);

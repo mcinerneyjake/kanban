@@ -58,12 +58,35 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const runMain = (argv, responses) => {
+// `env: {}` pins the environment — the last uninjected input, and the one a night run reached
+// through to turn `status: qa` into `status: UNREADABLE` (tkt-f55d1ce07347).
+const runMain = (argv, responses, env = {}) => {
   const out = sink();
   const err = sink();
-  const code = main(argv, { gh: fakeGh(responses ?? {}), resolveRoot: () => root, out, err });
+  const code = main(argv, { gh: fakeGh(responses ?? {}), resolveRoot: () => root, out, err, env });
   return { code, out: out.text, err: err.text };
 };
+
+// Set a real process-level variable for one test, and put it back however the test ends.
+function withProcessEnv(vars, fn) {
+  const before = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    const result = fn();
+    // An async callback would resolve AFTER the restore below, so the assertion would run with the
+    // vars already gone and a later mutation could leak into a sibling test. Refuse, never restore
+    // at the wrong time.
+    if (typeof result?.then === 'function') {
+      throw new TypeError('withProcessEnv needs a synchronous callback');
+    }
+    return result;
+  } finally {
+    for (const [k, v] of before) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
 
 describe('night:report', () => {
   it('prints verdict, status, PR identity and every check name with its conclusion', () => {
@@ -272,5 +295,73 @@ describe('night:report never reports a scan it could not complete as clean', () 
 
     expect(code).toBe(EXIT.unusable);
     expect(out).toContain('no exit code recorded');
+  });
+});
+
+// Both directions, or the option would be dead code that only looks like isolation: the ambient
+// environment must not reach `main`, and the injected one must (tkt-f55d1ce07347).
+describe('the board directory comes from the injected env, never the ambient one', () => {
+  it('ignores an ambient BOARD_DIR_OVERRIDE — the night-run failure, reproduced', () => {
+    seedOutstanding('qa');
+    const elsewhere = mkdtempSync(join(FIXTURES, 'night-report-foreign-board-'));
+    try {
+      const { out } = withProcessEnv({ BOARD_DIR_OVERRIDE: elsewhere }, () =>
+        runMain([], { search: { status: 0, stdout: '[]', stderr: '' } }),
+      );
+      expect(out).toContain(`${ID}  status: qa`);
+      expect(out).not.toContain('UNREADABLE');
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores an ambient TICKETS_DIR_OVERRIDE, which leaks by the same route', () => {
+    seedOutstanding('qa');
+    const elsewhere = mkdtempSync(join(FIXTURES, 'night-report-foreign-tickets-'));
+    try {
+      const { out } = withProcessEnv({ TICKETS_DIR_OVERRIDE: elsewhere }, () =>
+        runMain([], { search: { status: 0, stdout: '[]', stderr: '' } }),
+      );
+      expect(out).toContain(`${ID}  status: qa`);
+      expect(out).not.toContain('UNREADABLE');
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  // The positive control for both cases above. Without it they would still pass if `env` were
+  // ignored outright and the board always resolved to the root — isolation by accident.
+  it('DOES read BOARD_DIR_OVERRIDE when it is injected', () => {
+    seedOutstanding('qa');
+    const elsewhere = mkdtempSync(join(FIXTURES, 'night-report-injected-board-'));
+    try {
+      const { out } = runMain([], { search: { status: 0, stdout: '[]', stderr: '' } }, {
+        BOARD_DIR_OVERRIDE: elsewhere,
+      });
+      expect(out).toContain(`${ID}  status: UNREADABLE`);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  // CLAUDE.md gives TICKETS_DIR_OVERRIDE precedence over BOARD_DIR_OVERRIDE. The third directory is
+  // what makes the assertion name which one was read: pointed at the root's own tickets it would
+  // read `qa`, which is equally the answer when the env is ignored outright and boardDir falls back
+  // to the root — green for the wrong reason, and green under the very leak this ticket fixes.
+  it('keeps TICKETS_DIR_OVERRIDE winning over BOARD_DIR_OVERRIDE', () => {
+    seedOutstanding('qa');
+    const board = mkdtempSync(join(FIXTURES, 'night-report-prec-board-'));
+    const tickets = mkdtempSync(join(FIXTURES, 'night-report-prec-tickets-'));
+    try {
+      writeFileSync(join(tickets, `${ID}.md`), `---\nid: ${ID}\nstatus: in-progress\n---\n\nbody\n`);
+      const { out } = runMain([], { search: { status: 0, stdout: '[]', stderr: '' } }, {
+        BOARD_DIR_OVERRIDE: board,
+        TICKETS_DIR_OVERRIDE: tickets,
+      });
+      expect(out).toContain(`${ID}  status: in-progress`);
+    } finally {
+      rmSync(board, { recursive: true, force: true });
+      rmSync(tickets, { recursive: true, force: true });
+    }
   });
 });
