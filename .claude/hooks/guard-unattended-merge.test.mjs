@@ -5,7 +5,7 @@
 // not evidence of anything.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, realpathSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,18 @@ import { decide, message, nightRunActive, primaryRoot, SENTINEL } from './guard-
 
 const HOOKS = dirname(fileURLToPath(import.meta.url));
 const LAUNCHER = join(HOOKS, 'guard-bash.mjs');
+
+// THE ONLY LAUNCHER SPAWN IN THIS FILE, and the sentinel is a required positional (tkt-f55d1ce07347).
+// Omitting argv[2] makes the launcher resolve the machine's LIVE `.night-run/ACTIVE`, so a spawn that
+// forgot it read as "no night run is active" only while none happened to be running — which reddened
+// this suite from inside a night run and stopped a five-ticket queue after ticket 1 on 2026-09-08.
+// Throwing turns that omission from a silent wrong answer into a loud one.
+function spawnLauncher(sentinel, input) {
+  if (typeof sentinel !== 'string') {
+    throw new TypeError('spawnLauncher needs an explicit fixture sentinel path');
+  }
+  return spawnSync(process.execPath, [LAUNCHER, sentinel], { input, encoding: 'utf8' });
+}
 
 const payload = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 
@@ -159,11 +171,11 @@ describe('nightRunActive() — dimension 7: resolution does not depend on cwd', 
 describe('the wired launcher — dimension 8: the existing git rules must not regress', () => {
   // Spawns the ACTUAL file settings.json wires, so this asserts the effect at the pinned build
   // rather than the logic in isolation.
+  // `absent` is the assertion, not tidiness: omitting argv[2] falls back to the module's live
+  // SENTINEL, so "no night run is active" meant "none is running on this machine right now"
+  // (tkt-f55d1ce07347).
   const run = (command, repo) =>
-    spawnSync(process.execPath, [LAUNCHER], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo }),
-      encoding: 'utf8',
-    });
+    spawnLauncher(absent, JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo }));
 
   let repo;
   beforeAll(() => {
@@ -195,6 +207,20 @@ describe('the wired launcher — dimension 8: the existing git rules must not re
   it('permits gh pr merge when no night run is active', () => {
     expect(run('gh pr merge 12', repo).status).toBe(0);
   });
+
+  // A spawn that omits the sentinel now throws rather than silently reading the live one. The
+  // STATED residual: a call site that passes the live `SENTINEL` on purpose still reproduces the
+  // defect, and no test can see that — this closes the omission, which is what actually happened.
+  it('refuses a launcher spawn with no explicit sentinel', () => {
+    expect(() => spawnLauncher(undefined, '{}')).toThrow(/explicit fixture sentinel/);
+  });
+
+  // ...and the throw above only covers the suite if nothing spawns the launcher around it. Scanning
+  // for the spawn primitive rather than a bracket spelling, which `[LAUNCHER, SENTINEL]` evaded.
+  it('spawns the launcher from exactly one place', () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    expect(src.match(/process\.execPath/g)).toHaveLength(1);
+  });
 });
 
 describe('the wired launcher — with a night run genuinely active', () => {
@@ -202,10 +228,7 @@ describe('the wired launcher — with a night run genuinely active', () => {
   // merges for any concurrent session for the duration of the suite — and leave the repo wedged if a
   // worker died before cleanup, behind a gitignored file `git status` never shows (review, MEDIUM).
   const run = (command, repo) =>
-    spawnSync(process.execPath, [LAUNCHER, present], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo }),
-      encoding: 'utf8',
-    });
+    spawnLauncher(present, JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo }));
 
   let repo;
   beforeAll(() => {
@@ -315,14 +338,14 @@ describe('decide() — dimension 9: a backgrounded Bash call (tkt-3b182ba384f3)'
 
 describe('the wired launcher — dimension 9G: a backgrounded call end to end', () => {
   const run = (sentinel) =>
-    spawnSync(process.execPath, [LAUNCHER, sentinel], {
-      input: JSON.stringify({
+    spawnLauncher(
+      sentinel,
+      JSON.stringify({
         tool_name: 'Bash',
         tool_input: { command: 'npm test', run_in_background: true },
         cwd: tmp,
       }),
-      encoding: 'utf8',
-    });
+    );
 
   it('exits 2 and names the foreground remedy while active', () => {
     const res = run(present);
@@ -406,10 +429,7 @@ describe('regressions from the high-effort review', () => {
     // guard rejects; the assertion that matters is that only a clean 0 permits.
     const repo = mkdtempSync(join(tmpdir(), 'guard-exit-'));
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
-    const res = spawnSync(process.execPath, [LAUNCHER, present], {
-      input: 'not json at all',
-      encoding: 'utf8',
-    });
+    const res = spawnLauncher(present, 'not json at all');
     expect(res.status).toBe(2);
     rmSync(repo, { recursive: true, force: true });
   });
@@ -566,10 +586,7 @@ describe('decide() — dimension 10: shell backgrounding in the command string',
 
 describe('the wired launcher — dimension 10G: shell backgrounding end to end', () => {
   const run = (command, sentinel) =>
-    spawnSync(process.execPath, [LAUNCHER, sentinel], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: tmp }),
-      encoding: 'utf8',
-    });
+    spawnLauncher(sentinel, JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: tmp }));
 
   it('exits 2 and names the foreground remedy while active', () => {
     const res = run('npm run build > out.log 2>&1 &', present);
