@@ -216,6 +216,13 @@ export class DocumentIndex {
     return this.entries.length;
   }
 
+  // Distinct document ids in the corpus. Exposed so a caller can prove an id is present BEFORE
+  // searching for it: an absent id is unrankable, which reads as a retrieval miss and silently caps
+  // any recall metric (tkt-0a076c4d3084).
+  get documentIds(): Set<string> {
+    return new Set(this.entries.map((e) => e.doc.id));
+  }
+
   // Semantic top-k by cosine similarity. Default rolls up to the best-scoring chunk per parent document (the shape every consumer expects); `{ rollup: false }` returns per-chunk hits with the matched chunk's index + text.
   async search(query: string, k: number = DEFAULT_TOP_K, opts: { rollup?: boolean } = {}): Promise<ScoredDocument[]> {
     if (this.entries.length === 0) return [];

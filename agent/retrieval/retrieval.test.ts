@@ -167,6 +167,24 @@ describe('DocumentIndex — chunking', () => {
     const ids = (await index.search('anything', 10)).map((r) => r.id).sort();
     expect(ids).toEqual(['d1', 'd2']); // rolled up to the two parents
   });
+
+  // documentIds backs the eval's anchor-presence gate (tkt-0a076c4d3084). Chunking on is the case that
+  // decides whether that gate false-alarms: 6 entries must collapse to the 2 parent ids, not report 6.
+  it('reports distinct parent document ids with chunking on, not one per chunk', async () => {
+    const index = await DocumentIndex.build(
+      flat,
+      [doc('d1', 'One', long), doc('d2', 'Two', long)],
+      { size: 40, overlap: 0 },
+    );
+    expect(index.size).toBe(6);
+    expect([...index.documentIds].sort()).toEqual(['d1', 'd2']);
+  });
+
+  it('reports an empty id set for an empty corpus, so absence is never mistaken for presence', async () => {
+    const index = await DocumentIndex.build(flat, []);
+    expect([...index.documentIds]).toEqual([]);
+    expect(index.documentIds.has('d1')).toBe(false);
+  });
 });
 
 // --- RuntimeEmbedder (mocked fetch) ----------------------------------------

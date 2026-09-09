@@ -1,11 +1,36 @@
 // Golden set for the retrieval eval: natural-language queries paired with the ONE ticket each should
-// surface. Drawn from real, distinctive board tickets — all archived/done, so they are stable anchors
-// that won't churn as the board evolves. Queries are worded as a user would type them, NOT as the
-// ticket's title, so this measures semantic recall rather than lexical echo.
+// surface. Drawn from real, distinctive board tickets — all archived/done, which makes them stable in
+// *content* but NOT permanent: archived tickets can still be deleted, and three of them were (see the
+// retraction below), so "archived" buys a fixed body, never a guaranteed anchor. The presence gate in
+// assertRetrievalInstruments is what actually holds this set honest. Queries are worded as a user
+// would type them, NOT as the ticket's title, so this measures semantic recall rather than lexical echo.
 //
 // This set is NOT curated to flatter recall: misses are the finding, not a bug to hand-fix. If a pair
 // looks wrong after a board change (the ticket was deleted, or a newer ticket is a legitimately better
 // answer), fix the PAIR — never tune the query to force a hit.
+//
+// SCORE RETRACTION (2026-09-08, tkt-0a076c4d3084): three anchors — tkt-2597a4525562, tkt-6394577fd6af
+// and tkt-98c0ccfb2e90 — had been deleted from the board. A deleted anchor is not in the corpus and
+// can never rank, so recall was capped at 21/24 = 87.5% before any embedder ran, and a scored miss is
+// indistinguishable from an unrankable anchor in the report.
+//
+// **Scope of the retraction — it is NOT "everything before 2026-09-08".** The 2026-07-24 baseline in
+// tkt-7da70536da6a records `found 24/24 within depth 10` and recall@5 = 1.000, which is positive
+// evidence that all 24 anchors were still live when it ran: that baseline, and the T7 chunking A/B
+// built on it, stand. What is void is any run made AFTER the deletions — and their date is unknown, so
+// **an undated run between 2026-07-24 and 2026-09-08 cannot be trusted**. Re-measure; no arithmetic
+// recovers a capped number.
+//
+// The three pairs were replaced, not repaired. tkt-98c0ccfb2e90's real-client-IP scope was explicitly
+// absorbed by tkt-fc7ffb516583 ("absorbs part of parked tkt-98c0ccfb2e90"), so that query was
+// rewritten to describe the surviving ticket. tkt-2597a4525562 has NO successor: tkt-8fc2c52ce511
+// fixed the concurrent-edit *clobber* but names "full optimistic locking / 409-on-`updated`-mismatch"
+// as out of scope, so its slot is a new pair for the symptom that ticket really fixed, not a claim of
+// succession. The old docker-compose query was dropped rather than re-pointed: the nearest board
+// tickets (tkt-4db3f5c733e4, tkt-9ad7656fa60a) cover compose + a database but not the nginx half, so
+// no single ticket is *the* answer — and a query with no unambiguous owner belongs in NEGATIVE_CONTROL,
+// not here. `assertRetrievalInstruments` now fails LOUD on an absent anchor, so this cannot recur
+// silently.
 
 export interface GoldenPair {
   query: string;
@@ -22,7 +47,7 @@ export const GOLDEN_PAIRS: readonly GoldenPair[] = [
   { query: 'add a multi-field filter UI to the board', expectedId: 'tkt-200dc50c1ebb' },
   { query: 'pressing escape on an open dropdown closes the whole ticket modal and loses my edits', expectedId: 'tkt-2f08f4f8635d' },
   { query: 'two saves with the same ticket id race on the temp file', expectedId: 'tkt-33a1ffcf9d5e' },
-  { query: 'optimistic locking so concurrent ticket edits do not overwrite each other', expectedId: 'tkt-2597a4525562' },
+  { query: 'saving the ticket modal wiped out an edit made while it was open', expectedId: 'tkt-8fc2c52ce511' },
   { query: 'allow Claude as the cloud model for embeddings and agentic RAG', expectedId: 'tkt-29788d084c21' },
   { query: 'show a badge on agent-created tickets that deep-links to the run', expectedId: 'tkt-08247786f079' },
   { query: 'the MCP tools cannot set a due date or an assignee', expectedId: 'tkt-09aeba07e038' },
@@ -33,8 +58,8 @@ export const GOLDEN_PAIRS: readonly GoldenPair[] = [
   { query: 'collapse the children of a done parent ticket by default', expectedId: 'tkt-de12f49fa167' },
   { query: 'due dates with a calendar view for deadlines', expectedId: 'tkt-b8f21c8b4493' },
   { query: 'the sidebar collapses when I activate it with the keyboard', expectedId: 'tkt-950cf52fd363' },
-  { query: 'dockerize the app with compose, nginx, a database, and a health endpoint', expectedId: 'tkt-6394577fd6af' },
-  { query: 'rate limiting using the real client IP behind Cloudflare and nginx', expectedId: 'tkt-98c0ccfb2e90' },
+  { query: 'credentials in the base URL end up visible in the container process list', expectedId: 'tkt-281272b5ef77' },
+  { query: 'stand up the production box with key-only ssh, a firewall, and origin certificates', expectedId: 'tkt-fc7ffb516583' },
   { query: 'an interactive replay viewer for agent runs that needs no backend', expectedId: 'tkt-cd3b0410162f' },
   { query: 'fix the heading margin in the mobile view', expectedId: 'tkt-59723ee7d481' },
 ];
