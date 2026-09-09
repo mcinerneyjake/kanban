@@ -37,6 +37,24 @@ export interface GoldenPair {
   expectedId: string;
 }
 
+export interface NegativeControl {
+  query: string;
+  maxTopScore: number;
+}
+
+// A corpus and its controls travel together as ONE value. The controls are corpus-specific — a
+// positive control names a ticket that must exist in *that* corpus, and a negative control's
+// threshold was measured against *that* corpus's score distribution — so pairs and controls drawn
+// from different corpora are always a wiring bug. Bundling them makes that combination
+// unrepresentable rather than merely discouraged (tkt-07fab923fcbd).
+export interface GoldenSet {
+  /** Names the corpus this set is measured against, for the report header. */
+  name: string;
+  pairs: readonly GoldenPair[];
+  positive: GoldenPair;
+  negative: NegativeControl;
+}
+
 export const GOLDEN_PAIRS: readonly GoldenPair[] = [
   { query: 'run the embedded terminal detached with dtach so connections survive a restart', expectedId: 'tkt-00dd79b261d7' },
   { query: 'the embedded terminal vanishes when the container fails to start', expectedId: 'tkt-171759eb29f6' },
@@ -82,7 +100,18 @@ export const POSITIVE_CONTROL: GoldenPair = {
 // that ~0.046-wide gap — low enough to catch a confident false answer, high enough that a genuine
 // no-answer query passes. (The first-pass 0.62 was too loose: it sat above five real matches, so it
 // would have waved through a false hit anywhere in 0.47–0.62.)
-export const NEGATIVE_CONTROL = {
+export const NEGATIVE_CONTROL: NegativeControl = {
   query: 'the CSV export crashes when the table has empty rows',
   maxTopScore: 0.50,
+};
+
+// The live board as a GoldenSet. Measures real recall, but is NOT reproducible: the board is
+// gitignored, private, and changes under every run, so two runs score different corpora and the
+// number cannot be compared over time. Use FIXTURE_GOLDEN_SET for a baseline; use this to ask what
+// retrieval actually does on the real board today.
+export const BOARD_GOLDEN_SET: GoldenSet = {
+  name: 'live board',
+  pairs: GOLDEN_PAIRS,
+  positive: POSITIVE_CONTROL,
+  negative: NEGATIVE_CONTROL,
 };

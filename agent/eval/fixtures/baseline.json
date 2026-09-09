@@ -1,0 +1,17 @@
+{
+  "recordedAt": "2026-09-09T15:50:16.728Z",
+  "corpus": "fixture corpus",
+  "corpusSize": 61,
+  "corpusHash": "0ec2e0d54a5eeeb3",
+  "goldenSetHash": "d9b2794d5f66c173",
+  "searchDepth": 10,
+  "embedModel": "text-embedding-qwen3-embedding-0.6b",
+  "embedBaseUrl": "http://localhost:1234/v1",
+  "queryInstruction": "Instruct: Retrieve kanban tickets relevant to the query.\nQuery: ",
+  "docInstruction": "",
+  "metrics": {
+    "recallAt1": 0.6666666666666666,
+    "recallAt5": 1,
+    "mrr": 0.8333333333333334
+  }
+}

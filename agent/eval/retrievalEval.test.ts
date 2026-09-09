@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { evaluateRetrieval, assertRetrievalInstruments } from './retrievalEval.js';
-import { POSITIVE_CONTROL, NEGATIVE_CONTROL, type GoldenPair } from './golden.js';
+import { POSITIVE_CONTROL, NEGATIVE_CONTROL, type GoldenPair, type GoldenSet } from './golden.js';
 
 // Deterministic embedder: each document is a one-hot basis vector by build order, so cosine is 1 for
 // the matching query and 0 otherwise — recall is exactly controllable without a runtime. A query maps
@@ -43,32 +43,39 @@ function buildIndex(extraTargets: [string, number | 'uniform'][] = []): Promise<
   return DocumentIndex.build(embedder, IDS.map((id, i) => doc(id, i)));
 }
 
+// The stub corpus is built around the real control constants (CONTROL_ID above), so these are the
+// controls that belong to it.
+const CONTROLS = { positive: POSITIVE_CONTROL, negative: NEGATIVE_CONTROL };
+function goldenSet(pairs: GoldenPair[]): GoldenSet {
+  return { name: 'stub', pairs, ...CONTROLS };
+}
+
 describe('assertRetrievalInstruments (loud gate — proven to go red)', () => {
   it('passes when the corpus is non-empty and both controls hold', async () => {
-    await expect(assertRetrievalInstruments(await buildIndex(), [])).resolves.toBeUndefined();
+    await expect(assertRetrievalInstruments(await buildIndex(), [], CONTROLS)).resolves.toBeUndefined();
   });
 
   it('throws LOUD on an empty index rather than reporting recall over nothing', async () => {
     const empty = await DocumentIndex.build(new ControlledEmbedder(1, new Map()), []);
-    await expect(assertRetrievalInstruments(empty, [])).rejects.toThrow(/EMPTY/);
+    await expect(assertRetrievalInstruments(empty, [], CONTROLS)).rejects.toThrow(/EMPTY/);
   });
 
   it('throws when the POSITIVE control does not rank top-1 (embedder miswired)', async () => {
     // Route the positive-control query to the WRONG doc → rank !== 1.
     const idx = await buildIndex([[POSITIVE_CONTROL.query, 0]]);
-    await expect(assertRetrievalInstruments(idx, [])).rejects.toThrow(/POSITIVE control failed/);
+    await expect(assertRetrievalInstruments(idx, [], CONTROLS)).rejects.toThrow(/POSITIVE control failed/);
   });
 
   it('throws when the NEGATIVE control scores a confident hit (index asserts a non-existent answer)', async () => {
     // Route the no-answer query to a real doc → cosine 1.0 ≥ threshold.
     const idx = await buildIndex([[NEGATIVE_CONTROL.query, 0]]);
-    await expect(assertRetrievalInstruments(idx, [])).rejects.toThrow(/NEGATIVE control failed/);
+    await expect(assertRetrievalInstruments(idx, [], CONTROLS)).rejects.toThrow(/NEGATIVE control failed/);
   });
 
   it('throws when a golden anchor is ABSENT from the corpus (deleted ticket, not a retrieval miss)', async () => {
     // tkt-2597a4525562 is one of the three anchors actually deleted from the board (tkt-0a076c4d3084).
     const idx = await buildIndex();
-    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-2597a4525562' }]))
+    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-2597a4525562' }], CONTROLS))
       .rejects.toThrow(/ABSENT from the corpus/);
   });
 
@@ -82,7 +89,7 @@ describe('assertRetrievalInstruments (loud gate — proven to go red)', () => {
       { query: 'gone two', expectedId: 'tkt-98c0ccfb2e90' },
     ];
     const idx = await buildIndex();
-    await expect(assertRetrievalInstruments(idx, pairs))
+    await expect(assertRetrievalInstruments(idx, pairs, CONTROLS))
       .rejects.toThrow(/2 golden anchor\(s\) ABSENT.*tkt-6394577fd6af, tkt-98c0ccfb2e90/);
   });
 
@@ -94,7 +101,7 @@ describe('assertRetrievalInstruments (loud gate — proven to go red)', () => {
       new ControlledEmbedder(ids.length, new Map()),
       ids.map((id, i) => doc(id, i)),
     );
-    await expect(assertRetrievalInstruments(idx, []))
+    await expect(assertRetrievalInstruments(idx, [], CONTROLS))
       .rejects.toThrow(new RegExp(`ABSENT from the corpus — ${POSITIVE_CONTROL.expectedId}`));
   });
 
@@ -111,13 +118,13 @@ describe('assertRetrievalInstruments (loud gate — proven to go red)', () => {
     }
     const ids = ['tkt-a', POSITIVE_CONTROL.expectedId];
     const idx = await DocumentIndex.build(new ExplodingEmbedder(), ids.map((id, i) => doc(id, i)));
-    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-gone000000' }]))
+    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-gone000000' }], CONTROLS))
       .rejects.toThrow(/ABSENT from the corpus/);
   });
 
   it('passes when every anchor is present, so the gate is not merely always-throwing', async () => {
     const idx = await buildIndex();
-    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-a' }]))
+    await expect(assertRetrievalInstruments(idx, [{ query: 'q', expectedId: 'tkt-a' }], CONTROLS))
       .resolves.toBeUndefined();
   });
 });
@@ -129,7 +136,7 @@ describe('evaluateRetrieval', () => {
       { query: 'find c', expectedId: 'tkt-c' },
     ];
     const idx = await buildIndex([['find a', 0], ['find c', 2]]);
-    const report = await evaluateRetrieval(idx, pairs);
+    const report = await evaluateRetrieval(idx, goldenSet(pairs));
     expect(report.metrics).toMatchObject({ recallAt1: 1, recallAt5: 1, mrr: 1 });
     expect(report.results.map((r) => r.rank)).toEqual([1, 1]);
   });
@@ -138,7 +145,7 @@ describe('evaluateRetrieval', () => {
     // The query confidently retrieves the WRONG doc (tkt-e), so the expected tkt-a is not top-1.
     const pairs: GoldenPair[] = [{ query: 'points elsewhere', expectedId: 'tkt-a' }];
     const idx = await buildIndex([['points elsewhere', 4]]);
-    const report = await evaluateRetrieval(idx, pairs);
+    const report = await evaluateRetrieval(idx, goldenSet(pairs));
     expect(report.results[0].rank).not.toBe(1);
     expect(report.metrics.recallAt1).toBe(0);
   });
@@ -151,11 +158,11 @@ describe('evaluateRetrieval', () => {
       { query: 'find a', expectedId: 'tkt-a' },
       { query: 'anchor was deleted', expectedId: 'tkt-2597a4525562' },
     ];
-    await expect(evaluateRetrieval(idx, pairs)).rejects.toThrow(/ABSENT from the corpus/);
+    await expect(evaluateRetrieval(idx, goldenSet(pairs))).rejects.toThrow(/ABSENT from the corpus/);
   });
 
   it('aborts the whole eval (no metrics) when the instrument gate throws', async () => {
     const empty = await DocumentIndex.build(new ControlledEmbedder(1, new Map()), []);
-    await expect(evaluateRetrieval(empty, [{ query: 'x', expectedId: 'tkt-a' }])).rejects.toThrow(/EMPTY/);
+    await expect(evaluateRetrieval(empty, goldenSet([{ query: 'x', expectedId: 'tkt-a' }]))).rejects.toThrow(/EMPTY/);
   });
 });
