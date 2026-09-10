@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { CachingEmbedder } from './cachingEmbedder.js';
 import { EmbeddingStore, hashText } from './embeddingStore.js';
-import { type Embedder } from './retrieval.js';
+import { type Embedder, RuntimeEmbedder } from './retrieval.js';
+import { type EmbedConfig } from './models.js';
 
 // Records which texts the inner embedder was actually asked to embed — the
 // proxy for "did we re-embed this?". Returns a distinct vector per text so
@@ -18,6 +19,18 @@ class RecordingEmbedder implements Embedder {
   embedQuery(): Promise<number[]> { return Promise.resolve([0]); }
   get calls(): number { return this.embedded.length; }
   get totalTexts(): number { return this.embedded.reduce((n, c) => n + c.length, 0); }
+}
+
+// Inner embedder that also exposes the runtime's served-model preflight. `fail` makes that
+// preflight refuse — the "runtime no longer serves EMBED_MODEL" / "could not list models" case a
+// fully warm cache would otherwise never reach.
+class VerifyingEmbedder extends RecordingEmbedder {
+  public verifyCalls = 0;
+  constructor(private readonly fail?: Error) { super(); }
+  verifyModel(): Promise<void> {
+    this.verifyCalls++;
+    return this.fail ? Promise.reject(this.fail) : Promise.resolve();
+  }
 }
 
 let dir: string;
@@ -127,5 +140,168 @@ describe('CachingEmbedder', () => {
     const inner2 = new RecordingEmbedder();
     await new CachingEmbedder(inner2, store2).embedDocuments(['a', 'CHANGED']); // 'a' cached, second is new
     expect(inner2.embedded[0]).toEqual(['CHANGED']);
+  });
+
+  // tkt-29f830c3466f. A warm cache served vectors with no model check at all: the preflight lives in
+  // RuntimeEmbedder.postBatch, which `misses.size > 0` gates, so an all-hit corpus skipped it.
+  it('refuses a fully warm cache when the model can no longer be verified', async () => {
+    const store = await EmbeddingStore.load(file);
+    await new CachingEmbedder(new RecordingEmbedder(), store).embedDocuments(['a', 'bb']);
+
+    const refusing = new VerifyingEmbedder(new Error('Embedding model "x" is not served'));
+    const embedder = new CachingEmbedder(refusing, store);
+
+    await expect(embedder.embedDocuments(['a', 'bb'])).rejects.toThrow('is not served');
+    expect(refusing.calls).toBe(0); // refused before serving, and still nothing re-embedded
+  });
+
+  it('verifies once before serving, even when every text is a cache hit', async () => {
+    const store = await EmbeddingStore.load(file);
+    await new CachingEmbedder(new RecordingEmbedder(), store).embedDocuments(['a', 'bb']);
+
+    const inner = new VerifyingEmbedder();
+    const out = await new CachingEmbedder(inner, store).embedDocuments(['a', 'bb']);
+
+    expect(out).toEqual([[1], [2]]);
+    expect(inner.verifyCalls).toBe(1);
+    expect(inner.calls).toBe(0); // verified without re-embedding
+  });
+
+  it('verifies before embedding when only some texts are cached', async () => {
+    const store = await EmbeddingStore.load(file);
+    await new CachingEmbedder(new RecordingEmbedder(), store).embedDocuments(['a']);
+
+    const inner = new VerifyingEmbedder();
+    await new CachingEmbedder(inner, store).embedDocuments(['a', 'NEW']);
+
+    expect(inner.verifyCalls).toBe(1);
+    expect(inner.embedded[0]).toEqual(['NEW']);
+  });
+
+  // Guard, not a repro: an empty corpus computes no vectors, so there is nothing to verify and no
+  // runtime call is owed. Two tests in retrieval.test.ts pin the same shape one layer down.
+  it('does not verify for an empty corpus', async () => {
+    const store = await EmbeddingStore.load(file);
+    const inner = new VerifyingEmbedder(new Error('should not be reached'));
+
+    await expect(new CachingEmbedder(inner, store).embedDocuments([])).resolves.toEqual([]);
+    expect(inner.verifyCalls).toBe(0);
+  });
+
+  // The seam stays optional: stubs and any non-runtime Embedder have no preflight to run.
+  it('serves a warm cache from an embedder that cannot verify', async () => {
+    const store = await EmbeddingStore.load(file);
+    await new CachingEmbedder(new RecordingEmbedder(), store).embedDocuments(['a', 'bb']);
+
+    const plain = new RecordingEmbedder();
+    const out = await new CachingEmbedder(plain, store).embedDocuments(['a', 'bb']);
+
+    expect(out).toEqual([[1], [2]]);
+    expect(plain.calls).toBe(0);
+  });
+});
+
+// Round trip over the REAL chain (CachingEmbedder -> RuntimeEmbedder -> fetch), stubbing only HTTP.
+// The unit tests above drive a stub inner embedder, so they cannot show that RuntimeEmbedder's
+// preflight is the thing actually reached on the warm path — which is the whole of tkt-29f830c3466f.
+describe('CachingEmbedder + RuntimeEmbedder (round trip, mocked fetch)', () => {
+  const cfg: EmbedConfig = {
+    baseUrl: 'http://localhost:1234/v1',
+    model: 'text-embedding-test',
+    queryInstruction: '',
+    docInstruction: '',
+  };
+
+  let urls: string[] = [];
+  function stubRuntime(servedIds: string[]): void {
+    urls = [];
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      urls.push(url);
+      return Promise.resolve(new Response(embedReply(url, servedIds, init), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }));
+    }));
+  }
+
+  // Warms the store through the caching seam without touching the runtime.
+  async function warmStore(): Promise<EmbeddingStore> {
+    const store = await EmbeddingStore.load(file);
+    await new CachingEmbedder(new RecordingEmbedder(), store).embedDocuments(['a', 'bb']);
+    return store;
+  }
+
+  // Echoes one 1-d vector per input so a genuine cache MISS can be driven through the stub.
+  function embedReply(url: string, servedIds: string[], init?: RequestInit): string {
+    if (url.endsWith('/models')) return JSON.stringify({ data: servedIds.map((id) => ({ id })) });
+    const raw: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+    const n = typeof raw === 'object' && raw !== null && 'input' in raw && Array.isArray(raw.input) ? raw.input.length : 0;
+    return JSON.stringify({ model: cfg.model, data: Array.from({ length: n }, (_v, i) => ({ index: i, embedding: [i + 1] })) });
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('refuses a fully warm cache when the runtime does not serve the model, before any embeddings call', async () => {
+    const store = await warmStore();
+    stubRuntime(['some-other-model']);
+
+    const embedder = new CachingEmbedder(new RuntimeEmbedder(cfg), store);
+
+    await expect(embedder.embedDocuments(['a', 'bb'])).rejects.toThrow('is not served by the runtime');
+    expect(urls.filter((u) => u.endsWith('/embeddings'))).toHaveLength(0);
+  });
+
+  it('serves a fully warm cache unchanged when the model IS served, with one models GET and no embeddings call', async () => {
+    const store = await warmStore();
+    stubRuntime([cfg.model]);
+
+    const out = await new CachingEmbedder(new RuntimeEmbedder(cfg), store).embedDocuments(['a', 'bb']);
+
+    expect(out).toEqual([[1], [2]]); // identical to what warmStore persisted
+    expect(urls.filter((u) => u.endsWith('/models'))).toHaveLength(1);
+    expect(urls.filter((u) => u.endsWith('/embeddings'))).toHaveLength(0);
+  });
+
+  // Measured, not assumed: RuntimeEmbedder memoizes a FULFILLED check, so the preflight is once per
+  // EMBEDDER, not once per build. Pinned here because the stub inner embedder above cannot show it,
+  // and because the warm path must not be reported as stronger than the miss path — it is neither.
+  it('preflights once per embedder, and a genuine miss re-probes no more than a warm build', async () => {
+    const store = await warmStore();
+    stubRuntime([cfg.model]);
+    const runtime = new RuntimeEmbedder(cfg);
+
+    await new CachingEmbedder(runtime, store).embedDocuments(['a', 'bb']);
+    await new CachingEmbedder(runtime, store).embedDocuments(['a', 'bb']);
+    const afterTwoWarmBuilds = urls.filter((u) => u.endsWith('/models')).length;
+
+    await new CachingEmbedder(runtime, store).embedDocuments(['a', 'bb', 'NEW']);
+    const afterAMiss = urls.filter((u) => u.endsWith('/models')).length;
+
+    expect(afterTwoWarmBuilds).toBe(1);
+    expect(afterAMiss).toBe(1);
+    expect(urls.filter((u) => u.endsWith('/embeddings'))).toHaveLength(1); // only the miss embedded
+  });
+
+  it('forwards verifyModel so a decorator wrapping this one still preflights', async () => {
+    const store = await warmStore();
+    stubRuntime(['some-other-model']);
+
+    const outer = new CachingEmbedder(new CachingEmbedder(new RuntimeEmbedder(cfg), store), store);
+
+    await expect(outer.embedDocuments(['a', 'bb'])).rejects.toThrow('is not served by the runtime');
+  });
+
+  it('refuses a warm cache when the served list cannot be retrieved at all', async () => {
+    const store = await warmStore();
+    urls = [];
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+      urls.push(String(input));
+      return Promise.reject(new TypeError('fetch failed'));
+    }));
+
+    const embedder = new CachingEmbedder(new RuntimeEmbedder(cfg), store);
+
+    await expect(embedder.embedDocuments(['a', 'bb'])).rejects.toThrow('refusing to embed');
+    expect(urls.filter((u) => u.endsWith('/embeddings'))).toHaveLength(0);
   });
 });

@@ -31,8 +31,22 @@ export class CachingEmbedder implements Embedder {
     return this.namespace ? `${hashText(this.namespace).slice(0, 16)}:` : '';
   }
 
+  // Forwarded rather than omitted: a decorator that drops the seam silently removes the preflight
+  // for anything wrapping it.
+  verifyModel(): Promise<void> {
+    return this.inner.verifyModel?.() ?? Promise.resolve();
+  }
+
   async embedDocuments(texts: string[]): Promise<number[][]> {
     const hashes = texts.map((t) => this.key(t));
+
+    // The served-model check lives behind the inner embedDocuments, which an all-hit corpus never
+    // calls, so a warm cache skipped it entirely (tkt-29f830c3466f). RuntimeEmbedder memoizes a
+    // fulfilled check, so this is once per embedder — the same guarantee the miss path already has,
+    // measured, not assumed. Empty corpus is exempt: no vector is served, so nothing needs vouching.
+    if (hashes.length > 0) await this.inner.verifyModel?.();
+
+    // After the preflight: a build refused above must leave no corpus for `prune` to scope to.
     this.lastCorpus = hashes;
 
     // Unique misses in first-seen order — a text repeated within/across documents is embedded once, not per occurrence.
