@@ -90,19 +90,40 @@ export const POSITIVE_CONTROL: GoldenPair = {
   expectedId: 'tkt-cd3b0410162f',
 };
 
-// Negative control — the exact query that produced the false "retrieval is poor" finding. There is NO
-// CSV-export ticket on the board, so a healthy index must return only weak matches: the top score must
-// stay BELOW `maxTopScore`. A confident hit here means the index is asserting an answer that does not
-// exist.
+// Negative control — a query with no answer anywhere on the board, so a healthy index must return
+// only weak matches: the top score must stay BELOW `maxTopScore`. A confident hit here means the
+// index is asserting an answer that does not exist.
 //
-// Threshold measured, not guessed (2026-07-24, 509-vector board): three independent no-answer queries
-// topped out at 0.440 / 0.434 / 0.469, while the weakest TRUE golden match scored 0.515. 0.50 sits in
-// that ~0.046-wide gap — low enough to catch a confident false answer, high enough that a genuine
-// no-answer query passes. (The first-pass 0.62 was too loose: it sat above five real matches, so it
-// would have waved through a false hit anywhere in 0.47–0.62.)
+// Re-measured 2026-09-09 (tkt-0765a61ed303), 1554-vector board. The old control — "the CSV export
+// crashes when the table has empty rows", threshold 0.50, calibrated 2026-07-24 at 509 vectors — had
+// stopped being answerless and scored 0.599, hard-stopping the eval. Replaced, not reworded: the
+// board tripled and went multi-repo in the central-board pivot, so it now carries real CSV tickets
+// from copart-filter. The control also moved OFF-DOMAIN, because the board now spans every software
+// project on this machine: a software-flavored no-answer query can no longer be kept answerless.
+//
+// 17 candidate queries measured; 2 dropped as no longer answerless — the CSV one (0.599) and "refund
+// a customer through the point-of-sale terminal after closing" (0.500), which collided with
+// ticket-closure tickets. Dropping that second one is a JUDGMENT CALL and it sets the floor below:
+// read as a lexical collision rather than a real answer, it belongs in the population at 0.500 and
+// the band below narrows to [0.501, 0.507]. The surviving 15, by top score:
+//   0.482 0.480 0.458 0.455 0.422 0.419 0.412 0.386 0.379 0.378 0.350 0.342 0.318 0.295 0.293
+//
+// Ceiling: the weakest TRUE golden match scores 0.508 (tkt-16f8fc4ebe05). That is the ANCHOR'S OWN
+// score at rank 2 — not the `score=` column of the eval report, which is `topScore`, i.e. whoever
+// ranked first (0.513 for that case). Re-derive it the same way or the ceiling comes out too high.
+//
+// So the admissible band is [0.483, 0.507] and 0.49 sits in it: 0.008 above the highest answerless
+// query, 0.018 below the ceiling, 0.148 above this control's own 0.342. The 2026-07-24 like-for-like
+// figures were 0.031 and 0.015 — the band NARROWED from 0.046 to 0.026 as the corpus tripled, but it
+// has not closed, so the original method still applies. Anything >= 0.508 waves through a real match,
+// which is how the first-pass 0.62 failed. Expect this to need re-measuring again as the board grows.
+//
+// Floor note: agent/eval/retrievalEval.test.ts builds a 6-dim stub whose 'uniform' routing scores
+// exactly 1/sqrt(6) = 0.408, so a threshold at or below that reddens the stub test for a reason that
+// has nothing to do with the board.
 export const NEGATIVE_CONTROL: NegativeControl = {
-  query: 'the CSV export crashes when the table has empty rows',
-  maxTopScore: 0.50,
+  query: 'the dog needs a rabies booster before the kennel will take him',
+  maxTopScore: 0.49,
 };
 
 // The live board as a GoldenSet. Measures real recall, but is NOT reproducible: the board is
