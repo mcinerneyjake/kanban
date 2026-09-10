@@ -9,6 +9,10 @@ import { RuntimeUnavailableError, UNAVAILABLE_STATUS } from '../runtime/unavaila
 export interface Embedder {
   embedDocuments(texts: string[]): Promise<number[][]>;
   embedQuery(text: string): Promise<number[]>;
+  // Optional: prove the configured model is served, without embedding anything. A decorator that can
+  // serve vectors WITHOUT calling embedDocuments must call this, or it skips the check entirely
+  // (tkt-29f830c3466f). Optional so non-runtime embedders — stubs, fakes — need no preflight.
+  verifyModel?(): Promise<void>;
 }
 
 // --- OpenAI-compatible runtime embedder ------------------------------------
@@ -106,6 +110,11 @@ export class RuntimeEmbedder implements Embedder {
   // of the process and no production path resets it, so every later call would keep replaying a
   // failure the runtime had long recovered from. Re-probing still fails closed for the call in hand.
   private servedCheck: Promise<void> | null = null;
+
+  // On the seam so a caching decorator can run the preflight on a path that embeds nothing.
+  verifyModel(): Promise<void> {
+    return this.ensureModelServed();
+  }
 
   private ensureModelServed(): Promise<void> {
     this.servedCheck ??= this.verifyModelServed().catch((err: unknown) => {
