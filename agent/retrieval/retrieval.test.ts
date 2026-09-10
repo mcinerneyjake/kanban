@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cosineSimilarity, DocumentIndex, RuntimeEmbedder, type Document, type Embedder } from './retrieval.js';
 import { type EmbedConfig } from './models.js';
+import { isRuntimeUnavailable } from '../runtime/unavailable.js';
 import { buildSummary } from '../cost/summary.js';
 import { resolveCostConfig } from '../cost/costConfig.js';
 
@@ -208,11 +209,25 @@ function hash(s: string): number {
   return h;
 }
 
+// How the stub runtime answers GET /models. Defaults to serving nomicCfg's model, so the preflight
+// that guards every embed call is satisfied and each pre-existing test keeps its original meaning.
+type ModelsReply = { status?: number; json?: unknown; text?: string } | 'network-error';
+const servingNomic: ModelsReply = { json: { data: [{ id: nomicCfg.model }] } };
+
 describe('RuntimeEmbedder (mocked fetch)', () => {
   let requests: EmbedRequest[] = [];
+  let urls: string[] = [];
+  let modelsReply: ModelsReply = servingNomic;
 
   function stubFetch(respond: (req: EmbedRequest) => { status?: number; json?: unknown; text?: string }) {
-    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/models')) {
+        if (modelsReply === 'network-error') throw new TypeError('fetch failed');
+        const body = modelsReply.text ?? JSON.stringify(modelsReply.json ?? {});
+        return new Response(body, { status: modelsReply.status ?? 200, headers: { 'content-type': 'application/json' } });
+      }
       const raw = typeof init?.body === 'string' ? init.body : '';
       const parsed: unknown = JSON.parse(raw);
       if (!isEmbedRequest(parsed)) throw new Error('test: bad request body');
@@ -226,7 +241,7 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
   // Echo each input as a 1-d embedding = [hash(input)], in order.
   const echo = (req: EmbedRequest) => ({ json: { data: req.input.map((s, i) => ({ index: i, embedding: [hash(s)] })) } });
 
-  beforeEach(() => { requests = []; });
+  beforeEach(() => { requests = []; urls = []; modelsReply = servingNomic; });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('prefixes documents with docInstruction', async () => {
@@ -276,12 +291,22 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
     await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/no vector/);
   });
 
-  it('reports a friendly error when the request times out', async () => {
+  // Times out only on /embeddings; the preflight's /models GET still succeeds. Without that split this
+  // test was satisfied by the preflight's own timeout branch and stopped covering fetchEmbeddings
+  // entirely — gutting the branch below left the suite 44/44 green (measured, tkt-01b784eb0030).
+  it('reports a friendly error when the EMBEDDINGS request times out', async () => {
     const original = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(original)));
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/models')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ id: nomicCfg.model }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(original);
+    }));
     // The friendly message replaces the opaque 'aborted'; `cause` keeps the original reachable
     // for diagnosis (preserve-caught-error, tkt-bcbca06a0df3).
-    await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/timed out/);
+    await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/Embeddings request timed out/);
     await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toMatchObject({ cause: original });
   });
 
@@ -369,5 +394,170 @@ describe('RuntimeEmbedder (mocked fetch)', () => {
     const embedder = new RuntimeEmbedder(nomicCfg);
     await embedder.embedDocuments([]);
     expect(embedder.getUsage()).toMatchObject({ calls: 0, reportedCalls: 0, totalTokens: 0, activeMs: 0 });
+  });
+
+  // tkt-01b784eb0030. LM Studio answers 200 for a model id it does not serve and silently substitutes
+  // a different one, so the status code cannot tell a correct run from a wrong one. Measured against
+  // localhost:1234 on 2026-09-09: `qwen3-embedding:0.6b` (the old default) and `no-such-model-xyz`
+  // both returned 200 with 768-d nomic vectors instead of the intended 1024-d qwen3.
+  describe('model-served preflight', () => {
+    const absentCfg: EmbedConfig = { ...nomicCfg, model: 'no-such-model-xyz' };
+
+    it('refuses to embed a model the runtime does not serve (written first, observed red)', async () => {
+      stubFetch(echo);
+      await expect(new RuntimeEmbedder(absentCfg).embedDocuments(['a'])).rejects.toThrow(/no-such-model-xyz/);
+    });
+
+    it('fails BEFORE any embedding is computed, so no wrong-model vectors are produced', async () => {
+      stubFetch(echo);
+      const embedder = new RuntimeEmbedder(absentCfg);
+      await expect(embedder.embedQuery('x')).rejects.toThrow();
+      expect(requests).toHaveLength(0);                       // never reached /embeddings
+      expect(embedder.getUsage()).toMatchObject({ calls: 0 }); // nothing metered
+    });
+
+    it('names the models the runtime does serve, so the error is actionable', async () => {
+      stubFetch(echo);
+      modelsReply = { json: { data: [{ id: 'model-a' }, { id: 'model-b' }] } };
+      await expect(new RuntimeEmbedder(absentCfg).embedQuery('x')).rejects.toThrow(/model-a.*model-b/);
+    });
+
+    // "Can't check" must never return the permissive answer: each way of failing to learn the served
+    // set has to block the run, not wave it through.
+    it('treats an unreachable model list as failure, not permission to proceed', async () => {
+      stubFetch(echo);
+      modelsReply = 'network-error';
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/could not (list|verify)/i);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('treats a non-OK model list as failure', async () => {
+      stubFetch(echo);
+      modelsReply = { status: 500, text: 'boom' };
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/could not (list|verify)/i);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('treats an unparseable model list as failure', async () => {
+      stubFetch(echo);
+      modelsReply = { json: { data: 'not-an-array' } }; // no `data` array at all — nothing to read ids from
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/could not (list|verify)/i);
+      expect(requests).toHaveLength(0);
+    });
+
+    // Distinct from the unparseable case above: the list PARSED, it simply advertises nothing usable.
+    // That is a served-set answer ("this runtime offers no model by that id"), not a failure to read one.
+    it('treats a parseable list with no usable ids as "not served", not as unreadable', async () => {
+      stubFetch(echo);
+      modelsReply = { json: { data: [{ nope: 1 }] } };
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/Served models: \(none\)/);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('embeds normally when the runtime serves the configured model', async () => {
+      stubFetch(echo);
+      const vecs = await new RuntimeEmbedder(nomicCfg).embedDocuments(['a', 'bb']);
+      expect(vecs).toHaveLength(2);
+      expect(requests).toHaveLength(1);
+    });
+
+    // A failed check must NOT be memoized. indexCache holds one embedder for the life of the process and
+    // no production path resets it, so caching the rejection would turn a blip during the first search
+    // into a permanent outage — every later call replaying a failure the runtime had recovered from.
+    it('re-probes after a failed check instead of failing forever', async () => {
+      stubFetch(echo);
+      modelsReply = 'network-error';
+      const embedder = new RuntimeEmbedder(nomicCfg);
+      await expect(embedder.embedQuery('x')).rejects.toThrow(); // fails closed for THIS call
+      expect(requests).toHaveLength(0);
+      modelsReply = servingNomic;                               // runtime comes back
+      await expect(embedder.embedQuery('x')).resolves.toBeDefined();
+      expect(urls.filter((u) => u.endsWith('/models'))).toHaveLength(2);
+    });
+
+    it('verifies once under concurrent calls, and lets none through early', async () => {
+      stubFetch(echo);
+      const embedder = new RuntimeEmbedder(absentCfg);
+      const results = await Promise.allSettled([
+        embedder.embedQuery('a'), embedder.embedQuery('b'), embedder.embedDocuments(['c']),
+      ]);
+      expect(results.every((r) => r.status === 'rejected')).toBe(true);
+      expect(requests).toHaveLength(0);
+      expect(urls.filter((u) => u.endsWith('/models'))).toHaveLength(1);
+    });
+
+    // Classification drives HTTP 503-vs-500 through intake.ts, so each shape is pinned by TYPE, not by
+    // message text. unavailable.ts's rule is that recognition must be POSITIVE: only evidence the
+    // runtime is down may claim it is.
+    it('classifies a missing model as a config fault, not unavailability', async () => {
+      stubFetch(echo);
+      await expect(new RuntimeEmbedder(absentCfg).embedQuery('x')).rejects.toSatisfy(
+        (e: unknown) => !isRuntimeUnavailable(e),
+      );
+    });
+
+    it('classifies a gateway status as unavailability, but a 404 as a fault', async () => {
+      stubFetch(echo);
+      modelsReply = { status: 503, text: 'down' };
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toSatisfy(isRuntimeUnavailable);
+      // A 404 is the shape EMBED_BASE_URL missing its /v1 suffix produces — a fault, so it stays on the
+      // 500 path where asyncWrap logs the body, instead of becoming "is the model running?".
+      modelsReply = { status: 404, text: 'not found' };
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toSatisfy(
+        (e: unknown) => !isRuntimeUnavailable(e),
+      );
+    });
+
+    it('reports the model-list timeout as its own request, not as an embeddings one', async () => {
+      const timeout = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+      vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+        urls.push(String(input));
+        return Promise.reject(timeout);
+      }));
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/Model list request timed out/);
+    });
+
+    it('skips a malformed list entry rather than blocking on the whole list', async () => {
+      stubFetch(echo);
+      modelsReply = { json: { data: [{}, { id: nomicCfg.model }] } };
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).resolves.toBeDefined();
+    });
+
+    // The list check cannot see residency (GET /models lists downloaded models, loaded or not), so the
+    // response's own `model` field is the only POSITIVE evidence of what actually ran.
+    it('refuses vectors when the response says a different model ran', async () => {
+      stubFetch((req) => ({ json: {
+        model: 'text-embedding-nomic-embed-text-v1.5',
+        data: req.input.map((str, i) => ({ index: i, embedding: [hash(str)] })),
+      } }));
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).rejects.toThrow(/ran on "text-embedding-nomic/);
+    });
+
+    it('accepts vectors when the response echoes the requested model', async () => {
+      stubFetch((req) => ({ json: {
+        model: nomicCfg.model,
+        data: req.input.map((str, i) => ({ index: i, embedding: [hash(str)] })),
+      } }));
+      await expect(new RuntimeEmbedder(nomicCfg).embedQuery('x')).resolves.toBeDefined();
+    });
+
+    it('does not meter a run whose vectors came from the wrong model', async () => {
+      stubFetch((req) => ({ json: {
+        model: 'other-model', usage: { prompt_tokens: 9, total_tokens: 9 },
+        data: req.input.map((str, i) => ({ index: i, embedding: [hash(str)] })),
+      } }));
+      const embedder = new RuntimeEmbedder(nomicCfg);
+      await expect(embedder.embedQuery('x')).rejects.toThrow(/ran on "other-model"/);
+      expect(embedder.getUsage()).toMatchObject({ calls: 0 });
+    });
+
+    it('checks once per embedder, not once per batch', async () => {
+      stubFetch(echo);
+      const embedder = new RuntimeEmbedder(nomicCfg);
+      await embedder.embedDocuments(Array.from({ length: 70 }, (_, n) => `x-${n}`)); // 64 + 6 → 2 batches
+      await embedder.embedQuery('again');
+      expect(urls.filter((u) => u.endsWith('/models'))).toHaveLength(1);
+      expect(requests).toHaveLength(3);
+    });
   });
 });

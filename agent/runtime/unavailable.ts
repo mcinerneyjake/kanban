@@ -15,6 +15,12 @@ export class RuntimeUnavailableError extends Error {
   }
 }
 
+// Gateway-class statuses: the runtime, or a proxy in front of it, declining to serve. 4xx and a bare
+// 500 are deliberately absent — they are FAULTS, and must reach the server log rather than be answered
+// with "is the model running?" (tkt-a449b3ae0339). Lives here, not in llm.ts, so the chat and embedding
+// paths cannot drift into two different ideas of which statuses mean "down".
+export const UNAVAILABLE_STATUS = new Set([502, 503, 504]);
+
 // Node/undici connection failures. `fetch` rejects with a TypeError whose `cause` carries the code, so
 // the code is the signal and the message is not. ETIMEDOUT is the OS-level connect timeout, distinct
 // from AbortSignal.timeout's TimeoutError.

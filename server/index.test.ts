@@ -10,6 +10,7 @@ import { terminalToken } from './terminalToken.js';
 import * as tickets from './tickets.js';
 import { closeAllStreamClients } from './stream.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
+import { resolveEmbedConfig } from '../agent/retrieval/models.js';
 import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
@@ -627,10 +628,22 @@ function isEmbedReq(v: unknown): v is { input: string[] } {
     && Array.isArray(v.input) && v.input.every((s) => typeof s === 'string');
 }
 
+// RuntimeEmbedder verifies EMBED_MODEL against GET /v1/models before embedding, because the runtime
+// answers 200 for an id it does not serve and silently substitutes another (tkt-01b784eb0030). A stub
+// runtime that is meant to be UP must therefore serve the configured model, or the preflight — correctly —
+// refuses to embed. Returns null for any other URL so each stub keeps its own chat/embeddings handling.
+function modelsReply(url: string): Response | null {
+  if (!url.endsWith('/models')) return null;
+  const body = JSON.stringify({ data: [{ id: resolveEmbedConfig().model }] });
+  return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 describe('POST /api/intake/search', () => {
   // "login" inputs align with a "login" query — deterministic, no real model.
   function stubEmbeddings(): void {
-    vi.stubGlobal('fetch', vi.fn((_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const models = modelsReply(String(url));
+      if (models) return Promise.resolve(models);
       const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
       const input = isEmbedReq(parsed) ? parsed.input : [];
       const data = input.map((s, i) => ({ index: i, embedding: [s.toLowerCase().includes('login') ? 1 : 0, 1] }));
@@ -666,6 +679,71 @@ describe('POST /api/intake/search', () => {
   it('400 when the query is only whitespace', async () => {
     const res = await request(server).post('/api/intake/search').send({ query: '   ' });
     expect(res.status).toBe(400);
+  });
+
+  // Round-trip for the embed preflight's classification (tkt-01b784eb0030). The value crosses four
+  // modules — retrieval.ts throws, unavailable.ts classifies, intake.ts maps to a status, asyncWrap
+  // decides what is logged and what reaches the wire — and no per-layer test sees the whole path.
+  // unavailable.ts's rule is that only positive evidence of a down runtime may answer "is the model
+  // running?"; everything else must land on 500, where the operator-actionable text gets logged.
+  describe('embed model preflight → HTTP status', () => {
+    // Serves a model list that does NOT contain the configured model.
+    function stubModelsServing(ids: string[], embedStatus = 200): void {
+      vi.stubGlobal('fetch', vi.fn((url: string | URL | Request): Promise<Response> => {
+        const u = String(url);
+        if (u.endsWith('/models')) {
+          return Promise.resolve(new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] }), { status: embedStatus, headers: { 'content-type': 'application/json' } }));
+      }));
+    }
+
+    it('500, not 503, when EMBED_MODEL is not served — and the fix reaches the log, not the wire', async () => {
+      await seedTicket('tkt-aaa', 'Fix login bug');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
+      stubModelsServing(['some-other-model']);
+      const res = await request(server).post('/api/intake/search').send({ query: 'login' });
+      expect(res.status).toBe(500);                       // a config fault, never "is the model running?"
+      expect(res.body.error).toBe('Internal server error');
+      expect(res.body.error).not.toContain('EMBED_MODEL'); // no internals on the wire
+      const logged = errSpy.mock.calls.flat().map((c) => String(c)).join(' ');
+      expect(logged).toContain('Set EMBED_MODEL to one of these'); // but it IS actionable somewhere
+      errSpy.mockRestore();
+    });
+
+    it('503 when the model list answers with a gateway status', async () => {
+      await seedTicket('tkt-aaa', 'Fix login bug');
+      vi.stubGlobal('fetch', vi.fn((url: string | URL | Request): Promise<Response> => {
+        if (String(url).endsWith('/models')) return Promise.resolve(new Response('upstream gone', { status: 502 }));
+        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }));
+      const res = await request(server).post('/api/intake/search').send({ query: 'login' });
+      expect(res.status).toBe(503);
+    });
+
+    it('500 when the model list 404s — a base-URL fault must not read as a down runtime', async () => {
+      await seedTicket('tkt-aaa', 'Fix login bug');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
+      vi.stubGlobal('fetch', vi.fn((url: string | URL | Request): Promise<Response> => {
+        if (String(url).endsWith('/models')) return Promise.resolve(new Response('not found', { status: 404 }));
+        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }));
+      const res = await request(server).post('/api/intake/search').send({ query: 'login' });
+      expect(res.status).toBe(500);
+      expect(errSpy).toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+
+    it('a transient list failure does not wedge the process — the next call re-probes', async () => {
+      await seedTicket('tkt-aaa', 'Fix login bug');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(connectionRefused())));
+      expect((await request(server).post('/api/intake/search').send({ query: 'login' })).status).toBe(503);
+      errSpy.mockRestore();
+      stubEmbeddings(); // runtime comes back; the SAME shared embedder must recover
+      const res = await request(server).post('/api/intake/search').send({ query: 'the login screen is broken' });
+      expect(res.status).toBe(200);
+    });
   });
 
   it('respects the limit parameter', async () => {
@@ -754,6 +832,8 @@ describe('POST /api/intake/propose', () => {
     let chatTurn = 0;
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString();
+      const models = modelsReply(url);
+      if (models) return Promise.resolve(models);
       if (url.includes('/embeddings')) {
         const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
         const inputs = isEmbedReq(parsed) ? parsed.input : [];
@@ -877,6 +957,8 @@ describe('POST /api/intake/propose', () => {
   const chatFails = (rejection: unknown) => {
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString();
+      const models = modelsReply(url);
+      if (models) return Promise.resolve(models);
       if (url.includes('/embeddings')) {
         return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
       }
@@ -910,6 +992,8 @@ describe('POST /api/intake/propose', () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString();
+      const models = modelsReply(url);
+      if (models) return Promise.resolve(models);
       if (url.includes('/embeddings')) {
         return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
       }
@@ -936,6 +1020,8 @@ describe('POST /api/intake/apply', () => {
     let turn = 0;
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString();
+      const models = modelsReply(url);
+      if (models) return Promise.resolve(models);
       if (url.includes('/embeddings')) {
         const parsed: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
         const inputs = isEmbedReq(parsed) ? parsed.input : [];
