@@ -220,7 +220,7 @@ describe('.claude/settings.json permission allowlist', () => {
     }
   });
 
-  // The kanban-workflow skill's foreign-repo mode (tkt-9a3afc5b9f4f) rests on ONE claim: a command
+  // The hardpack-workflow skill's foreign-repo mode (tkt-9a3afc5b9f4f) rests on ONE claim: a command
   // carrying `cd <target>` is judged against the TARGET's branch, so never-commit-to-main still
   // applies to the repo actually being written. That is a claim about code in this repo, so it
   // belongs in a test rather than in SKILL.md prose (CLAUDE.md -> Writing these documents).

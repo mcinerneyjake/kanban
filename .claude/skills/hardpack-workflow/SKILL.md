@@ -1,5 +1,5 @@
 ---
-name: kanban-workflow
+name: hardpack-workflow
 description: Run the kanban ticket cycle for one project — audit the board, pick the highest-value ticket, validate its premise, implement, review, commit, PR, and mark done. Use only when explicitly invoked.
 argument-hint: "<project> [<ticket-id>|--ticket <id>] [--gates manual|auto-commit|auto-pr] [--continuous]"
 disable-model-invocation: true
@@ -100,7 +100,7 @@ so, if it was named from memory.
   *archived*, and *past the cap* — four states, one of which the line below depends on telling apart.
   `get_ticket` distinguishes them; say which one it was.
 - **A named ticket resolves its own project — do not ask for one.** `get_ticket` returns the
-  ticket's `project`, which is authoritative, so `/kanban-workflow tkt-…` with no project is a
+  ticket's `project`, which is authoritative, so `/hardpack-workflow tkt-…` with no project is a
   complete invocation and must not trigger the project menu below. A user who knows the id rarely
   knows the exact project string, and that is the most natural way to use this argument. If a
   project was *also* given and the two disagree, stop and print both — never silently prefer one.
@@ -158,7 +158,7 @@ Two repos matter, and they are not always the same one:
 Equal → **native mode**. Different → **foreign mode**: you drive the target repo from this session,
 via §2a's command form. Announce which one, and in foreign mode name both paths.
 
-**The project→repo map lives at `$CLAUDE_PROJECT_DIR/.claude/skills/kanban-workflow/repos.local.json`.**
+**The project→repo map lives at `$CLAUDE_PROJECT_DIR/.claude/skills/hardpack-workflow/repos.local.json`.**
 Read it and resolve the target as `<baseDir>/<projects[project].repo>`. That file is **gitignored on
 purpose**: it carries an absolute home path and private project names, and this repo is public. Keep
 absolute paths out of `SKILL.md` — `repoHygiene.test.mjs` scans the git index and fails the suite if a
@@ -817,7 +817,7 @@ cd <board-repo-path> && claude
 then, in that session:
 
 ```
-/kanban-workflow <project> --gates manual <next ticket id>
+/hardpack-workflow <project> --gates manual <next ticket id>
 ```
 
 **Substitute every placeholder before printing. A printed placeholder is a defect, not a template.**
@@ -860,7 +860,7 @@ position.)
 **Do not add a second worked example for that case.** `skillContract.test.mjs` permits exactly one
 line-initial slash command in this subsection — **any** name, not just this skill's, since
 `invocationsIn` matches `^/<name>`. So a stray `/clear` example reddens the contract as surely as a
-second `/kanban-workflow` block would, and fencing exempts neither: `fenceMask` governs heading
+second `/hardpack-workflow` block would, and fencing exempts neither: `fenceMask` governs heading
 detection only. Prose is the only form the no-candidate case can take here.
 
 **Say that the id is a recommendation, not a decision.** Under the block, print one line naming the

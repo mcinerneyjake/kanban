@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Binds the /kanban-workflow skill's SKILL.md to this repo's CLAUDE.md. Five surfaces survive the
+// Binds the /hardpack-workflow skill's SKILL.md to this repo's CLAUDE.md. Five surfaces survive the
 // tkt-5a4ff25d4e74 trim, kept by one rule: a drift in each would be SILENT. The rest were dropped
 // because a run stops or degrades visibly instead — see docs/skillContract-dropped-assertions.md
 // for what went, why, how to restore it, and the two the first cut dropped wrongly.
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 // measured at ~2% precision — deliberately absent rather than approximated.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SKILL_PATH = path.join(here, '.claude', 'skills', 'kanban-workflow', 'SKILL.md');
+const SKILL_PATH = path.join(here, '.claude', 'skills', 'hardpack-workflow', 'SKILL.md');
 const CLAUDE_PATH = path.join(here, 'CLAUDE.md');
 
 const stripMarkup = (cell) => cell.replace(/[*`]/g, '').trim();
@@ -534,7 +534,7 @@ function instructionAdditionProblems(claudeMd) {
 const REAL = fs.readFileSync(SKILL_PATH, 'utf8');
 const REAL_CLAUDE = fs.readFileSync(CLAUDE_PATH, 'utf8');
 
-describe('kanban-workflow skill: the real SKILL.md and CLAUDE.md', () => {
+describe('hardpack-workflow skill: the real SKILL.md and CLAUDE.md', () => {
   it('parses a real gate table, menu, post-review table and both invocations', () => {
     // Non-vacuity for everything below: without this, "no problems" and "nothing scanned" are the
     // same result.
@@ -813,24 +813,24 @@ describe('the startup/handoff checker itself', () => {
     '',
     gateDoc(HEADER, ...GOOD),
   ].join('\n');
-  const skill = (invocation = '/kanban-workflow <project> --gates manual') => skillWith('```', invocation, '```');
+  const skill = (invocation = '/hardpack-workflow <project> --gates manual') => skillWith('```', invocation, '```');
   const claude = (...body) => ['# Hardpack Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
-  const START = ['```', '/kanban-workflow <project> --gates manual', '```'];
+  const START = ['```', '/hardpack-workflow <project> --gates manual', '```'];
 
   it('passes a matching pair — so the flags below are not fired by everything', () => {
     expect(startupPromptProblems(claude(...START), skill())).toEqual([]);
   });
 
   it('flags a startup prompt pre-filling an auto level', () => {
-    expect(startupPromptProblems(claude('```', '/kanban-workflow <project> --gates auto-pr', '```'), skill()))
+    expect(startupPromptProblems(claude('```', '/hardpack-workflow <project> --gates auto-pr', '```'), skill()))
       .toContain('startup recommends `--gates auto-pr` but the handoff prints `--gates manual`');
   });
 
   it('flags BOTH ends drifting together, which comparing them to each other alone misses', () => {
     // Agreement is not sufficient: an auto level pre-filled in BOTH files agrees perfectly and
     // re-grants an authorization nobody gave. Hence checking the level against the table.
-    const md = claude('```', '/kanban-workflow <project> --gates auto-pr', '```');
-    expect(startupPromptProblems(md, skill('/kanban-workflow <project> --gates auto-pr')))
+    const md = claude('```', '/hardpack-workflow <project> --gates auto-pr', '```');
+    expect(startupPromptProblems(md, skill('/hardpack-workflow <project> --gates auto-pr')))
       .toContain('the startup recommendation pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
   });
 
@@ -842,7 +842,7 @@ describe('the startup/handoff checker itself', () => {
   });
 
   it('flags a handoff pre-filling an auto level', () => {
-    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project> --gates auto-pr')))
+    expect(startupPromptProblems(claude(...START), skill('/hardpack-workflow <project> --gates auto-pr')))
       .toContain('the close handoff pre-fills `--gates auto-pr`, which does not ask at every gate; `manual` does');
   });
 
@@ -852,7 +852,7 @@ describe('the startup/handoff checker itself', () => {
   });
 
   it('refuses to guess between two invocations in one section', () => {
-    const bad = skillWith('```', '/kanban-workflow <project> --gates manual', '/kanban-workflow <project> --gates auto-pr', '```');
+    const bad = skillWith('```', '/hardpack-workflow <project> --gates manual', '/hardpack-workflow <project> --gates auto-pr', '```');
     expect(startupPromptProblems(claude(...START), bad))
       .toContain('2 slash-command invocations in SKILL.md\'s "The handoff" subsection — expected 1');
   });
@@ -860,15 +860,15 @@ describe('the startup/handoff checker itself', () => {
   it('flags an invocation carrying no --gates at all', () => {
     // The `passes no --gates level` push is the ONLY thing between a level-less pair and a clean
     // report — the next line returns early on it. Deleting the loop left 34/34 green.
-    expect(startupPromptProblems(claude('```', '/kanban-workflow <project>', '```'), skill()))
+    expect(startupPromptProblems(claude('```', '/hardpack-workflow <project>', '```'), skill()))
       .toContain('the startup recommendation passes no `--gates` level');
-    expect(startupPromptProblems(claude(...START), skill('/kanban-workflow <project>')))
+    expect(startupPromptProblems(claude(...START), skill('/hardpack-workflow <project>')))
       .toContain('the close handoff passes no `--gates` level');
   });
 
   it('flags the two files naming DIFFERENT skills', () => {
     expect(startupPromptProblems(claude('```', '/kanban-cycle <project> --gates manual', '```'), skill()))
-      .toContain('startup recommends `/kanban-cycle` but the handoff prints `/kanban-workflow`');
+      .toContain('startup recommends `/kanban-cycle` but the handoff prints `/hardpack-workflow`');
   });
 
   it('refuses to guess when two sections match the handoff', () => {
@@ -884,18 +884,18 @@ describe('the startup ticket-slot checker itself', () => {
   const claude = (...body) => ['# Hardpack Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
 
   it('passes a slot-free startup — so the flags below are not fired by everything', () => {
-    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual', '```'))).toEqual([]);
+    expect(startupTicketSlotProblems(claude('```', '/hardpack-workflow <project> --gates manual', '```'))).toEqual([]);
   });
 
   it('flags a VALID id bolted onto the startup line', () => {
     // The case that makes this binding worth keeping: a valid id passes §5, so §0 skips §4's ranking
     // and every session from this prompt works a ticket nobody chose.
-    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow kanban --gates manual tkt-0123456789ab', '```')))
+    expect(startupTicketSlotProblems(claude('```', '/hardpack-workflow kanban --gates manual tkt-0123456789ab', '```')))
       .toEqual(['the startup recommendation carries a ticket slot, but a cold session has no ranking to carry']);
   });
 
   it('flags a placeholder slot too, not only a substituted id', () => {
-    expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual <next ticket id>', '```')))
+    expect(startupTicketSlotProblems(claude('```', '/hardpack-workflow <project> --gates manual <next ticket id>', '```')))
       .not.toEqual([]);
   });
 

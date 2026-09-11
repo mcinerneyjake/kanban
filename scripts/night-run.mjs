@@ -636,7 +636,7 @@ export function renderProbes({ armedOut, disarmed } = {}) {
 export function sessionArgs(id) {
   return [
     '-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'auto',
-    `/kanban-workflow --gates auto-pr ${id}`,
+    `/hardpack-workflow --gates auto-pr ${id}`,
   ];
 }
 
@@ -704,7 +704,7 @@ export const runWorktreePath = (root, stamp) => join(root, '.claude', 'worktrees
 const PROVISIONED = [
   '.env',
   join('.claude', 'settings.local.json'),
-  join('.claude', 'skills', 'kanban-workflow', 'repos.local.json'),
+  join('.claude', 'skills', 'hardpack-workflow', 'repos.local.json'),
 ];
 
 /**

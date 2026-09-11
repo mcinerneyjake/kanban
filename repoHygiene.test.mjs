@@ -131,8 +131,8 @@ describe('public repo carries no local identifiers', () => {
   // `repos.local.json.bak`, `.jsonc`, `.yaml` and a plain `local.json` TOGETHER. A denylist guarded
   // by the denylist it mirrors is not a second layer. Anything new here must be added deliberately.
   const ALLOWED_SKILL_FILES = [
-    '.claude/skills/kanban-workflow/SKILL.md',
-    '.claude/skills/kanban-workflow/repos.example.json',
+    '.claude/skills/hardpack-workflow/SKILL.md',
+    '.claude/skills/hardpack-workflow/repos.example.json',
   ];
 
   it('tracks exactly the intended skill files, and no machine-local config', () => {
