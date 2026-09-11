@@ -325,7 +325,7 @@ export default function App() {
 
       <div className="app">
         <header className="topbar">
-          <h1>Hardpack</h1>
+          <h1>Kanban</h1>
           <div className="topbar-actions">
             {view === 'board' ? (
               <>
