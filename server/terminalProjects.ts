@@ -34,7 +34,7 @@ function parseProjectMap(raw: string): ProjectMap {
 }
 
 export function projectRoots(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const roots: Record<string, string> = { kanban: kanbanRoot() };
+  const roots: Record<string, string> = { hardpack: kanbanRoot() };
   const raw = env.KANBAN_TERMINAL_PROJECTS;
   if (raw) Object.assign(roots, parseProjectMap(raw));
   return roots;

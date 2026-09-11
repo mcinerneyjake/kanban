@@ -126,7 +126,14 @@ export function assertInstruments(classify = classifyDoc) {
   }
 }
 
-export function scanBoard(boardRoot, { project = 'kanban' } = {}) {
+export function scanBoard(boardRoot, { project = 'hardpack' } = {}) {
+  // The default fires on undefined but NOT on null, and classifyDoc yields project: null for an
+  // unattributed ticket — so a null scope would silently report on those (tkt-0383a9bf200b).
+  if (typeof project !== 'string' || project.trim() === '') {
+    throw new Error(
+      `adoption-markers: project scope must be a non-empty string, got ${JSON.stringify(project) ?? typeof project} — refusing to count.`,
+    );
+  }
   assertInstruments();
   const dir = path.join(boardRoot, 'tickets');
   if (!fs.existsSync(dir)) {

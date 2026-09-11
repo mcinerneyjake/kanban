@@ -117,9 +117,9 @@ describe('assertInstruments', () => {
 describe('scanBoard', () => {
   it('counts per marker with ids, scoped to the requested project, reporting the unattributed', () => {
     const root = board({
-      'tkt-aaa.md': ticket('kanban', RED_FIRST),
-      'tkt-bbb.md': ticket('kanban', MUTATION),
-      'tkt-ccc.md': ticket('kanban', NONE_CATCHABLE),
+      'tkt-aaa.md': ticket('hardpack', RED_FIRST),
+      'tkt-bbb.md': ticket('hardpack', MUTATION),
+      'tkt-ccc.md': ticket('hardpack', NONE_CATCHABLE),
       'tkt-ddd.md': ticket('portfolio-site', RED_FIRST), // wrong project: never counted
       'tkt-eee.md': `---\ntitle: no project\n---\n\n${RED_FIRST}\n`, // unattributed: visible, not counted
     });
@@ -133,9 +133,9 @@ describe('scanBoard', () => {
 
   it('excludes .history snapshots — where the recursive naive walker double-counts', () => {
     const root = board({
-      'tkt-aaa.md': ticket('kanban', RED_FIRST),
-      '.history/tkt-aaa/2026-08-17T00-00-00Z.md': ticket('kanban', RED_FIRST),
-      '.history/tkt-gone/2026-08-01T00-00-00Z.md': ticket('kanban', MUTATION), // ghost of a deleted ticket
+      'tkt-aaa.md': ticket('hardpack', RED_FIRST),
+      '.history/tkt-aaa/2026-08-17T00-00-00Z.md': ticket('hardpack', RED_FIRST),
+      '.history/tkt-gone/2026-08-01T00-00-00Z.md': ticket('hardpack', MUTATION), // ghost of a deleted ticket
     });
     const got = scanBoard(root);
     expect(got.scanned).toBe(1);
@@ -161,23 +161,51 @@ describe('scanBoard', () => {
 
   it('refuses a scope that selects nothing — a typo\'d project is not zero adoption', () => {
     const root = board({
-      'tkt-aaa.md': ticket('kanban', RED_FIRST),
+      'tkt-aaa.md': ticket('hardpack', RED_FIRST),
       'tkt-zzz.md': ticket('equipment-schedule', 'Tests: none — docs only'),
     });
-    expect(() => scanBoard(root, { project: 'kanbn' })).toThrow(/matched 0 of 2/);
+    expect(() => scanBoard(root, { project: 'hardpak' })).toThrow(/matched 0 of 2/);
     // the contrast that defines legitimate zero: matchedProject > 0, no markers
     const legit = scanBoard(root, { project: 'equipment-schedule' });
     expect(legit.matchedProject).toBe(1);
     expect(legit.redFirst.count).toBe(0);
   });
+
+  // Pins the default to the migrated project name. This is a value pin, NOT a fail-open guard: a
+  // stale default is already caught by the matchedProject === 0 scope guard above, which throws
+  // (measured: CLI exit 2, "matched 0 of 1573"). Do not relax that guard on the strength of this
+  // test — without it, this one only tells you the name is wrong once the board still matches
+  // something (tkt-28f8ec229dde).
+  it('defaults its scope to the board project', () => {
+    const root = board({ 'tkt-aaa.md': ticket('hardpack', RED_FIRST) });
+    expect(scanBoard(root).project).toBe('hardpack');
+    expect(scanBoard(root).matchedProject).toBe(1);
+  });
+
+  // A destructuring default fires on undefined but NOT on null, and classifyDoc returns project:
+  // null for an unattributed ticket — so a null scope used to slip every guard and report on exactly
+  // those, a plausible wrong number feeding the promotion gates (tkt-0383a9bf200b).
+  it('refuses a blank or non-string scope rather than scoping to the unattributed', () => {
+    const root = board({
+      'tkt-aaa.md': ticket('hardpack', RED_FIRST),
+      'tkt-noproj.md': `---\ntitle: no project\n---\n\n${RED_FIRST}\n`,
+    });
+    for (const project of [null, '', '   ', 42, {}, []]) {
+      expect(() => scanBoard(root, { project }), JSON.stringify(project) ?? 'undefined')
+        .toThrow(/scope must be a non-empty string/);
+    }
+    // the contrast: omitted still takes the default, and a real scope still works
+    expect(scanBoard(root).matchedProject).toBe(1);
+    expect(scanBoard(root, { project: 'hardpack' }).redFirst.ids).toEqual(['tkt-aaa']);
+  });
 });
 
 describe('CLI', () => {
   it('prints the JSON report for a scannable board', () => {
-    const root = board({ 'tkt-aaa.md': ticket('kanban', MUTATION) });
+    const root = board({ 'tkt-aaa.md': ticket('hardpack', MUTATION) });
     const out = execFileSync(process.execPath, [CLI, root], { encoding: 'utf8' });
     expect(JSON.parse(out)).toMatchObject({
-      project: 'kanban',
+      project: 'hardpack',
       mutationCheck: { count: 1, ids: ['tkt-aaa'] },
       redFirst: { count: 0, ids: [] },
     });
@@ -193,7 +221,7 @@ describe('CLI', () => {
       }
     };
     expect(status([tmp])).toBe(2);
-    const root = board({ 'tkt-aaa.md': ticket('kanban', RED_FIRST) });
-    expect(status([root, '--project=kanbn'])).toBe(2);
+    const root = board({ 'tkt-aaa.md': ticket('hardpack', RED_FIRST) });
+    expect(status([root, '--project=hardpak'])).toBe(2);
   });
 });
