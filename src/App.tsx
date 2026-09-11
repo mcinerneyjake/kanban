@@ -22,6 +22,7 @@ import { computeChildCounts } from './lib/childCounts.js';
 import { computeActiveBlockerCounts, computeStaleBlockerCounts } from './lib/blockers.js';
 import { filterTickets } from './lib/filterTickets.js';
 import { resolveTicket } from './lib/resolveTicket.js';
+import { nextStreamHealth, type StreamHealth } from './lib/streamHealth.js';
 import { useTheme } from './useTheme.js';
 import { useDashboardConfig } from './useDashboardConfig.js';
 import type { Ticket, BoardTicket } from '../shared/constants.js';
@@ -54,6 +55,7 @@ export default function App() {
   const [unreadable, setUnreadable] = useState<UnreadableTicketFile[]>([]);
   const [eventsSkipped, setEventsSkipped] = useState(0);
   const [eventsUnreadable, setEventsUnreadable] = useState(0);
+  const [streamHealth, setStreamHealth] = useState<StreamHealth>('live');
   const [editing, setEditing] = useState<BoardTicket | 'new' | null>(null);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   // Non-null → Save routes through intake-apply (provenance + metering), not the human route.
@@ -174,14 +176,20 @@ export default function App() {
     const onRefresh = () => { if (Date.now() >= muteRefreshUntil.current) load(); };
     // Only refetch on a genuine RE-connect (mount load covers first connect); EventSource doesn't replay missed events.
     let connectedOnce = false;
+    // readyState is sampled HERE, not inside the updater: React may run an updater during a later
+    // render pass, by which time cleanup's es.close() has forced readyState to CLOSED — reading it
+    // there turns a transient blip into a permanent "dead" verdict (tkt-ea0d1ed1d5d2).
     const onOpen = () => {
+      const readyState = es.readyState;
+      setStreamHealth((h) => nextStreamHealth(h, 'open', readyState));
       if (!connectedOnce) { connectedOnce = true; return; }
       load();
     };
-    // CLOSED = permanent failure (no auto-reconnect); log so a dead stream is diagnosable.
+    // Both verdicts belong to nextStreamHealth: `error` alone is a transient blip the browser is
+    // already retrying, and only a CLOSED readyState is permanent.
     const onError = () => {
-      if (es.readyState === EventSource.CLOSED)
-        console.warn('[sse] live updates unavailable — the event stream is closed and will not reconnect');
+      const readyState = es.readyState;
+      setStreamHealth((h) => nextStreamHealth(h, 'error', readyState));
     };
     es.addEventListener('refresh', onRefresh);
     es.addEventListener('open', onOpen);
@@ -361,6 +369,17 @@ export default function App() {
             {eventsSkipped > 0 && <>{eventsSkipped} telemetry line(s) could not be parsed. </>}
             A completion date may therefore be missing, or out of date, on tickets that do have one.
             Check events/ for a truncated line or a permissions problem.
+          </div>
+        )}
+
+        {/* Third of the same kind, on the live-update side: a stream that has stopped for good looks
+            exactly like a board where nothing is happening, and it was previously a console warning
+            nobody sees (tkt-ea0d1ed1d5d2). Cleared only by an observed reconnect. */}
+        {streamHealth === 'dead' && (
+          <div className="error persistent" role="alert">
+            Live updates are off — the connection to the server closed and will not reopen on its own.
+            Everything below is a snapshot from the last successful load and may already be out of
+            date. Reload the page to reconnect.
           </div>
         )}
 
