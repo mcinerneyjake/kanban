@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { parseTicket, hasIntent, intentMatch, classify } from './stale-in-progress.mjs';
 
 // tkt-3d25ae0626c6. What this file pins is the probe's EXIT-CODE CONTRACT, because §15 of the
-// kanban-workflow skill now runs it at close time and reads its output. The failure that matters is
+// hardpack-workflow skill now runs it at close time and reads its output. The failure that matters is
 // not a wrong count — it is the probe reporting a clean board from a run that never scanned one.
 // Every "cannot scan" path below must therefore exit 2, never 0.
 

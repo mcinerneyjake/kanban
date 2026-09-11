@@ -1133,7 +1133,7 @@ describe('sessionArgs — what each ticket is actually driven with', () => {
   // The literal spellings CLAUDE.md pins: auto-pr is the level the queue is authorized for, and
   // anything looser would cross the merge gate the whole design rests on.
   it('runs the skill at --gates auto-pr for the named ticket', () => {
-    expect(sessionArgs(A).at(-1)).toBe(`/kanban-workflow --gates auto-pr ${A}`);
+    expect(sessionArgs(A).at(-1)).toBe(`/hardpack-workflow --gates auto-pr ${A}`);
   });
 });
 
@@ -1496,10 +1496,10 @@ describe('the run’s worktree — one per run, against real git', () => {
     seedRepo(primary);
     // `.claude/worktrees` ignored as in the real repo: that is what blinds the porcelain to a nested one.
     writeFileSync(join(primary, '.gitignore'), 'node_modules\n.env\nrepos.local.json\n.claude/worktrees\n');
-    mkdirSync(join(primary, '.claude', 'skills', 'kanban-workflow'), { recursive: true });
+    mkdirSync(join(primary, '.claude', 'skills', 'hardpack-workflow'), { recursive: true });
     writeFileSync(join(primary, '.claude', 'keep'), '');
-    writeFileSync(join(primary, '.claude', 'skills', 'kanban-workflow', 'SKILL.md'), '# skill\n');
-    git(primary, 'add', '.gitignore', '.claude/keep', '.claude/skills/kanban-workflow/SKILL.md');
+    writeFileSync(join(primary, '.claude', 'skills', 'hardpack-workflow', 'SKILL.md'), '# skill\n');
+    git(primary, 'add', '.gitignore', '.claude/keep', '.claude/skills/hardpack-workflow/SKILL.md');
     git(primary, 'commit', '-qm', 'init');
     git(primary, 'remote', 'add', 'origin', origin);
     git(primary, 'push', '-q', 'origin', 'main');
@@ -1507,7 +1507,7 @@ describe('the run’s worktree — one per run, against real git', () => {
     writeFileSync(join(primary, 'node_modules', 'pkg', 'index.js'), 'ok');
     writeFileSync(join(primary, '.env'), 'X=1\n');
     writeFileSync(join(primary, '.claude', 'settings.local.json'), '{}');
-    writeFileSync(join(primary, '.claude', 'skills', 'kanban-workflow', 'repos.local.json'), '{"baseDir":"/x"}');
+    writeFileSync(join(primary, '.claude', 'skills', 'hardpack-workflow', 'repos.local.json'), '{"baseDir":"/x"}');
   });
   afterEach(() => rmSync(base, { recursive: true, force: true }));
 
@@ -1524,7 +1524,7 @@ describe('the run’s worktree — one per run, against real git', () => {
     expect(readFileSync(join(made.path, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('ok');
     expect(readFileSync(join(made.path, '.env'), 'utf8')).toBe('X=1\n');
     expect(existsSync(join(made.path, '.claude', 'settings.local.json'))).toBe(true);
-    expect(readFileSync(join(made.path, '.claude', 'skills', 'kanban-workflow', 'repos.local.json'), 'utf8')).toBe('{"baseDir":"/x"}');
+    expect(readFileSync(join(made.path, '.claude', 'skills', 'hardpack-workflow', 'repos.local.json'), 'utf8')).toBe('{"baseDir":"/x"}');
   });
 
   // `.claude/worktrees` is gitignored, so a session that took EnterWorktree from inside leaves work

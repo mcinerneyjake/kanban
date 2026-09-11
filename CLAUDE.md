@@ -29,12 +29,12 @@ Nothing `todo` → show the summary and wait. **Escape hatch:** a meta, analysis
 configuration request with no ticket implied skips the board load and is answered directly, **step 3
 included**.
 
-### Recommending `/kanban-workflow`
+### Recommending `/hardpack-workflow`
 
 Print the invocation on its own line:
 
 ```
-/kanban-workflow <project> --gates manual
+/hardpack-workflow <project> --gates manual
 ```
 
 - **Substitute `<project>` before printing.** A literal `<project>` resolves against a project not on
@@ -274,7 +274,7 @@ gate, which is what keeps them crossable where `AskUserQuestion` is unavailable.
 > merged weeks ago. What actually catches that is §10's scope check — compare the files the review
 > says it read against your own diff. Zero findings proves nothing in either direction.
 >
-> **Who runs it is mode-dependent** — by default Jake; `/kanban-workflow`'s auto levels pre-authorize
+> **Who runs it is mode-dependent** — by default Jake; `/hardpack-workflow`'s auto levels pre-authorize
 > the skill to. **The merge gate stays human in every mode.** **Do not report the review gate as
 > enforced, or as unenforceable**: `record_review`'s milestone is written automatically by a passing
 > commit too, so gating on it today would be a rubber stamp (`tkt-55080f378279`).
@@ -396,7 +396,7 @@ both `vite.config.ts` and `server/index.ts` so they can never disagree. `shared/
 stays `.mjs` with a hand-written `.d.mts` **because the setup scripts run under bare `node` and cannot
 import TypeScript** — do not "fix" it into a `.ts`.
 
-**`.claude/skills/kanban-workflow/` is project-scoped and tracked, and the tracked copy is the one
+**`.claude/skills/hardpack-workflow/` is project-scoped and tracked, and the tracked copy is the one
 that loads** (measured 2026-08-18, `tkt-9fbe6c952590`; the former user-scope duplicate, which used to
 win, is deleted). `SKILL.md` must stay free of absolute paths; the project→repo map is **gitignored**
 `repos.local.json`. `repoHygiene.test.mjs` fails the suite on a home path naming a real account, or an

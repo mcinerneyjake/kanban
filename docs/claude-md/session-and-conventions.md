@@ -16,7 +16,7 @@ At the start of every session in this directory, run these steps before respondi
 
 1. Call `list_tickets` to load the board
 2. Print a one-line summary: ticket counts by status (e.g. "3 backlog · 2 todo · 1 in-progress")
-3. **Recommend the skill as the default path** — see **Recommending `/kanban-workflow`** below, which lists the three cases that suppress it. It owns the whole cycle (selection, premise validation, gates, close), so the steps that follow are the fallback for when it is declined or unavailable, not the primary route. It is a line of output, not a checkpoint: never withhold step 4's direct `start_ticket` behind it.
+3. **Recommend the skill as the default path** — see **Recommending `/hardpack-workflow`** below, which lists the three cases that suppress it. It owns the whole cycle (selection, premise validation, gates, close), so the steps that follow are the fallback for when it is declined or unavailable, not the primary route. It is a line of output, not a checkpoint: never withhold step 4's direct `start_ticket` behind it.
 4. If the user's opening message names a specific ticket (e.g. "work on X", "start ticket Y"), match it against the board and call `start_ticket` directly — skip the selection prompt entirely.
 5. Otherwise, if any tickets are `todo`, use `AskUserQuestion` to present a single-select prompt:
    - question: "Which ticket should we start?"
@@ -29,12 +29,12 @@ If no tickets are `todo`, just show the summary and wait for instructions.
 
 **Escape hatch:** If the opening message is a meta, analysis, planning, or configuration request with no ticket implied (e.g. "analyze my workflow", "explain how X works", "update a setting"), skip the board load and address it directly. When genuinely in doubt, do steps 1–2 (they're cheap) and then address the request — but don't force the board on a clearly non-ticket ask. **The recommendation in step 3 sits behind this hatch too** — it fires on the ticket-shaped path only. A front door that opens in front of "explain how X works" is worse than no front door, because it trains the reader to skip past it on the runs where it matters.
 
-### Recommending `/kanban-workflow`
+### Recommending `/hardpack-workflow`
 
 Print the invocation, on its own line, as the recommended way to proceed:
 
 ```
-/kanban-workflow <project> --gates manual
+/hardpack-workflow <project> --gates manual
 ```
 
 Three things about that line (`tkt-9fbe6c952590`). **One clause of one of them is machine-checked:** `skillContract.test.mjs` pins the literal `--gates` level written *in this file*, requiring it to match `SKILL.md` §15's handoff and to be the level the gate table says asks at every gate. Everything else here is honor-system prose, like the red-first and mutation rules — including the rest of bullet 2, since "not inferred from how the request was phrased" is a claim about a *run*, and nothing observes a run.
@@ -45,7 +45,7 @@ Three things about that line (`tkt-9fbe6c952590`). **One clause of one of them i
 
 **Suppress it entirely in these three cases.** A prompt that fires when the answer is already known is not a neutral cost: it teaches the reader to skip the line on the runs where it carries information.
 
-1. **The opening message *is* the invocation.** `SKILL.md` §15 prints `/kanban-workflow <project> --gates manual`, usually followed by the next ticket's id (`tkt-71229c9290b8`), as the paste-ready resume block — so that command is by design the *next session's first message* — and it is ticket-shaped, so the escape hatch does not catch it. Recommending the command the user just ran is the most likely way this prompt ever fires, and the most useless.
+1. **The opening message *is* the invocation.** `SKILL.md` §15 prints `/hardpack-workflow <project> --gates manual`, usually followed by the next ticket's id (`tkt-71229c9290b8`), as the paste-ready resume block — so that command is by design the *next session's first message* — and it is ticket-shaped, so the escape hatch does not catch it. Recommending the command the user just ran is the most likely way this prompt ever fires, and the most useless.
 2. **The skill is already running this session.** Already-running is not the same as declined, and only the latter would otherwise stop it.
 3. **It was declined once already this session.** Ask once.
 
