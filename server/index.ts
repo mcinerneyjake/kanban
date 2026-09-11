@@ -33,7 +33,7 @@ if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // anyone sharing the network (tkt-b6eb52013662). Vite already defaults to loopback; this makes
   // the API match. Nothing here is meant to be reached from another device.
   const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`Kanban API → http://localhost:${PORT}`);
+    console.log(`Hardpack API → http://localhost:${PORT}`);
     // Best-effort warm so the first intake search is instant. Free locally; embedder
     // down → lazy build on first use. Since tkt-9f09b3a1e95c the persistent embedding
     // cache is default-on here, so a boot re-embeds only tickets that changed since the

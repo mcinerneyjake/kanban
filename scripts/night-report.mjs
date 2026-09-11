@@ -6,7 +6,7 @@
 // comments, ask "Ready to merge?", then plain `gh pr merge --squash --delete-branch`.
 //
 // `gh search prs`, NOT `gh pr list`. A ticket whose code lives upstream is worked in foreign mode and
-// its PR lands in `ticket-workflow`; a `gh pr list` run from kanban returned a confident false "no PR
+// its PR lands in `ticket-workflow`; a `gh pr list` run from hardpack returned a confident false "no PR
 // exists" on the first live run (project_night_run_queue.md).
 //
 // EVERY MATCH IS PRINTED, because that search is FULL TEXT and routinely returns more than one PR:

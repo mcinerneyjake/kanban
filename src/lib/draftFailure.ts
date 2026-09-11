@@ -6,7 +6,7 @@ import { ApiError } from '../api.js';
 export type DraftFailure = 'model-down' | 'fault'
 
 // 503 is the ONE status the server uses for a runtime it positively identified as unreachable. Anything
-// else — a 500 from an in-agent bug, a 400, or a fetch rejection because the kanban server itself is
+// else — a 500 from an in-agent bug, a 400, or a fetch rejection because the hardpack server itself is
 // unreachable — is not evidence about the model, so it must not be reported as though it were.
 export function draftFailureOf(err: unknown): DraftFailure {
   return err instanceof ApiError && err.status === 503 ? 'model-down' : 'fault';

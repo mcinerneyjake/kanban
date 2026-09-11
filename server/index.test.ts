@@ -1278,7 +1278,7 @@ describe('GET /api/tickets/:id/events', () => {
 
   // Round-trip across the seam (tkt-355581f9dab3): a corrupt line seeded on disk must reach the
   // HTTP body as a count and survive the client's runtime guard. Per-layer tests all passed while
-  // these fields were being dropped — the package returned them and kanban's type never declared them.
+  // these fields were being dropped — the package returned them and hardpack's type never declared them.
   //
   // Each case pairs a positive check with a DISCRIMINATING one. `isTicketEventsResponse(res.body)`
   // alone is inert: the body already carries both counts, so it passes against the old loose guard

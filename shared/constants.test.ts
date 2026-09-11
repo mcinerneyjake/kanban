@@ -56,11 +56,11 @@ describe('isPriority', () => {
   });
 });
 
-// Parity with the ticket-workflow package (tkt-36390042a0bf, tkt-66f0e22efd5e). kanban keeps a local
+// Parity with the ticket-workflow package (tkt-36390042a0bf, tkt-66f0e22efd5e). hardpack keeps a local
 // shared/constants.ts for its own imports (frontend, agent), while the service consumes the package;
 // the two copies of the domain enums can silently DRIFT, and the board would then disagree with the
 // package-backed service on what a valid status/type/step is. This asserts the shared subset is
-// identical. Out of scope (correctly): kanban-only constants (terminal WS codes, economics) and the
+// identical. Out of scope (correctly): hardpack-only constants (terminal WS codes, economics) and the
 // package-only BRANCH_TICKET_ID_RE — parity covers only what BOTH declare.
 describe('shared-constant parity with the ticket-workflow package', () => {
   // Each pair references a NAMED export on both sides, so a rename on EITHER side is a COMPILE error

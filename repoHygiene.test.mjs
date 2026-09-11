@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // tkt-e18d0c20d6b6. Adapted from ticket-workflow's src/repoHygiene.test.ts, which paid for the
-// design. kanban is PUBLIC and now carries a gitignored `repos.local.json` full of absolute paths
+// design. hardpack is PUBLIC and now carries a gitignored `repos.local.json` full of absolute paths
 // and private project names, one directory away from tracked files — so "no local identifiers here"
 // stopped being safe as convention and needed a gate.
 //
@@ -90,8 +90,8 @@ describe('public repo carries no local identifiers', () => {
     // Non-vacuity. A negative claim resolved from an empty scan is a clean report that inspected
     // nothing — and this check FAILED that way once: swapping the candidate pattern for a string
     // that matches nothing left all tests green, because neither guard below covers the pattern
-    // ITSELF. `tracked.length` counts files and `control` greps a different pattern; both can pass
-    // while this exact grep matches nothing.
+    // ITSELF. `tracked.length` only counts files, and the textFiles grep below uses a different
+    // pattern; both pass while this exact grep matches nothing.
     //
     // This is the load-bearing one: the control fixtures further down this file are tracked and do
     // carry home-path spellings, so a non-matching candidate grep is proof the instrument is broken,
@@ -100,8 +100,10 @@ describe('public repo carries no local identifiers', () => {
 
     const tracked = git(['ls-files'], root).out.split('\n').filter(Boolean);
     expect(tracked.length).toBeGreaterThan(50);
-    const control = git(['grep', '--cached', '-c', 'kanban', '--', '.'], root);
-    expect(control.ok, 'the index-grep instrument found nothing at all — it is broken, not the repo clean').toBe(true);
+    // No second needle here, deliberately (tkt-4620536e2d34): any literal is in the index BECAUSE it
+    // is written here, so it can only be vacuously green — which is why the old `kanban` one could
+    // never red. The witnesses that can: the `candidates.ok` assert above, where the REAL pattern
+    // must match this file's fixtures, and the tracked-vs-textFiles pair below.
 
     // `-I` above skips binary files, and ONE stray NUL byte is enough to classify a text file as
     // binary — so a leak in a NUL-poisoned markdown file would be silently skipped and reported

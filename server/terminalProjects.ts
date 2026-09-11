@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Board-project → on-disk repo-root resolution for terminal-session confinement.
-// The kanban repo root is always allowed (the board's MCP + workflow live here);
+// The hardpack repo root is always allowed (the board's MCP + workflow live here);
 // other projects are supplied via config so no machine-specific absolute path is
 // committed to source.
 
@@ -16,7 +16,7 @@ export function kanbanRoot(): string {
 interface ProjectMap { [name: string]: string }
 
 // KANBAN_TERMINAL_PROJECTS is a JSON object {projectName: absolutePath}. Malformed
-// config or a relative path is ignored (kanban-only), never a fatal boot error.
+// config or a relative path is ignored (hardpack-only), never a fatal boot error.
 function parseProjectMap(raw: string): ProjectMap {
   try {
     const data: unknown = JSON.parse(raw);
@@ -28,7 +28,7 @@ function parseProjectMap(raw: string): ProjectMap {
       return out;
     }
   } catch {
-    /* malformed JSON → kanban-only */
+    /* malformed JSON → hardpack-only */
   }
   return {};
 }

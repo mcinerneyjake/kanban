@@ -40,7 +40,7 @@ updates:
       prefix: chore
       include: scope
 
-  # Kanban pins actions by major tag (`actions/checkout@v5`), not by SHA as portfolio-site does, so
+  # Hardpack pins actions by major tag (`actions/checkout@v5`), not by SHA as portfolio-site does, so
   # this only ever fires on a major bump — the floating tag absorbs everything below it. Low volume
   # by construction, which is why the limit is small rather than because majors are grouped.
   - package-ecosystem: github-actions

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kanban's multi-repo layer over the packaged vacuous ratchet (tkt-d88902f60f7c,
+ * Hardpack's multi-repo layer over the packaged vacuous ratchet (tkt-d88902f60f7c,
  * tkt-05b1630bb53a). The judgment — ceiling, breadth floor, accepted-list double-entry, distinct
  * exit codes — is `compareToBaseline` from ticket-workflow and is tested upstream; what stays
  * here is the CENTRAL-baseline layer that upstream deliberately dropped for repo-local files:
@@ -34,7 +34,7 @@ export function resolveRoot(repo, row, override) {
   if (!override) {
     if (!declared) {
       return {
-        error: `Baseline row "${repo}" has no "path", so there is no tree to sweep. Add one (relative to the kanban repo root) or pass an explicit root.`,
+        error: `Baseline row "${repo}" has no "path", so there is no tree to sweep. Add one (relative to the hardpack repo root) or pass an explicit root.`,
       };
     }
     return { root: declared };
@@ -46,7 +46,7 @@ export function resolveRoot(repo, row, override) {
     };
   }
   // No declared path: at minimum the directory name must match the row name, so
-  // `ratchet equipment-schedule .` from kanban cannot report equipment-schedule.
+  // `ratchet equipment-schedule .` from hardpack cannot report equipment-schedule.
   if (!declared && basename(real(given)) !== repo) {
     return {
       error: `Refusing to sweep: "${given}" does not look like the "${repo}" repo (directory is "${basename(real(given))}"). Pass the repo's own path, or give the baseline row a "path".`,
@@ -100,6 +100,6 @@ if (isMain()) {
   }
   const result = checkRepo(repo, process.argv[3]);
   console.log(result.message);
-  // The package owns the kind->code mapping; kanban's extra 'bad-root' kind lands on PROBE_ERROR.
+  // The package owns the kind->code mapping; hardpack's extra 'bad-root' kind lands on PROBE_ERROR.
   process.exit(vacuousExitCode(result));
 }

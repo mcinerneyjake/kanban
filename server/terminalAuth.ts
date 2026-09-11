@@ -94,8 +94,8 @@ export function buildSessionEnv(parentEnv: NodeJS.ProcessEnv): Record<string, st
 // ── Confinement roots ────────────────────────────────────────────────────────
 
 // The project directories a session may touch: the ticket's own project (if mapped)
-// first, as the working dir, plus the kanban root (board MCP + workflow). No ticket,
-// or an unmapped project → kanban-only. Never the whole disk.
+// first, as the working dir, plus the hardpack root (board MCP + workflow). No ticket,
+// or an unmapped project → hardpack-only. Never the whole disk.
 export function allowedRootsFor(opts: {
   ticket: Ticket | null;
   projectRoots: Record<string, string>;
@@ -140,7 +140,7 @@ export function rootMountArgs(roots: string[]): string[] {
 // containers via `docker ps --filter label=…` and re-adopt them (S3a, tkt-5b21136f3317).
 export const SESSION_LABEL_KEY = 'kanban.session';
 
-// Second label carrying the kanban repo root, so adoption is scoped to THIS server's checkout — a
+// Second label carrying the hardpack repo root, so adoption is scoped to THIS server's checkout — a
 // second dev server on the same Docker daemon can't adopt (and later reap) our containers, and vice
 // versa. A restart of the same checkout has the same root, so it still re-adopts its own (review F3).
 export const ROOT_LABEL_KEY = 'kanban.root';
@@ -327,7 +327,7 @@ function containerBaseArgs(opts: {
 export function buildDetachedRunArgs(opts: {
   roots: string[];
   sessionId: string;
-  rootLabel: string; // the kanban repo root — scopes adoption to this checkout (kanban.root label)
+  rootLabel: string; // the hardpack repo root — scopes adoption to this checkout (kanban.root label)
   createdAt: number; // epoch ms stamped into the kanban.created label (reaper age); Date.now() at call site
   credMount: CredMount;
   image: string;

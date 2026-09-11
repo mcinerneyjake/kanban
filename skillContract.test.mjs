@@ -814,7 +814,7 @@ describe('the startup/handoff checker itself', () => {
     gateDoc(HEADER, ...GOOD),
   ].join('\n');
   const skill = (invocation = '/kanban-workflow <project> --gates manual') => skillWith('```', invocation, '```');
-  const claude = (...body) => ['# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
+  const claude = (...body) => ['# Hardpack Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
   const START = ['```', '/kanban-workflow <project> --gates manual', '```'];
 
   it('passes a matching pair — so the flags below are not fired by everything', () => {
@@ -881,7 +881,7 @@ describe('the startup/handoff checker itself', () => {
 });
 
 describe('the startup ticket-slot checker itself', () => {
-  const claude = (...body) => ['# Kanban Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
+  const claude = (...body) => ['# Hardpack Project', '', '## Session startup (MANDATORY)', '', ...body, '', '## MCP server'].join('\n');
 
   it('passes a slot-free startup — so the flags below are not fired by everything', () => {
     expect(startupTicketSlotProblems(claude('```', '/kanban-workflow <project> --gates manual', '```'))).toEqual([]);
@@ -900,7 +900,7 @@ describe('the startup ticket-slot checker itself', () => {
   });
 
   it('reports a MISSING startup section rather than returning clean', () => {
-    expect(startupTicketSlotProblems(['# Kanban Project', '', '## MCP server', '', 'nothing'].join('\n')))
+    expect(startupTicketSlotProblems(['# Hardpack Project', '', '## MCP server', '', 'nothing'].join('\n')))
       .toEqual(['no section found for CLAUDE.md\'s "Session startup" section']);
   });
 });

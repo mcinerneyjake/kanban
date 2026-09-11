@@ -11,15 +11,15 @@ import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CON
 import { readEvents } from './events.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
-// Contract tests for the PINNED ticket-workflow build, driven through kanban's shim.
+// Contract tests for the PINNED ticket-workflow build, driven through hardpack's shim.
 //
 // Not a copy of the package's unit suite (tkt-6aa717c1c9ec deleted those). That suite runs
 // upstream, against upstream SOURCE at upstream HEAD — never against the tag package.json pins,
 // and the published tarball ships no tests. So without this file a dep bump to a build that
 // regressed any behaviour below would land with typecheck/lint/coverage fully green.
 //
-// Scope is deliberately narrow: only behaviours that (a) kanban relies on and (b) no surviving
-// kanban test asserts. server/index.test.ts MOCKS archiveStaleTickets, so its real staleness
+// Scope is deliberately narrow: only behaviours that (a) hardpack relies on and (b) no surviving
+// hardpack test asserts. server/index.test.ts MOCKS archiveStaleTickets, so its real staleness
 // rule is otherwise unasserted here.
 
 const dirs = setupTempTicketDirs('pkg-contract');
@@ -146,7 +146,7 @@ describe('pinned ticket-workflow build: backup-on-write snapshots the prior body
 });
 
 // readEvents' fail-closed rule (tkt-fc7c6846903d, package v0.9.0) and its lost-line counts
-// (tkt-355581f9dab3, v0.10.0). kanban imported both by bumping the pin and asserts neither:
+// (tkt-355581f9dab3, v0.10.0). hardpack imported both by bumping the pin and asserts neither:
 // server/index.test.ts drives the HTTP route, so a regression that restored `catch { return []; }`
 // would render an all-pending pipeline for a damaged log with the whole gate green — the fail-open
 // shape this repo rejects, arriving through a dependency rather than a diff.
@@ -208,7 +208,7 @@ describe('pinned ticket-workflow build: unreadable event logs fail closed', () =
   });
 });
 
-// ci.yml's gate runs `npx ticket-workflow audit .` (tkt-9342280b2536, v0.15.0). No other kanban
+// ci.yml's gate runs `npx ticket-workflow audit .` (tkt-9342280b2536, v0.15.0). No other hardpack
 // test touches the pinned CLI, so a bump to a build that dropped or renamed the subcommand would
 // pass every local gate and only fail in CI.
 describe('pinned ticket-workflow build: CLI ships the audit and vacuous subcommands', () => {
@@ -286,7 +286,7 @@ describe('pinned ticket-workflow build: vacuous probe through the shim', () => {
   });
 });
 
-// tkt-8e57620f90b7. The guard lives entirely upstream (kanban's validation/tickets modules are
+// tkt-8e57620f90b7. The guard lives entirely upstream (hardpack's validation/tickets modules are
 // re-export shims), so nothing else here would notice a bump to a build that dropped it — and the
 // failure mode is silent: the write succeeds, `unreadable` stays empty, and only a count is wrong.
 // Both real occurrences on this board arrived through appendBody.
@@ -314,7 +314,7 @@ describe('pinned ticket-workflow build: raw NUL bytes are refused', () => {
 // tkt-e69819938f33. The v0.24.0 bump rewrote summarize() from per-bucket filter passes to a single
 // Map tally, so its correctness now rests on the OUTPUT being enum-driven — BOARD_STATUSES and
 // PRIORITIES mapped with `?? 0` — rather than on which buckets the tally happened to observe.
-// Nothing else in kanban asserts that: server/index.test.ts only checks Array.isArray(byStatus).
+// Nothing else in hardpack asserts that: server/index.test.ts only checks Array.isArray(byStatus).
 // A build that returned observed buckets only would drop the zero rows, and Dashboard.tsx maps
 // byPriority unfiltered and derives priorityMax from it, so the bars would silently rescale with
 // typecheck, lint and the full suite green.

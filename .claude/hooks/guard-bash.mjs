@@ -1,7 +1,7 @@
 // Launcher, not a copy (tkt-6e4c55c81208). The guard itself lives in ticket-workflow and is
-// versioned by the pin in package.json, so a fix in the package reaches kanban through `npm ci`
+// versioned by the pin in package.json, so a fix in the package reaches hardpack through `npm ci`
 // instead of a hand-port. The vendored copy this replaces went stale for ~24h in 2026-07 and left
-// every repo outside kanban with a guard failing OPEN on an unresolvable branch.
+// every repo outside hardpack with a guard failing OPEN on an unresolvable branch.
 //
 // A real file has to stay at this path: .claude/settings.json wires it, and a hook whose file cannot
 // be resolved does not run at all — a silent no-guard on any fresh clone. That is why the earlier

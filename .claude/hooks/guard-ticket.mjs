@@ -1,7 +1,7 @@
 // Launcher, not a copy — see guard-bash.mjs in this directory for why the file must exist here and
 // why import failure blocks rather than allows (tkt-6e4c55c81208).
 //
-// The launcher is where kanban's intake vocabulary belongs: the guard is wired at USER scope, so the
+// The launcher is where hardpack's intake vocabulary belongs: the guard is wired at USER scope, so the
 // package's shipped default has to be actionable in repos that have no `npm run agent` at all
 // (tkt-0361525dbf9f). Set BEFORE the import, since the hook reads it per call off process.env.
 //
@@ -12,7 +12,7 @@
 process.env.TICKET_WORKFLOW_CREATE_REASON =
   'create_ticket is authored by the local intake agent, not Claude, so every new ticket carries a ' +
   'metered local-LLM usage record. Run `npm run agent -- --yes --create-only "<report>"` from the ' +
-  'kanban checkout. `--create-only` is REQUIRED: it drops update_ticket from the agent\'s toolset so a ' +
+  'hardpack checkout. `--create-only` is REQUIRED: it drops update_ticket from the agent\'s toolset so a ' +
   'mis-matched retrieval can only create a duplicate, never overwrite an existing ticket. ONE ISSUE ' +
   'PER RUN — a report covering several things gets sprayed into thin tickets, and an enumeration ' +
   'inside prose counts as several; make one run per issue and add sub-parts yourself with ' +

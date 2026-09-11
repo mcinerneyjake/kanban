@@ -25,7 +25,7 @@ the spot-checks sampled by consequence, not coverage.
 
 Audit tickets: `tkt-6a2232768981` (ES triage) · `tkt-77046457a5df` (ES spot-check) ·
 `tkt-98076f541a57` (copart) · `tkt-5375f6c372fa` (job-tracker) · `tkt-ac27a6397884`
-(portfolio-site) · `tkt-2282af09404f` (kanban) · `tkt-cf29502c702d` (ticket-workflow).
+(portfolio-site) · `tkt-2282af09404f` (hardpack) · `tkt-cf29502c702d` (ticket-workflow).
 
 ## The findings that mattered
 
@@ -54,7 +54,7 @@ Audit tickets: `tkt-6a2232768981` (ES triage) · `tkt-77046457a5df` (ES spot-che
 - `tkt-3bc2ab79d9e5` — copart-filter: `MAX_PAGE` clamp has no test anywhere (gap)
 - `tkt-5653fa9faeda` — copart-filter: segment-counts containment check is weaker than it reads (two verified mechanisms)
 - `tkt-da7045a4e04f` — portfolio-site: buildEconomics-sourced prose figures have no drift guard
-- `tkt-617dd76e51e1` — kanban: `server/packageContract.test.ts` has never been observed red
+- `tkt-617dd76e51e1` — hardpack: `server/packageContract.test.ts` has never been observed red
 
 Pre-existing tickets cited, not re-filed: `tkt-f0ddfc4eb102` (busy-flag test), `tkt-44fbaf2be33b`
 (job-tracker client runner), the copart flake set (`tkt-093a61dddfe8`, `tkt-7e2bc0e5eed6`,

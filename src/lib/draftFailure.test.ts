@@ -20,7 +20,7 @@ describe('draftFailureOf', () => {
     }
   });
 
-  it('reads a bare fetch rejection as a fault — an unreachable kanban server says nothing about the model', () => {
+  it('reads a bare fetch rejection as a fault — an unreachable hardpack server says nothing about the model', () => {
     expect(draftFailureOf(new TypeError('Failed to fetch'))).toBe('fault');
     expect(draftFailureOf(new Error('Request failed (503)'))).toBe('fault'); // status in the TEXT is not the status
   });

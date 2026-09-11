@@ -235,7 +235,7 @@ describe('CLI', () => {
   });
 
   // Was the worst fail-open: this printed "equipment-schedule: 0 candidates,
-  // below the ceiling of 19" while sweeping kanban.
+  // below the ceiling of 19" while sweeping this repo.
   it('refuses to report another repo while standing in this one', () => {
     const r = run(['equipment-schedule', '.']);
     expect(r.status).not.toBe(EXIT.OK);
