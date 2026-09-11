@@ -185,7 +185,7 @@ type: bug           # bug | feature | task | chore
 priority: high      # low | medium | high | urgent
 status: in-progress # backlog | todo | in-progress | qa | done | archived
 order: 1            # fractional sort key within a column
-project: kanban
+project: hardpack
 created: 2026-06-20T09:00:00.000Z
 updated: 2026-06-20T09:00:00.000Z
 ---
