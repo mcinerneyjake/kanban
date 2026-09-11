@@ -50,7 +50,7 @@ const hooksPath = (dir, value) => execFileSync('git', ['config', 'core.hooksPath
 
 /**
  * An env that stops git's repo search at the fixture root. Fixtures live inside this repo, so
- * without a ceiling every non-repo fixture resolves to kanban itself and the "not a repo" path is
+ * without a ceiling every non-repo fixture resolves to this repo itself and the "not a repo" path is
  * unreachable — the error case would be asserted by a test that never enters it.
  *
  * It has to go through the `env` bag rather than `process.env`, because the probe scrubs and passes
@@ -201,8 +201,8 @@ describe('resolveHook — dimensions A and B: which file git would actually run'
 
   // The measured fail-open: joining an ABSOLUTE hooksPath onto the repo path yields a nonsense
   // path. Both forms are live in this fleet — measured 2026-09-08 with `git config --show-origin
-  // --show-scope`, kanban's is absolute in its own `.git/config` while ticket-workflow's is
-  // `.husky/_` — and on kanban the join reported a full gate as no hook at all.
+  // --show-scope`, this repo's is absolute in its own `.git/config` while ticket-workflow's is
+  // `.husky/_` — and on this repo the join reported a full gate as no hook at all.
   it('A: an absolute hooksPath is used verbatim, not joined onto the repo path', () => {
     const dir = huskyRepo(FULL_GATE, { absolute: true });
     const r = resolveHook(dir, { env: {} });

@@ -1,4 +1,4 @@
-# Kanban — an agent-driven ticket board
+# Hardpack — an agent-driven ticket board
 
 A kanban board where **every ticket is one Markdown file**, driven by an AI agent through an
 [MCP](https://modelcontextprotocol.io) server. One board serves several repos on the same machine.

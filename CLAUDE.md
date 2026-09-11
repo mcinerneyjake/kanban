@@ -1,4 +1,4 @@
-# Kanban Project
+# Hardpack Project
 
 React + Vite frontend, Express API, markdown files as the database (no SQL). The ticket engine lives
 upstream in the pinned **`ticket-workflow`** package.
@@ -170,7 +170,7 @@ Evaluate **each touched file independently**, never the ticket as a whole.
 **Do not re-create local suites for the shims** — upstream's gate runs against its own HEAD, not the
 tag pinned here, so `server/packageContract.test.ts` asserts the **pinned build** through the shim.
 **Add to that file when a dependency bump could
-regress behaviour kanban relies on**; it is deliberately narrow, covering only what no other kanban
+regress behaviour hardpack relies on**; it is deliberately narrow, covering only what no other hardpack
 test asserts.
 Redirect I/O with `TICKETS_DIR_OVERRIDE`, never touching the real `tickets/`, and seed fixtures with
 the `makeRaw`/`writeRaw` helpers rather than round-tripping `createTicket`. **Cover the happy path,

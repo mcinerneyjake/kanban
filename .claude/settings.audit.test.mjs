@@ -134,7 +134,7 @@ describe('.claude/settings.json permission allowlist', () => {
   // same fail-open shape one level up. These two close it (tkt-6e4c55c81208).
 
   // The local hooks must stay LAUNCHERS delegating to the pinned package, never re-vendored copies:
-  // the copy this replaced drifted and left every repo outside kanban failing OPEN for ~24h in
+  // the copy this replaced drifted and left every repo outside hardpack failing OPEN for ~24h in
   // 2026-07.
   //
   // The check is on SUBSTANCE, not length. Length alone was the original proxy (a re-vendored
@@ -174,7 +174,7 @@ describe('.claude/settings.json permission allowlist', () => {
   });
 
   // Verify the EFFECT, not the wiring: drive the actually-wired file and watch it block. The package
-  // ships no tests, so with the duplicated local suites gone this is kanban's only executable proof
+  // ships no tests, so with the duplicated local suites gone this is hardpack's only executable proof
   // that the PINNED hook build still guards — the hook analogue of server/packageContract.test.ts.
   it('blocks a commit on main through the wired launcher, and allows one on a branch', () => {
     const repo = mkdtempSync(join(tmpdir(), 'audit-guard-'));
@@ -357,7 +357,7 @@ describe('.claude/settings.json permission allowlist', () => {
   // Scope, stated so this is not read as more than it is: this drives the hook out of the PINNED
   // PACKAGE, not out of `.claude/settings.json`. guard-subagent-gates is wired at USER scope
   // (machine-local, unversioned), so nothing in this repo can assert it is armed — only that the build
-  // kanban pins still refuses. Hence no wiredLocalHooks() lookup.
+  // hardpack pins still refuses. Hence no wiredLocalHooks() lookup.
   it('refuses a subagent `gh pr merge` through the pinned build, and allows the main thread', () => {
     const hook = join(dirname(createRequire(import.meta.url).resolve('ticket-workflow')), '..', 'hooks', 'guard-subagent-gates.mjs');
     expect(existsSync(hook), `the pinned build ships no guard-subagent-gates (${hook})`).toBe(true);
@@ -572,7 +572,7 @@ describe('.claude/settings.json SessionStart night-report hook', () => {
 
 // The machine-wide runtime at ~/.claude/tools carries its OWN ticket-workflow pin, invisible to every
 // repo's audit — so it skews silently. Found 2026-08-18 at v0.16.0 against repos on v0.18.0+: the
-// NUL-byte write guard was live only for kanban-rooted sessions, while every other repo drove the
+// NUL-byte write guard was live only for hardpack-rooted sessions, while every other repo drove the
 // central board through a server without it (tkt-876ab4261e69).
 //
 // That install is where the USER-SCOPE guards actually resolve from: ~/.claude/settings.json wires

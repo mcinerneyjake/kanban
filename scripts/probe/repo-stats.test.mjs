@@ -65,7 +65,7 @@ describe('countAiCoAuthored (trailer-aware, case-insensitive)', () => {
   it('ignores an ambient absolute GIT_DIR and measures the fixture repo', () => {
     seedMixedRepo();
     const prev = process.env.GIT_DIR;
-    process.env.GIT_DIR = path.join(process.cwd(), '.git'); // decoy: the real kanban repo
+    process.env.GIT_DIR = path.join(process.cwd(), '.git'); // decoy: the real hardpack repo
     try {
       expect(countCommits(tmp)).toBe(5);
       expect(countAiCoAuthored(tmp)).toBe(3);

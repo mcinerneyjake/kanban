@@ -176,7 +176,7 @@ export function resolveHook(repoDir, { env = process.env } = {}) {
 
   const hooksPath = readHooksPath(repoDir, { base: env });
   // Relative hooksPath resolves against the working-tree root, per git-config(1); absolute is used
-  // verbatim. Joining an absolute path onto repoDir is the measured fail-open, and kanban's IS
+  // verbatim. Joining an absolute path onto repoDir is the measured fail-open, and THIS repo's IS
   // absolute — `git config --show-origin --show-scope --get-all core.hooksPath` says
   // `local .git/config /…/.husky/_`, while ticket-workflow's and hardpack-site's are `.husky/_`.
   // Re-measure that way rather than trusting either form; both are live in this fleet.

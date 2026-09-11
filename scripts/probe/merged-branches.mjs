@@ -5,7 +5,7 @@
  * Merged branches pile up because the obvious check is the wrong instrument: a
  * squash-merge makes a branch's commits non-ancestors of the default branch, so
  * `git rev-list --count main..<branch>` reports landed branches as still carrying
- * work. Measured 2026-08-11, that called 11 of kanban's 13 branches live when only
+ * work. Measured 2026-08-11, that called 11 of hardpack's 13 branches live when only
  * 3 were. A merged PR is the ground truth, so this asks GitHub instead of git.
  *
  * Deletion stays a human `git branch -D` — guard-bash blocks the agent, and that
